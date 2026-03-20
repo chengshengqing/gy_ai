@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.ItemsInforZhqMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.ItemsInforZhq">
+        <id column="reqno" property="reqno"/>
+        <result column="pattype" property="pattype"/>
+        <result column="dataname" property="dataname"/>
+        <result column="Ttime" property="ttime"/>
+        <result column="SamReqno" property="samReqno"/>
+        <result column="orderno" property="orderno"/>
+        <result column="patno" property="patno"/>
+        <result column="Patname" property="patname"/>
+        <result column="sexname" property="sexname"/>
+        <result column="deptname" property="deptname"/>
+        <result column="dictname" property="dictname"/>
+        <result column="bedno" property="bedno"/>
+        <result column="inHosdate" property="inHosdate"/>
+        <result column="Stat" property="stat"/>
+        <result column="TestResult" property="testResult"/>
+        <result column="itemname" property="itemname"/>
+        <result column="TargetSetName" property="targetSetName"/>
+        <result column="itemid" property="itemid"/>
+        <result column="data_code" property="dataCode"/>
+        <result column="msm" property="msm"/>
+        <result column="exedate" property="exedate"/>
+        <result column="status" property="status"/>
+        <result column="showflag" property="showflag"/>
+        <result column="zhidao" property="zhidao"/>
+        <result column="other" property="other"/>
+        <result column="checker" property="checker"/>
+        <result column="chedate" property="chedate"/>
+        <result column="passer" property="passer"/>
+        <result column="passdate" property="passdate"/>
+        <result column="dictno" property="dictno"/>
+        <result column="visit_id" property="visitId"/>
+        <result column="sendmsm" property="sendmsm"/>
+        <result column="hulue_lc" property="hulueLc"/>
+        <result column="duanxin" property="duanxin"/>
+        <result column="yibao" property="yibao"/>
+        <result column="risk_level" property="riskLevel"/>
+        <result column="syndrome_type" property="syndromeType"/>
+        <result column="analysis_reasoning" property="analysisReasoning"/>
+        <result column="key_evidence" property="keyEvidence"/>
+        <result column="recommended_actions" property="recommendedActions"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        reqno, pattype, dataname, Ttime, SamReqno, orderno, patno, Patname, sexname, deptname, dictname, bedno, inHosdate, Stat, TestResult, itemname, TargetSetName, itemid, data_code, msm, exedate, status, showflag, zhidao, other, checker, chedate, passer, passdate, dictno, visit_id, sendmsm, hulue_lc, duanxin, yibao, risk_level, syndrome_type, analysis_reasoning, key_evidence, recommended_actions
+    </sql>
+
+</mapper>

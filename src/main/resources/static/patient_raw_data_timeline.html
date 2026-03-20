@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>病程时间轴 · 医疗数据摘要</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #f0f5fa;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 2rem 1rem;
+            color: #1e2f3e;
+        }
+        .timeline-container { max-width: 1300px; margin: 0 auto; }
+        .header { margin-bottom: 2rem; text-align: center; }
+        .header h1 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #0b3b5e, #2a5f7a);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.02em;
+        }
+        .header-sub {
+            color: #4f6f8f;
+            font-size: 1rem;
+            margin-top: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .model-badge {
+            background: #1d3b5c;
+            color: white;
+            padding: 0.2rem 1rem;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .toolbar {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            justify-content: center;
+            margin: 1.25rem auto 2rem;
+            flex-wrap: wrap;
+        }
+        .toolbar input {
+            padding: 0.45rem 0.9rem;
+            border-radius: 10px;
+            border: 1px solid #cbdae9;
+            min-width: 220px;
+            font-size: 0.95rem;
+        }
+        .toolbar button {
+            background: #1a4b70;
+            color: #fff;
+            border: none;
+            padding: 0.5rem 1.2rem;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .toolbar button:hover { background: #143650; }
+        .patient-block {
+            margin-bottom: 3rem;
+        }
+        .patient-title {
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: #143650;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #d4e4f2;
+        }
+        .timeline { position: relative; padding: 1rem 0; }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 205px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, #7fa9c9, #2b5f87, #7fa9c9);
+            border-radius: 3px;
+        }
+        .timeline-node {
+            position: relative;
+            margin-bottom: 2.5rem;
+            display: flex;
+            min-height: 80px;
+        }
+        .timeline-time {
+            width: 200px;
+            padding-right: 22px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+        .timeline-time .date {
+            background: white;
+            padding: 0.3rem 0.75rem;
+            border-radius: 30px;
+            display: inline-block;
+            box-shadow: 0 4px 10px rgba(0,30,50,0.05);
+            border: 1px solid #cbdae9;
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: #1b4b6e;
+        }
+        .clinical-notes {
+            margin-top: 0.55rem;
+            font-size: 0.78rem;
+            line-height: 1.45;
+            color: #3d5f7d;
+            text-align: right;
+            max-width: 118px;
+            margin-left: auto;
+            word-break: break-word;
+        }
+        .node-toggle-row {
+            margin-top: 0.45rem;
+            text-align: right;
+        }
+        .node-collapse-btn {
+            background: none;
+            border: none;
+            color: #2b6c9e;
+            font-size: 0.75rem;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 0;
+        }
+        .node-collapse-btn:hover { color: #104e7c; }
+        .timeline-dot {
+            position: absolute;
+            left: 206px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border: 4px solid #2b6c9e;
+            border-radius: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            box-shadow: 0 0 0 4px rgba(43,108,158,0.1);
+            top: 6px;
+        }
+        .timeline-content {
+            margin-left: 42px;
+            flex: 1;
+            background: white;
+            border-radius: 22px;
+            padding: 1.5rem 1.75rem;
+            box-shadow: 0 15px 30px -12px rgba(0,45,80,0.15);
+            border: 1px solid #e0ecf7;
+        }
+        .timeline-node.node-collapsed .timeline-content { display: none; }
+        .timeline-node.node-collapsed .timeline-dot { top: 6px; opacity: 0.65; }
+        /* 折叠后仅保留病程类型文案（及展开操作），隐藏日期胶囊以免与「只显示 clinicalNotes」冲突 */
+        .timeline-node.node-collapsed .timeline-time .date { display: none; }
+        .struct-note { font-size: 0.85rem; color: #6b86a3; margin-bottom: 1rem; }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.25rem 1.75rem;
+        }
+        .summary-label {
+            font-size: 0.78rem;
+            letter-spacing: 0.3px;
+            color: #5f7d9c;
+            font-weight: 600;
+            margin-bottom: 0.35rem;
+        }
+        .summary-value {
+            color: #122b3c;
+            font-size: 0.92rem;
+            line-height: 1.55;
+            background: #f8fbfe;
+            padding: 0.65rem 0.9rem;
+            border-radius: 14px;
+            border-left: 4px solid;
+        }
+        .summary-value.overview { border-left-color: #3b82b5; }
+        .summary-value.symptoms { border-left-color: #e06b6b; }
+        .summary-value.labs { border-left-color: #d49b3b; }
+        .summary-value.tx { border-left-color: #42a88c; }
+        .summary-value.assessment { border-left-color: #9b77b9; }
+        .summary-value.next { border-left-color: #cc8f4a; }
+        .summary-value ul {
+            margin: 0;
+            padding-left: 1.15rem;
+        }
+        .summary-value li { margin: 0.25rem 0; }
+        .list-more {
+            margin-top: 0.5rem;
+            border-radius: 10px;
+            background: #eef4fb;
+            padding: 0.25rem 0.5rem;
+            border: 1px dashed #b6c9dc;
+        }
+        .list-more summary {
+            cursor: pointer;
+            color: #2b6c9e;
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 0.2rem;
+        }
+        .list-more ul { margin-top: 0.5rem; }
+        .raw-data {
+            margin-top: 1.35rem;
+            border-top: 1px dashed #bfd6e9;
+            padding-top: 1rem;
+        }
+        .raw-toggle {
+            background: none;
+            border: none;
+            color: #2b6c9e;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0;
+        }
+        .raw-toggle:hover { color: #104e7c; }
+        .raw-content {
+            display: none;
+            background: #f2f7fd;
+            border-radius: 12px;
+            padding: 1rem;
+            font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+            font-size: 0.78rem;
+            color: #1e3f5c;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            margin-top: 0.75rem;
+            border: 1px solid #c7ddef;
+            word-break: break-word;
+        }
+        .raw-content.show { display: block; }
+        .empty-state, .error-state {
+            text-align: center;
+            color: #7997b5;
+            padding: 2.5rem;
+            background: #f8fcff;
+            border-radius: 24px;
+        }
+        .error-state { color: #b6470e; background: #fff4ed; }
+        @media (max-width: 780px) {
+            .timeline::before { left: 72px; }
+            .timeline-time { width: 72px; padding-right: 12px; }
+            .timeline-dot { left: 62px; }
+            .clinical-notes { max-width: 68px; font-size: 0.72rem; }
+            .timeline-content { margin-left: 28px; padding: 1.2rem; }
+            .summary-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="timeline-container">
+    <div class="header">
+        <h1>病程时间轴 · 医疗数据摘要</h1>
+        <div class="header-sub">
+            <span>PatientRawDataEntity 演示展示</span>
+            <span class="model-badge">按 reqno 分组 · dataDate 时间轴</span>
+        </div>
+    </div>
+    <div class="toolbar">
+        <input type="text" id="reqnoFilter" placeholder="筛选患者 reqno（留空为全部）"/>
+        <button type="button" id="reloadBtn">加载数据</button>
+    </div>
+    <div id="main"></div>
+</div>
+
+<script>
+(function () {
+    const STRUCT_FIELDS = [
+        { key: 'condition_overview', label: '病情概况', css: 'overview' },
+        { key: 'key_symptoms_signs', label: '关键症状体征', css: 'symptoms' },
+        { key: 'important_examinations', label: '重要检查', css: 'labs' },
+        { key: 'treatments_actions', label: '处理措施', css: 'tx' },
+        { key: 'clinical_assessment', label: '临床评估', css: 'assessment' },
+        { key: 'next_focus', label: '下一步关注', css: 'next' }
+    ];
+    const MAX_INLINE = 3;
+
+    function apiBase() {
+        return '';
+    }
+
+    function normalizeToStrings(val) {
+        if (val === null || val === undefined) return null;
+        if (Array.isArray(val)) {
+            const out = [];
+            for (const x of val) {
+                if (x === null || x === undefined) continue;
+                const s = typeof x === 'object' ? JSON.stringify(x) : String(x);
+                if (s.trim()) out.push(s.trim());
+            }
+            return out.length ? out : null;
+        }
+        if (typeof val === 'object') {
+            const s = JSON.stringify(val);
+            return s && s !== '{}' ? [s] : null;
+        }
+        const s = String(val).trim();
+        return s ? [s] : null;
+    }
+
+    function parseStruct(jsonStr) {
+        if (!jsonStr || typeof jsonStr !== 'string') return null;
+        try {
+            const o = JSON.parse(jsonStr);
+            return typeof o === 'object' && o !== null ? o : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function formatRawJson(str) {
+        if (!str) return '(无)';
+        try {
+            return JSON.stringify(JSON.parse(str), null, 2);
+        } catch (e) {
+            return str;
+        }
+    }
+
+    function renderBulletList(strings) {
+        if (!strings || !strings.length) return '';
+        const lis = strings.map(s => '<li>' + escapeHtml(s) + '</li>').join('');
+        return '<ul>' + lis + '</ul>';
+    }
+
+    function renderListWithFold(strings) {
+        if (!strings || !strings.length) return '';
+        if (strings.length <= MAX_INLINE) {
+            return renderBulletList(strings);
+        }
+        const head = strings.slice(0, MAX_INLINE);
+        const rest = strings.slice(MAX_INLINE);
+        return (
+            renderBulletList(head) +
+            '<details class="list-more"><summary>还有 ' + rest.length + ' 条…</summary>' +
+            renderBulletList(rest) +
+            '</details>'
+        );
+    }
+
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function formatDate(d) {
+        if (!d) return '—';
+        if (typeof d === 'string') return d.length >= 10 ? d.slice(0, 10) : d;
+        if (Array.isArray(d) && d.length >= 3) {
+            const y = d[0], m = String(d[1]).padStart(2, '0'), day = String(d[2]).padStart(2, '0');
+            return y + '-' + m + '-' + day;
+        }
+        return String(d);
+    }
+
+    function renderStructGrid(structStr) {
+        const obj = parseStruct(structStr);
+        if (!obj) {
+            return '<p class="struct-note">本节暂无结构化摘要（structDataJson 为空或无法解析）。</p>';
+        }
+        const parts = [];
+        for (const f of STRUCT_FIELDS) {
+            if (!Object.prototype.hasOwnProperty.call(obj, f.key)) continue;
+            const items = normalizeToStrings(obj[f.key]);
+            if (!items) continue;
+            parts.push(
+                '<div class="summary-item">' +
+                '<div class="summary-label">' + escapeHtml(f.label) + '</div>' +
+                '<div class="summary-value ' + f.css + '">' + renderListWithFold(items) + '</div>' +
+                '</div>'
+            );
+        }
+        if (!parts.length) {
+            return '<p class="struct-note">结构化 JSON 中未找到可展示的六类字段或非空内容。</p>';
+        }
+        return '<div class="summary-grid">' + parts.join('') + '</div>';
+    }
+
+    function bindRawToggle(btn) {
+        btn.addEventListener('click', function () {
+            const box = btn.parentElement.querySelector('.raw-content');
+            const arrow = btn.querySelector('.raw-arrow');
+            box.classList.toggle('show');
+            arrow.textContent = box.classList.contains('show') ? '▲' : '▼';
+        });
+    }
+
+    function renderDayNode(rec, reqno) {
+        const dayId = 'node-' + reqno + '-' + (rec.id != null ? rec.id : Math.random().toString(36).slice(2));
+        const dateLabel = formatDate(rec.dataDate);
+        const notes = (rec.clinicalNotes && String(rec.clinicalNotes).trim()) ? escapeHtml(rec.clinicalNotes) : '<span style="color:#9ab;">（无病程类型）</span>';
+        const rawFormatted = formatRawJson(rec.dataJson);
+        const structHtml = renderStructGrid(rec.structDataJson);
+
+        const html = (
+            '<div class="timeline-node" id="' + dayId + '">' +
+            '  <div class="timeline-time">' +
+            '    <span class="date">' + escapeHtml(dateLabel) + '</span>' +
+            '    <div class="clinical-notes">' + notes + '</div>' +
+            '    <div class="node-toggle-row">' +
+            '      <button type="button" class="node-collapse-btn" data-target="' + dayId + '">收起本日详情</button>' +
+            '    </div>' +
+            '  </div>' +
+            '  <div class="timeline-dot"></div>' +
+            '  <div class="timeline-content">' +
+            structHtml +
+            '    <div class="raw-data">' +
+            '      <button type="button" class="raw-toggle">' +
+            '        <span>查看原始 dataJson</span><span class="raw-arrow">▼</span>' +
+            '      </button>' +
+            '      <div class="raw-content">' + escapeHtml(rawFormatted) + '</div>' +
+            '    </div>' +
+            '  </div>' +
+            '</div>'
+        );
+        return html;
+    }
+
+    function attachNodeCollapseHandlers(root) {
+        root.querySelectorAll('.node-collapse-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const id = btn.getAttribute('data-target');
+                const node = document.getElementById(id);
+                if (!node) return;
+                node.classList.toggle('node-collapsed');
+                const collapsed = node.classList.contains('node-collapsed');
+                btn.textContent = collapsed ? '展开本日详情' : '收起本日详情';
+            });
+        });
+        root.querySelectorAll('.raw-toggle').forEach(bindRawToggle);
+    }
+
+    function renderGroups(groups) {
+        const main = document.getElementById('main');
+        if (!groups || !groups.length) {
+            main.innerHTML = '<div class="empty-state">暂无 patient_raw_data 记录。</div>';
+            return;
+        }
+        const blocks = groups.map(function (g) {
+            const req = (g.reqno != null && g.reqno !== '') ? escapeHtml(g.reqno) : '（空 reqno）';
+            const records = g.records || [];
+            const nodes = records.map(function (r) { return renderDayNode(r, g.reqno || ''); }).join('');
+            return (
+                '<section class="patient-block">' +
+                '<h2 class="patient-title">患者 reqno：' + req + ' <span style="font-size:0.85rem;color:#6b86a3;font-weight:400;">（' + records.length + ' 条）</span></h2>' +
+                '<div class="timeline">' + nodes + '</div>' +
+                '</section>'
+            );
+        }).join('');
+        main.innerHTML = blocks;
+        attachNodeCollapseHandlers(main);
+    }
+
+    function load() {
+        const reqno = document.getElementById('reqnoFilter').value.trim();
+        const q = reqno ? ('?reqno=' + encodeURIComponent(reqno)) : '';
+        const main = document.getElementById('main');
+        main.innerHTML = '<div class="empty-state">加载中…</div>';
+        fetch(apiBase() + '/api/patient-raw-data/timeline-demo' + q)
+            .then(function (r) { return r.json(); })
+            .then(function (body) {
+                if (!body || body.code !== 200) {
+                    main.innerHTML = '<div class="error-state">接口异常：' + escapeHtml(body && body.message ? body.message : '未知错误') + '</div>';
+                    return;
+                }
+                renderGroups(body.data);
+            })
+            .catch(function (e) {
+                document.getElementById('main').innerHTML = '<div class="error-state">请求失败：' + escapeHtml(e.message) + '</div>';
+            });
+    }
+
+    document.getElementById('reloadBtn').addEventListener('click', load);
+    document.getElementById('reqnoFilter').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') load();
+    });
+    load();
+})();
+</script>
+</body>
+</html>

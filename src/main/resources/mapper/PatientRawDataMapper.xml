@@ -1,0 +1,745 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PatientRawDataMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.PatientRawDataEntity">
+        <id column="id" property="id"/>
+        <result column="reqno" property="reqno"/>
+        <result column="data_date" property="dataDate"/>
+        <result column="clinical_notes" property="clinicalNotes"/>
+        <result column="data_json" property="dataJson"/>
+        <result column="struct_data_json" property="structDataJson"/>
+        <result column="create_time" property="createTime"/>
+        <result column="last_time" property="lastTime"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, reqno,data_date, clinical_notes, data_json, struct_data_json, create_time, last_time
+    </sql>
+
+    <resultMap id="PatInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatInfor">
+        <id column="reqno" property="reqno"/>
+        <result column="pathosid" property="pathosid"/>
+        <result column="sex" property="sex"/>
+        <result column="age" property="age"/>
+        <result column="disname" property="disname"/>
+        <result column="outhodate" property="outhodate"/>
+        <result column="inhosday" property="inhosday"/>
+        <result column="inhosdistrict" property="inhosdistrict"/>
+        <result column="hosdays" property="hosdays"/>
+    </resultMap>
+
+    <resultMap id="PatDiagInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatDiagInfor">
+        <result column="reqno" property="reqno"/>
+        <result column="phase" property="phase"/>
+        <result column="diag_name" property="diagName"/>
+        <result column="diag_time" property="diagTime"/>
+    </resultMap>
+
+    <resultMap id="PatBodySurfaceResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatBodySurface">
+        <result column="reqno" property="reqno"/>
+        <result column="measuredate" property="measuredate"/>
+        <result column="temperature" property="temperature"/>
+        <result column="stool_count" property="stoolCount"/>
+        <result column="pulse" property="pulse"/>
+        <result column="breath" property="breath"/>
+        <result column="blood_pressure" property="bloodPressure"/>
+    </resultMap>
+
+    <resultMap id="PatDoctorAdviceResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatDoctorAdvice">
+        <result column="reqno" property="reqno"/>
+        <result column="docadvice" property="docadvice"/>
+        <result column="begtime" property="begtime"/>
+        <result column="endtime" property="endtime"/>
+        <result column="docadvtype" property="docadvtype"/>
+        <result column="remarks" property="remarks"/>
+        <result column="distname" property="distname"/>
+    </resultMap>
+
+    <resultMap id="PatIllnessCourseResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatIllnessCourse">
+        <result column="reqno" property="reqno"/>
+        <result column="illnesscontent" property="illnesscontent"/>
+        <result column="creattime" property="creattime"/>
+        <result column="itemname" property="itemname"/>
+    </resultMap>
+
+    <resultMap id="PatTestSamResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatTestSam">
+        <result column="reqno" property="reqno"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="sendtestdate" property="sendtestdate"/>
+        <result column="testaim" property="testaim"/>
+        <result column="data_name" property="dataName"/>
+        <result column="testdate" property="testdate"/>
+    </resultMap>
+
+    <resultMap id="PatTestResultResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatTestResult">
+        <result column="reqno" property="reqno"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="itemname" property="itemname"/>
+        <result column="engname" property="engname"/>
+        <result column="resultdesc" property="resultdesc"/>
+        <result column="state" property="state"/>
+        <result column="unit" property="unit"/>
+        <result column="refdesc" property="refdesc"/>
+        <result column="all_jy_flag" property="allJyFlag"/>
+    </resultMap>
+
+    <resultMap id="PatUseMedicineResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatUseMedicine">
+        <result column="reqno" property="reqno"/>
+        <result column="medi_name" property="mediName"/>
+        <result column="med_calss" property="medCalss"/>
+        <result column="medi_path" property="mediPath"/>
+        <result column="begin_time" property="beginTime"/>
+        <result column="zxsj" property="zxsj"/>
+        <result column="end_time" property="endTime"/>
+        <result column="medi_aim" property="mediAim"/>
+        <result column="docadvtype" property="docadvtype"/>
+        <result column="medi_num" property="mediNum"/>
+        <result column="medusage" property="medusage"/>
+        <result column="frequency" property="frequency"/>
+        <result column="unit" property="unit"/>
+        <result column="memo" property="memo"/>
+        <result column="distname" property="distname"/>
+    </resultMap>
+
+    <resultMap id="PatVideoResultResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatVideoResult">
+        <result column="reqno" property="reqno"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="names" property="names"/>
+        <result column="diagnose" property="diagnose"/>
+        <result column="testresult" property="testresult"/>
+        <result column="reporttime" property="reporttime"/>
+    </resultMap>
+
+    <resultMap id="PatTransferResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatTransfer">
+        <result column="reqno" property="reqno"/>
+        <result column="indeptdate" property="indeptdate"/>
+        <result column="indeptname" property="indeptname"/>
+        <result column="outhodate" property="outhodate"/>
+    </resultMap>
+
+    <resultMap id="PatOpsCutInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatOpsCutInfor">
+        <result column="reqno" property="reqno"/>
+        <result column="ops_id" property="opsId"/>
+        <result column="ops_name" property="opsName"/>
+        <result column="beg_time" property="begTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="cut_type" property="cutType"/>
+        <result column="hocus_mode" property="hocusMode"/>
+    </resultMap>
+
+    <resultMap id="OpsMedicineResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$OpsMedicine">
+        <result column="reqno" property="reqno"/>
+        <result column="ops_id" property="opsId"/>
+        <result column="medi_name" property="mediName"/>
+        <result column="dosage" property="dosage"/>
+        <result column="begin_time" property="beginTime"/>
+    </resultMap>
+
+    <resultMap id="PatTestResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatTest">
+        <result column="reqno" property="reqno"/>
+        <result column="testobject" property="testobject"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="sampletime" property="sampletime"/>
+        <result column="data_name" property="dataName"/>
+    </resultMap>
+
+    <resultMap id="MicrobeInfoResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$MicrobeInfo">
+        <result column="reqno" property="reqno"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="sendtestdate" property="sendtestdate"/>
+        <result column="samtypename" property="samtypename"/>
+        <result column="samtype" property="samtype"/>
+        <result column="exedate" property="exedate"/>
+        <result column="data_code" property="dataCode"/>
+        <result column="result" property="result"/>
+        <result column="result1" property="result1"/>
+        <result column="result2" property="result2"/>
+    </resultMap>
+
+    <resultMap id="AntiDrugInfoResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$AntiDrugInfo">
+        <result column="reqno" property="reqno"/>
+        <result column="samreqno" property="samreqno"/>
+        <result column="microbecode" property="microbecode"/>
+        <result column="mic" property="mic"/>
+        <result column="data_name" property="dataName"/>
+        <result column="sensitivity" property="sensitivity"/>
+    </resultMap>
+
+    <select id="selectSourceLastTime" resultType="java.time.LocalDateTime">
+        select top 1 last_time from item_time_set order by last_time desc
+    </select>
+
+    <select id="selectStoredLastTimeByReqno" resultType="java.time.LocalDateTime">
+        select max(last_time)
+        from patient_raw_data
+        where reqno = #{reqno}
+    </select>
+
+    <select id="selectActiveReqnos" resultType="java.lang.String">
+        SELECT reqno
+        FROM pat_infor
+--         WHERE reqno = '2601247612'
+--         WHERE reqno = '260215773'
+--         WHERE reqno = '260304412'
+--         WHERE reqno = '260302506'
+--         WHERE reqno IS NOT NULL
+        where reqno in ('260302506', '2601247612', '260125429', '260124371','260118051', '260122324', '260117982', '260115913', '260118631')
+        GROUP BY reqno
+        order by reqno desc
+    </select>
+
+    <select id="selectPatInfor" resultMap="PatInforResultMap">
+        SELECT
+            reqno,
+            pathosid,
+            sex,
+            age + ageunit AS age,
+            d1.data_name AS disname,
+            CASE
+                WHEN CONVERT(VARCHAR(10), outhodate, 120) = '9999-12-31' THEN '在院'
+                ELSE CONVERT(VARCHAR(19), outhodate, 120)
+            END AS outhodate,
+            inhosdate AS inhosday,
+            d2.data_name AS inhosdistrict,
+            DATEDIFF(DAY, inhosdate, CASE WHEN outhodate = '9999-12-31' THEN CURRENT_TIMESTAMP ELSE outhodate END) AS hosdays
+        FROM
+            pat_infor pat
+        LEFT JOIN
+            district_dict d1 ON pat.currentdist = d1.datano
+        LEFT JOIN
+            district_dict d2 ON pat.inhosdict = d2.datano
+        LEFT JOIN
+            district_custom d3 ON pat.currentdept = d3.datano
+        WHERE
+            1 = 1
+            AND pat.reqno = #{reqno}
+            and ( coalesce('0','0')='0'
+                    or (coalesce('0','0')='1'
+                    and (coalesce(d1.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                    )
+    </select>
+
+    <select id="selectDiagByReqno" resultMap="PatDiagInforResultMap">
+        select a.reqno,
+               a.phase,
+               a.diag_name,
+               a.diag_time
+        from patdiaginfor a
+        inner join pat_infor p on a.reqno = p.reqno
+        inner join district_dict d on p.currentdist = d.datano
+        where a.reqno = #{reqno}
+        <if test="lastTime != null">
+            and a.diag_time &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+        order by a.diag_time
+    </select>
+
+    <select id="selectBodySurfaceByReqno" resultMap="PatBodySurfaceResultMap">
+        SELECT
+            pbs.reqno,
+            pbs.measuredate,
+            MAX(CASE WHEN pbs.flag = '体温' THEN pbs.temperature END) AS temperature,
+            MAX(CASE WHEN pbs.flag = '大便次数' THEN pbs.temperature END) AS stool_count,
+            MAX(CASE WHEN pbs.flag = '脉搏' THEN pbs.temperature END) AS pulse,
+            MAX(CASE WHEN pbs.flag = '呼吸' THEN pbs.temperature END) AS breath,
+            MAX(CASE WHEN pbs.flag = '血压' AND pbs.temperature = -1 THEN pbs.strval
+            WHEN pbs.flag = '血压'  <![CDATA[ AND pbs.temperature <> -1 ]]> THEN CAST(pbs.temperature AS VARCHAR)
+            END) AS blood_pressure
+        FROM PatBodySurface pbs
+        where reqno = #{reqno}
+        <if test="lastTime != null">
+            and pbs.measuredate &gt; #{lastTime}
+        </if>
+        GROUP BY
+            pbs.reqno, pbs.measuredate
+    </select>
+
+    <select id="selectLongDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
+        SELECT
+            reqno,
+            docadvice,
+            begtime,
+            CASE
+                WHEN CONVERT(VARCHAR(10), endtime, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+                ELSE CONVERT(VARCHAR(19), endtime, 120)
+            END AS endtime,
+            docadvtype,
+            memo AS remarks,
+            d.data_name as distname
+        FROM
+            patdoctoradvice p
+            inner join district_dict d on  p.distno=d.datano
+        WHERE
+            docadvtype = '长期'
+            AND reqno = #{reqno}
+            AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
+        <if test="lastTime != null">
+            and begtime &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        ORDER BY  begtime DESC
+    </select>
+
+    <select id="selectTemporaryDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
+        SELECT
+            reqno,
+            docadvice,
+            begtime,
+            CASE
+                WHEN CONVERT(VARCHAR(10), endtime, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+                ELSE CONVERT(VARCHAR(19), endtime, 120)
+            END AS endtime,
+            docadvtype,
+            memo AS remarks,
+            d.data_name as distname
+        FROM
+            patdoctoradvice  p
+            inner join district_dict d on  p.distno=d.datano
+        WHERE
+            (COALESCE('临时', '_') = '_' OR docadvtype = '临时')
+            AND reqno = #{reqno}
+            AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
+        <if test="lastTime != null">
+            and begtime &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        ORDER BY begtime DESC
+    </select>
+
+    <select id="selectSgDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
+        SELECT
+            reqno,
+            docadvice,
+            begtime,
+            CASE
+                WHEN CONVERT(VARCHAR(10), endtime, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+                ELSE CONVERT(VARCHAR(19), endtime, 120)
+            END AS endtime,
+            docadvtype,
+            memo AS remarks,
+            d.data_name as distname
+        FROM
+            patdoctoradvice p
+            inner join district_dict d on  p.distno=d.datano
+        WHERE
+            (COALESCE('_', '_') = '_' OR docadvtype = '_')
+            AND reqno = #{reqno}
+            AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
+            AND sg_flag IS NOT NULL
+        <if test="lastTime != null">
+            and begtime &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        ORDER BY  begtime DESC
+    </select>
+
+    <select id="selectIllnessCourseByReqno" resultMap="PatIllnessCourseResultMap">
+        SELECT
+            i.reqno,
+            i.illnesscontent,
+            i.changetime creattime,
+            i.itemname
+            FROM
+            patillnesscourse i
+            inner join pat_infor p on i.reqno=p.reqno
+        inner join district_dict d on p.currentdist=d.datano
+        WHERE
+            1 = 1
+            AND i.reqno = #{reqno}
+            and(COALESCE(NULLIF('', '_'), '') = '' OR i.id = '')
+        <if test="lastTime != null">
+            and i.creattime &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+    </select>
+
+    <select id="selectTestSamByReqno" resultMap="PatTestSamResultMap">
+        select
+            reqno,
+            samreqno,
+            sendtestdate,
+            testaim,
+            samtype data_name,
+            testdate
+        from pattestsam pt
+        inner join district_dict d on  pt.distno=d.datano
+        where reqno=#{reqno}
+        <if test="lastTime != null">
+            and pt.sendtestdate &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        order by sendtestdate desc
+    </select>
+
+    <select id="selectTestResultBySamreqno" resultMap="PatTestResultResultMap">
+        select
+            pt.reqno,
+            pt.samreqno,
+            pm.itemname,
+            engname,
+            resultdesc,
+            state,
+            unit,
+            refdesc,
+            CASE WHEN pm.state &lt;&gt; '正常' THEN '异常' ELSE '正常' END AS all_jy_flag
+        from pattestsam pt
+        inner join pattestresult pm on pt.reqno=pm.reqno  and pt.samreqno=pm.samreqno
+        inner join district_dict d on  pt.distno=d.datano
+        where 1=1
+        and pt.reqno=#{reqno}
+        and pt.samreqno=#{samreqno}
+        <if test="lastTime != null">
+            and pt.sendtestdate &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+    </select>
+
+    <select id="selectUseMedicineByReqno" resultMap="PatUseMedicineResultMap">
+        SELECT
+            reqno,
+            medi_name,
+            med_calss,
+            medi_path,
+            begin_time,
+            convert(varchar(19),zxsj,120) as zxsj,
+            CASE
+                WHEN CONVERT(VARCHAR(10), end_time, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+                ELSE CONVERT(VARCHAR(19), end_time, 120)
+            END AS end_time,
+            medi_aim,
+            docadvtype,
+            dosage AS medi_num,
+            medusage,
+            frequency,
+            unit,
+            memo,
+            d.data_name as distname
+        FROM
+            patusemedicine  p
+            inner join district_dict d on  p.distno=d.datano
+        WHERE
+            1 = 1
+            AND docadvtype = '长期'
+            AND reqno = #{reqno}
+        <if test="lastTime != null">
+            and begin_time &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        ORDER BY
+            begin_time DESC
+    </select>
+
+    <select id="selectVideoResultByReqno" resultMap="PatVideoResultResultMap">
+        SELECT
+            pd.reqno,
+            pd.samreqno,
+            CONVERT(VARCHAR, docadvtime, 120) + itemname AS names,
+            pd.diagnose,
+            testresult,
+            reporttime
+        FROM
+            patvideoresult pd
+            inner join pat_infor p on pd.reqno=p.reqno
+            inner join district_dict d on  p.currentdist=d.datano
+        WHERE
+            1 = 1
+            AND pd.reqno = #{reqno}
+          and(COALESCE(NULLIF('', '_'), '') = '' OR CONVERT(VARCHAR, reporttime, 112) = '')
+          and(COALESCE(NULLIF('', '_'), '') = '' OR pd.samreqno = '')
+        <if test="lastTime != null">
+            and reporttime &gt; #{lastTime}
+        </if>
+          and ( coalesce('0','0')='0'
+                    or (coalesce('0','0')='1'
+                    and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                    )
+
+        ORDER BY
+            reporttime
+    </select>
+
+    <select id="selectTransferByReqno" resultMap="PatTransferResultMap">
+        SELECT
+            reqno,
+            a_inhos_date AS indeptdate,
+            a_data_name AS indeptname,
+            CASE
+                 WHEN CONVERT(VARCHAR(10), a_outhos_date, 120) = '9999-12-31' THEN '在院'
+                 ELSE CONVERT(VARCHAR(10), a_outhos_date, 23)
+                 END AS outhodate
+        FROM pat_infor_pats_basis p
+        inner join district_dict d on p.a_distno=d.datano
+        WHERE reqno = #{reqno}
+        <if test="lastTime != null">
+            and a_inhos_date &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+    </select>
+
+    <select id="selectOpsByReqno" resultMap="PatOpsCutInforResultMap">
+        SELECT
+            ops.reqno,
+            ops.ops_id,
+            ops.ops_name,
+            ops.beg_time,
+            CASE
+                WHEN CONVERT(VARCHAR(10), ops.end_time, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+                ELSE CONVERT(VARCHAR(19), ops.end_time, 120)
+            END AS end_time,
+            ops.cut_type,
+            hocus_mode
+        FROM
+            patopscutinfor ops
+            inner join district_dict d on  ops.opsdept=d.datano
+        WHERE
+            1 = 1
+            AND ops.pathosid IN (SELECT pathosid FROM pat_infor WHERE reqno = #{reqno})
+            AND DATEDIFF(DAY, ops.beg_time, CURRENT_TIMESTAMP) &lt;= 365
+        <if test="lastTime != null">
+            and ops.beg_time &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+    </select>
+
+    <select id="selectPreWardOpsMedicine" resultMap="OpsMedicineResultMap">
+        select
+            ops.reqno,
+            ops.ops_id,
+            med.medi_name,
+            med.dosage + med.unit as dosage,
+            med.begin_time
+        from patopscutinfor ops
+        inner join patusemedicine med on ops.reqno=med.reqno
+        inner join district_dict d on  ops.opsdept=d.datano
+        where ops.reqno=#{reqno}
+         and ops.ops_id= #{opsId}
+        <if test="lastTime != null">
+            and med.begin_time &gt; #{lastTime}
+        </if>
+         and ( coalesce('0','0')='0'
+                    or (coalesce('0','0')='1'
+                    and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                    )
+    </select>
+
+    <select id="selectPerioperativeOpsMedicine" resultMap="OpsMedicineResultMap">
+        select
+            ops.reqno,
+            ops.ops_id,
+            med.medi_name,
+            med.dosage + med.unit as dosage,
+            med.begin_time
+        from patopscutinfor ops
+        inner join patusemedicine_ops med on ops.reqno=med.reqno and ops.ops_id=med.ops_id
+        inner join district_dict d on  ops.opsdept=d.datano
+        where ops.reqno=#{reqno}
+        and ops.ops_id= #{opsId}
+        <if test="lastTime != null">
+            and med.begin_time &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+    </select>
+
+    <select id="selectPatTestByReqno" resultMap="PatTestResultMap">
+        select
+            pte.reqno,
+            pte.testobject,
+            pte.samreqno,
+            pte.sampletime,
+            pte.samtype_name as data_name
+        from pattest pte
+        left join  patmicrobesource ps
+        on   pte.reqno = ps.reqno AND pte.samreqno = ps.samreqno
+        left join district_dict d on pte.dist=d.datano
+        where 1=1
+        and pte.reqno=#{reqno}
+        <if test="lastTime != null">
+            and pte.sampletime &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+
+        order by sampletime desc
+    </select>
+
+    <select id="selectMicrobeBySamreqno" resultMap="MicrobeInfoResultMap">
+        select * from (
+            SELECT
+                pt.reqno,
+                pt.samreqno,
+                pt.sampletime AS sendtestdate,
+                pt.samtype_name AS samtypename,
+                pt.samtype_name AS samtype,
+                pm.exedate,
+                pm.data_code,
+                CASE
+                    WHEN ps.reqno IS NOT NULL AND pm.reqno IS NOT NULL THEN '阳性'
+                    ELSE '阴性'
+                END AS result
+                    ,case when ps.reqno IS not null and ps.memo  is not null then '多重耐药'  end AS result1
+                ,case when ps.reqno IS  null and pm.memo  is not null then '细菌备注' end AS result2
+            FROM
+                pattest pt
+            INNER JOIN
+                patmicrobesource_rep pm ON pt.reqno = pm.reqno AND pt.samreqno = pm.samreqno
+            LEFT JOIN (
+                SELECT reqno, samreqno,data_code,memo
+                FROM patmicrobesource
+                WHERE reqno = #{reqno}
+                GROUP BY reqno, samreqno,data_code,memo
+            ) AS ps ON pt.reqno = ps.reqno AND pt.samreqno = ps.samreqno and pm.data_code=ps.data_code
+            left join (
+                select reqno,samreqno,microbecode,count(*) as nys
+                from patantisource
+                where 1=1
+                and reqno=#{reqno}
+                and(COALESCE(NULLIF(#{samreqno}, '_'), '') = '' OR  samreqno = #{samreqno})
+                and(COALESCE(NULLIF('', '_'), '') = '' OR  microbecode = '')
+                GROUP BY reqno,samreqno,microbecode
+            ) AS pts ON pt.reqno = pts.reqno AND pt.samreqno = pts.samreqno and pts.microbecode=ps.data_code
+
+            LEFT JOIN
+                district_dict d ON pt.dist = d.datano
+            LEFT JOIN
+                pat_infor pat ON pat.reqno = pt.reqno
+            WHERE
+                1 = 1
+                AND pt.reqno = #{reqno}
+                AND (
+                    (COALESCE(NULLIF(#{samreqno}, '_'), '') = '' AND ps.reqno IS NOT NULL AND pm.reqno IS NOT NULL)
+                    OR
+                    (COALESCE(NULLIF(#{samreqno}, '_'), '') != '' AND pm.samreqno = #{samreqno})
+                )
+            <if test="lastTime != null">
+                and pm.exedate &gt; #{lastTime}
+            </if>
+                and ( coalesce('0','0')='0'
+                        or (coalesce('0','0')='1'
+                        and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                        )
+        ) t2
+        ORDER BY
+            sendtestdate DESC
+    </select>
+
+    <select id="selectAntiDrugByMicrobe" resultMap="AntiDrugInfoResultMap">
+        select
+            a.reqno,
+            a.samreqno,
+            a.microbecode,
+            a.micresult mic,
+            a.data_name,
+            a.micexplain sensitivity
+        from patantisource a
+        inner join pat_infor p on a.reqno=p.reqno
+        inner join district_dict d on p.currentdist=d.datano
+        left  join main_antiitem c on a.datano=c.datano
+        where 1=1
+        and a.reqno=#{reqno}
+        and(COALESCE(NULLIF(#{samreqno}, '_'), '') = '' OR  a.samreqno = #{samreqno})
+        and(COALESCE(NULLIF(#{dataCode}, '_'), '') = '' OR  a.microbecode = #{dataCode})
+        <if test="lastTime != null">
+            and a.exedate &gt; #{lastTime}
+        </if>
+        and ( coalesce('0','0')='0'
+                or (coalesce('0','0')='1'
+                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
+
+                )
+        order by item_memo1 DESC
+    </select>
+
+    <select id="selectReqnosWithUnprocessedStructData" resultType="java.lang.String">
+        SELECT TOP (#{limit}) prd.reqno
+        FROM patient_raw_data prd
+        WHERE prd.data_json IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM patient_summary ps
+            WHERE ps.reqno = prd.reqno
+              AND ps.update_time &gt;= prd.last_time
+        )
+
+        GROUP BY prd.reqno
+        ORDER BY MIN(prd.last_time) ASC
+    </select>
+
+    <select id="selectUnprocessedStructDataByReqno" resultMap="BaseResultMap">
+        SELECT prd.id,
+               prd.reqno,
+               prd.data_date,
+               prd.data_json,
+               prd.create_time,
+               prd.last_time
+        FROM patient_raw_data prd
+        WHERE prd.reqno = #{reqno}
+          AND prd.data_json IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM patient_summary ps
+            WHERE ps.reqno = prd.reqno
+              AND ps.update_time >= prd.last_time
+        )
+
+        ORDER BY prd.last_time ASC, prd.id ASC
+    </select>
+
+</mapper>

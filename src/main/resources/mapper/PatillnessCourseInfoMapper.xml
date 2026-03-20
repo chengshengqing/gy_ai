@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PatillnessCourseInfoMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo">
+        <id column="reqno" property="reqno"/>
+        <result column="pathosid" property="pathosid"/>
+        <result column="patname" property="patname"/>
+        <result column="inhosdate" property="inhosdate"/>
+        <result column="currentdist" property="currentdist"/>
+        <result column="displayname" property="displayname"/>
+        <result column="pattype" property="pattype"/>
+        <result column="patno" property="patno"/>
+        <result column="sex" property="sex"/>
+        <collection property="diagInfoList" select="selectDiagByReqno" column="reqno"
+                    ofType="com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo$DiagInfo"/>
+        <collection property="illnessInfoList" select="selectIllnessByReqno" column="reqno"
+                    ofType="com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo$IllnessInfo"/>
+    </resultMap>
+
+    <resultMap id="DiagInfoResultMap" type="com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo$DiagInfo">
+        <result column="diag_name" property="diagName"/>
+    </resultMap>
+
+    <resultMap id="IllnessInfoResultMap" type="com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo$IllnessInfo">
+        <result column="illnesscontent" property="illnessContents"/>
+        <result column="itemname" property="itemNames"/>
+    </resultMap>
+
+    <select id="selectList" resultMap="BaseResultMap">
+        SELECT
+            p.reqno,
+            p.pathosid,
+            p.patname,
+            p.inhosdate,
+            p.currentdist,
+            p.displayname,
+            p.pattype,
+            p.patno,
+            p.sex
+        FROM (
+            SELECT
+                p2.reqno,
+                p2.pathosid,
+                p2.patname,
+                p2.inhosdate,
+                p2.currentdist,
+                p2.pattype,
+                p2.patno,
+                p2.sex,
+                ddm.displayname
+            FROM pat_infor_mz p2
+            LEFT JOIN District_dict_mz ddm ON p2.currentdist = ddm.datano
+            WHERE p2.reqno IS NOT NULL
+              AND p2.pattype > 1
+        <!--    AND p2.inhosdate >= DATEADD(DAY, -1, GETDATE())-->
+              AND NOT EXISTS (
+                  SELECT 1 FROM ai_process_log apl
+                  WHERE apl.reqno = p2.reqno
+                    AND apl.process_type = 'SURVEILLANCE'
+                    AND apl.status = 'SUCCESS'
+              )
+        ) p
+        ORDER BY p.inhosdate DESC
+    </select>
+
+    <select id="selectDiagByReqno" resultMap="DiagInfoResultMap">
+        SELECT diag_name
+        FROM patDiagInfor_mz
+        WHERE reqno = #{reqno}
+          AND diag_name IS NOT NULL
+        GROUP BY diag_name
+    </select>
+
+    <select id="selectIllnessByReqno" resultMap="IllnessInfoResultMap">
+        SELECT illnesscontent, itemname
+        FROM patillnesscourse_mz
+        WHERE reqno = #{reqno}
+          AND illnesscontent IS NOT NULL
+    </select>
+
+</mapper>

@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>病程时间轴 · 医疗数据摘要</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #f0f5fa;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 2rem 1rem;
+            color: #1e2f3e;
+        }
+
+        .timeline-container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        /* 头部 */
+        .header {
+            margin-bottom: 3rem;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #0b3b5e, #2a5f7a);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.02em;
+        }
+
+        .header-sub {
+            color: #4f6f8f;
+            font-size: 1rem;
+            margin-top: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .model-badge {
+            background: #1d3b5c;
+            color: white;
+            padding: 0.2rem 1rem;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        /* 时间轴主体 */
+        .timeline {
+            position: relative;
+            padding: 1rem 0;
+        }
+
+        /* 中间主线 */
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 120px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, #7fa9c9, #2b5f87, #7fa9c9);
+            border-radius: 3px;
+            box-shadow: 0 2px 8px rgba(0,60,110,0.1);
+        }
+
+        /* 时间轴节点 */
+        .timeline-node {
+            position: relative;
+            margin-bottom: 2.5rem;
+            display: flex;
+            min-height: 200px;
+        }
+
+        /* 时间标识 */
+        .timeline-time {
+            width: 120px;
+            padding-right: 25px;
+            text-align: right;
+            font-weight: 600;
+            font-size: 1.2rem;
+            color: #1b4b6e;
+            position: relative;
+            line-height: 1.4;
+        }
+
+        .timeline-time .date {
+            background: white;
+            padding: 0.3rem 0.8rem;
+            border-radius: 30px;
+            display: inline-block;
+            box-shadow: 0 4px 10px rgba(0,30,50,0.05);
+            border: 1px solid #cbdae9;
+        }
+
+        .timeline-time .day {
+            font-size: 0.8rem;
+            color: #5f7d9c;
+            margin-top: 4px;
+        }
+
+        /* 时间轴圆点 */
+        .timeline-dot {
+            position: absolute;
+            left: 110px;
+            width: 22px;
+            height: 22px;
+            background: white;
+            border: 4px solid #2b6c9e;
+            border-radius: 50%;
+            transform: translateX(-50%);
+            z-index: 2;
+            box-shadow: 0 0 0 4px rgba(43,108,158,0.1);
+            transition: all 0.2s;
+        }
+
+        .timeline-node:hover .timeline-dot {
+            background: #2b6c9e;
+            box-shadow: 0 0 0 6px rgba(43,108,158,0.2);
+        }
+
+        /* 内容卡片 - AI摘要区域 */
+        .timeline-content {
+            margin-left: 50px;
+            flex: 1;
+            background: white;
+            border-radius: 24px;
+            padding: 1.8rem 2rem;
+            box-shadow: 0 15px 30px -12px rgba(0,45,80,0.15);
+            border: 1px solid #e0ecf7;
+            transition: all 0.2s;
+        }
+
+        .timeline-node:hover .timeline-content {
+            box-shadow: 0 20px 35px -10px rgba(20,80,130,0.2);
+            border-color: #b6d2e9;
+        }
+
+        /* AI摘要头部 */
+        .summary-header {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #e9f0f7;
+            padding-bottom: 1rem;
+        }
+
+        .ai-icon {
+            background: #1a4b70;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+
+        .summary-title {
+            font-weight: 600;
+            color: #143650;
+            font-size: 1.1rem;
+        }
+
+        .model-tag {
+            background: #e1effa;
+            color: #1c5680;
+            padding: 0.2rem 0.8rem;
+            border-radius: 30px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin-left: auto;
+        }
+
+        /* 摘要网格布局 */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem 2rem;
+        }
+
+        .summary-item {
+            break-inside: avoid;
+        }
+
+        .summary-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #5f7d9c;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+        }
+
+        .summary-value {
+            color: #122b3c;
+            font-size: 1rem;
+            line-height: 1.5;
+            background: #f8fbfe;
+            padding: 0.7rem 1rem;
+            border-radius: 14px;
+            border-left: 4px solid;
+        }
+
+        /* 不同类别左边框色 */
+        .summary-value.overview { border-left-color: #3b82b5; }
+        .summary-value.symptoms { border-left-color: #e06b6b; }
+        .summary-value.labs { border-left-color: #d49b3b; }
+        .summary-value.tx { border-left-color: #42a88c; }
+        .summary-value.assessment { border-left-color: #9b77b9; }
+        .summary-value.next { border-left-color: #cc8f4a; }
+
+        /* 异常值高亮 */
+        .abnormal {
+            background: #ffeee0;
+            color: #b6470e;
+            font-weight: 500;
+            padding: 0.1rem 0.4rem;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin: 0 2px;
+        }
+
+        /* 原始数据折叠面板 (点击可展开查看原始JSON) */
+        .raw-data {
+            margin-top: 1.5rem;
+            border-top: 1px dashed #bfd6e9;
+            padding-top: 1rem;
+        }
+
+        .raw-toggle {
+            background: none;
+            border: none;
+            color: #2b6c9e;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0;
+        }
+
+        .raw-toggle:hover {
+            color: #104e7c;
+        }
+
+        .raw-content {
+            display: none;
+            background: #f2f7fd;
+            border-radius: 12px;
+            padding: 1rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.8rem;
+            color: #1e3f5c;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            margin-top: 0.8rem;
+            border: 1px solid #c7ddef;
+        }
+
+        .raw-content.show {
+            display: block;
+        }
+
+        /* 多病程示例 - 这里模拟多个时间点 */
+        .timeline-nodes {
+            margin-top: 1rem;
+        }
+
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            color: #7997b5;
+            padding: 3rem;
+            background: #f8fcff;
+            border-radius: 40px;
+            font-style: italic;
+        }
+
+        /* 响应式 */
+        @media (max-width: 700px) {
+            .timeline::before {
+                left: 70px;
+            }
+            .timeline-time {
+                width: 70px;
+                font-size: 1rem;
+                padding-right: 15px;
+            }
+            .timeline-dot {
+                left: 60px;
+            }
+            .timeline-content {
+                margin-left: 30px;
+                padding: 1.2rem;
+            }
+            .summary-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="timeline-container">
+        <div class="header">
+            <h1>📅 病程时间轴 · AI 摘要</h1>
+            <div class="header-sub">
+                <span>基于14B医疗大模型实时摘要</span>
+                <span class="model-badge">DeepSeek-14B-Instruct</span>
+            </div>
+        </div>
+
+        <!-- 时间轴主体 -->
+        <div class="timeline">
+            <!-- 节点1: 2025-12-14 (您的示例数据) -->
+            <div class="timeline-node">
+                <div class="timeline-time">
+                    <span class="date">2025-12-14</span>
+                    <div class="day">入院第1天</div>
+                </div>
+                <div class="timeline-dot"></div>
+
+                <div class="timeline-content">
+                    <!-- AI摘要区域 (模拟14B模型生成的摘要) -->
+                    <div class="summary-header">
+                        <div class="ai-icon">🤖</div>
+                        <span class="summary-title">病程摘要 · 幽门梗阻急性期</span>
+                        <span class="model-tag">14B 生成</span>
+                    </div>
+
+                    <!-- 摘要网格 - 这里填入模型生成的摘要内容 -->
+                    <div class="summary-grid">
+                        <!-- 病情概况 -->
+                        <div class="summary-item">
+                            <div class="summary-label">📋 病情概况</div>
+                            <div class="summary-value overview">
+                                急性幽门梗阻伴胃潴留，感染指标升高，血糖显著异常。患者处于梗阻急性期，需要紧急胃肠减压。
+                            </div>
+                        </div>
+
+                        <!-- 关键症状 -->
+                        <div class="summary-item">
+                            <div class="summary-label">🫁 关键症状</div>
+                            <div class="summary-value symptoms">
+                                • 上腹部胀痛，伴呕吐、乏力、纳差4天<br>
+                                • 近期体重下降 <span class="abnormal">4kg</span> (提示营养不良)
+                            </div>
+                        </div>
+
+                        <!-- 重要检查 -->
+                        <div class="summary-item">
+                            <div class="summary-label">🔬 重要检查</div>
+                            <div class="summary-value labs">
+                                • 血常规: WBC <span class="abnormal">14.03↑</span>, N% <span class="abnormal">83.5%↑</span> (细菌感染可能)<br>
+                                • 超敏CRP <span class="abnormal">31.59↑</span> (显著炎症反应)<br>
+                                • 血糖 <span class="abnormal">15.0↑↑</span> (应激性高血糖或潜在糖尿病)<br>
+                                • 腹部CT: 幽门梗阻, 胃潴留
+                            </div>
+                        </div>
+
+                        <!-- 处理措施 -->
+                        <div class="summary-item">
+                            <div class="summary-label">💊 处理措施</div>
+                            <div class="summary-value tx">
+                                • 一级护理 (密切监测)<br>
+                                • 胃肠减压 (已留置胃管)
+                            </div>
+                        </div>
+
+                        <!-- 病情评估 -->
+                        <div class="summary-item">
+                            <div class="summary-label">📊 病情评估</div>
+                            <div class="summary-value assessment">
+                                幽门梗阻诊断明确，合并感染及代谢异常。目前病情较重，需警惕水电解质紊乱及感染扩散。
+                            </div>
+                        </div>
+
+                        <!-- 下一步关注 -->
+                        <div class="summary-item">
+                            <div class="summary-label">🔔 下一步关注</div>
+                            <div class="summary-value next">
+                                • 每日监测电解质、血糖<br>
+                                • 观察胃液引流量及性状<br>
+                                • 抗感染治疗效果评估<br>
+                                • 营养支持方案制定
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 原始数据折叠 (点击可查看您提供的原始JSON) -->
+                    <div class="raw-data">
+                        <button class="raw-toggle" onclick="toggleRaw(this)">
+                            <span>📄 查看原始病程数据</span>
+                            <span style="font-size:1.2rem;">▼</span>
+                        </button>
+                        <div class="raw-content">
+{
+  "关键症状": [
+    {"名称": "上腹部胀痛", "时间": "2025-12-14", "描述": "伴呕吐、乏力、纳差4日余"},
+    {"名称": "体重下降", "时间": "2025-12-14", "描述": "近期体重下降约4kg"}
+  ],
+  "重要检查": [
+    {"名称": "五分类血球", "时间": "2025-12-14", "结果": "白细胞计数14.03*10^9/L，中性粒细胞百分比83.5%"},
+    {"名称": "超敏C-反应蛋白", "时间": "2025-12-14", "结果": "31.59mg/L"},
+    {"名称": "葡萄糖", "时间": "2025-12-14", "结果": "15.0mmol/L"},
+    {"名称": "腹部CT", "时间": "2025-12-14", "结果": "幽门梗阻 胃潴留"}
+  ],
+  "处理措施": [
+    {"类型": "护理", "名称": "一级护理", "时间": "2025-12-14"},
+    {"类型": "治疗", "名称": "胃肠减压", "时间": "2025-12-14"}
+  ],
+  "评估": [],
+  "病情变化高亮": [],
+  "检查报告节点": [{"检查名称": "腹部CT", "时间": "2025-12-14", "结论": "幽门梗阻 胃潴留"}],
+  "手术节点": [],
+  "医嘱变化": []
+}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 节点2: 2025-12-15 (模拟第二天病程) -->
+            <div class="timeline-node">
+                <div class="timeline-time">
+                    <span class="date">2025-12-15</span>
+                    <div class="day">入院第2天</div>
+                </div>
+                <div class="timeline-dot"></div>
+
+                <div class="timeline-content">
+                    <div class="summary-header">
+                        <div class="ai-icon">🤖</div>
+                        <span class="summary-title">病程摘要 · 胃肠减压后</span>
+                        <span class="model-tag">14B 生成</span>
+                    </div>
+
+                    <div class="summary-grid">
+                        <div class="summary-item">
+                            <div class="summary-label">📋 病情概况</div>
+                            <div class="summary-value overview">
+                                胃肠减压后腹胀稍缓解，仍恶心。感染指标较前下降，血糖控制欠佳。
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🫁 关键症状</div>
+                            <div class="summary-value symptoms">
+                                • 腹胀减轻，仍感上腹隐痛<br>
+                                • 恶心呕吐次数减少<br>
+                                • 乏力依旧，食欲差
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🔬 重要检查</div>
+                            <div class="summary-value labs">
+                                • 血常规: WBC <span class="abnormal">11.2↑</span> (较前下降)<br>
+                                • CRP <span class="abnormal">18.7↑</span> (仍高于正常)<br>
+                                • 血糖 13.2↑, 血钾 3.2↓ (低钾)
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">💊 处理措施</div>
+                            <div class="summary-value tx">
+                                持续胃肠减压、补液、抗感染(头孢三代)、补钾
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">📊 病情评估</div>
+                            <div class="summary-value assessment">
+                                梗阻部分缓解，但出现电解质紊乱，需积极纠正。感染有所控制但仍存在。
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🔔 下一步关注</div>
+                            <div class="summary-value next">
+                                监测血钾、胃液量、血糖；考虑营养支持
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="raw-data">
+                        <button class="raw-toggle" onclick="toggleRaw(this)">
+                            <span>📄 查看原始病程数据</span>
+                            <span>▼</span>
+                        </button>
+                        <div class="raw-content">
+(此处为12月15日原始病程数据)
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 节点3: 2025-12-16 (模拟第三天病程) -->
+            <div class="timeline-node">
+                <div class="timeline-time">
+                    <span class="date">2025-12-16</span>
+                    <div class="day">入院第3天</div>
+                </div>
+                <div class="timeline-dot"></div>
+
+                <div class="timeline-content">
+                    <div class="summary-header">
+                        <div class="ai-icon">🤖</div>
+                        <span class="summary-title">病程摘要 · 病情稳定期</span>
+                        <span class="model-tag">14B 生成</span>
+                    </div>
+
+                    <div class="summary-grid">
+                        <div class="summary-item">
+                            <div class="summary-label">📋 病情概况</div>
+                            <div class="summary-value overview">
+                                幽门梗阻缓解，感染指标接近正常，血糖仍偏高。可尝试夹闭胃管观察。
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🫁 关键症状</div>
+                            <div class="summary-value symptoms">
+                                腹痛明显减轻，无呕吐，可少量饮水
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🔬 重要检查</div>
+                            <div class="summary-value labs">
+                                WBC 8.5正常，CRP 6.2，血糖 10.5↑，电解质正常
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">💊 处理措施</div>
+                            <div class="summary-value tx">
+                                继续抗感染、调整降糖方案、尝试夹闭胃管
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">📊 病情评估</div>
+                            <div class="summary-value assessment">
+                                病情明显好转，向康复期过渡，但仍需关注血糖。
+                            </div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-label">🔔 下一步关注</div>
+                            <div class="summary-value next">
+                                夹闭胃管后有无腹胀、血糖控制、饮食过渡
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="raw-data">
+                        <button class="raw-toggle" onclick="toggleRaw(this)">
+                            <span>📄 查看原始病程数据</span>
+                            <span>▼</span>
+                        </button>
+                        <div class="raw-content">
+(此处为12月16日原始病程数据)
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 添加新病程的按钮示意 -->
+        <div style="text-align: center; margin-top: 2rem;">
+            <button style="background: white; border: 2px dashed #7aa5c4; padding: 1rem 2rem; border-radius: 50px; color: #1d5980; font-weight: 500; cursor: pointer; width: auto;">
+                + 加载更多病程节点
+            </button>
+            <p style="color: #6b8da8; font-size: 0.9rem; margin-top: 1rem;">
+                每个时间点展示14B模型生成的AI摘要，原始数据可折叠查看
+            </p>
+        </div>
+    </div>
+
+    <script>
+        function toggleRaw(button) {
+            const rawContent = button.parentElement.querySelector('.raw-content');
+            rawContent.classList.toggle('show');
+            // 改变箭头方向
+            const arrow = button.querySelector('span:last-child');
+            if (rawContent.classList.contains('show')) {
+                arrow.innerHTML = '▲';
+            } else {
+                arrow.innerHTML = '▼';
+            }
+        }
+    </script>
+</body>
+</html>
