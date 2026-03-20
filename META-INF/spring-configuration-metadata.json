@@ -1,0 +1,67 @@
+{
+  "groups": [
+    {
+      "name": "spring.ai.retry",
+      "type": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties"
+    },
+    {
+      "name": "spring.ai.retry.backoff",
+      "type": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties$Backoff",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties",
+      "sourceMethod": "getBackoff()"
+    }
+  ],
+  "properties": [
+    {
+      "name": "spring.ai.retry.backoff.initial-interval",
+      "type": "java.time.Duration",
+      "description": "Initial sleep duration.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties$Backoff",
+      "defaultValue": "2000ms"
+    },
+    {
+      "name": "spring.ai.retry.backoff.max-interval",
+      "type": "java.time.Duration",
+      "description": "Maximum backoff duration.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties$Backoff"
+    },
+    {
+      "name": "spring.ai.retry.backoff.multiplier",
+      "type": "java.lang.Integer",
+      "description": "Backoff interval multiplier.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties$Backoff",
+      "defaultValue": 5
+    },
+    {
+      "name": "spring.ai.retry.exclude-on-http-codes",
+      "type": "java.util.List<java.lang.Integer>",
+      "description": "List of HTTP status codes that should not trigger a retry (e.g. throw NonTransientAiException).",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties"
+    },
+    {
+      "name": "spring.ai.retry.max-attempts",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of retry attempts.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties",
+      "defaultValue": 10
+    },
+    {
+      "name": "spring.ai.retry.on-client-errors",
+      "type": "java.lang.Boolean",
+      "description": "If false, throw a NonTransientAiException, and do not attempt retry for 4xx client error codes. False by default. If true, throw a TransientAiException, and attempt retry for 4xx client.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "spring.ai.retry.on-http-codes",
+      "type": "java.util.List<java.lang.Integer>",
+      "description": "List of HTTP status codes that should trigger a retry.",
+      "sourceType": "org.springframework.ai.retry.autoconfigure.SpringAiRetryProperties"
+    }
+  ],
+  "hints": [],
+  "ignored": {
+    "properties": []
+  }
+}

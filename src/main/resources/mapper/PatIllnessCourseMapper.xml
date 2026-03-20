@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PatIllnessCourseMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.PatIllnessCourse">
+        <id column="id" property="id"/>
+        <result column="reqno" property="reqno"/>
+        <result column="pathosid" property="pathosid"/>
+        <result column="illness_content" property="illnessContent"/>
+        <result column="creat_ime" property="creatTime"/>
+        <result column="itemname" property="itemname"/>
+        <result column="creat_person" property="creatPerson"/>
+        <result column="inhossum" property="inhossum"/>
+        <result column="file_name" property="fileName"/>
+        <result column="change_time" property="changeTime"/>
+        <result column="creat_date" property="creatDate"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, reqno, pathosid, IllnessContent, creatTime, itemname, creatperson, inhossum, file_name, changeTime, creat_Date
+    </sql>
+
+
+    <select id="getPageByClassifyCourse" resultMap="BaseResultMap">
+        SELECT pic.*
+        FROM pat_illness_course pic
+        WHERE NOT EXISTS (
+            SELECT 1 FROM medical_record_structured mrs
+            WHERE mrs.record_id = pic.id
+        )
+        and pathosid = 505399
+        order by change_time
+    </select>
+
+</mapper>

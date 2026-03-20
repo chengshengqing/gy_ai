@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.InfectionReviewMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.InfectionReviewEntity">
+        <id column="id" property="id"/>
+        <result column="alert_id" property="alertId"/>
+        <result column="reqno" property="reqno"/>
+        <result column="final_alert" property="finalAlert"/>
+        <result column="confidence" property="confidence"/>
+        <result column="review_comment" property="reviewComment"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, alert_id, reqno, final_alert, confidence, review_comment, create_time
+    </sql>
+
+</mapper>

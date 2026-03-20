@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.MedicalRecordStructuredMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.MedicalRecordStructured">
+        <id column="id" property="id"/>
+        <result column="record_id" property="recordId"/>
+        <result column="reqno" property="reqno"/>
+        <result column="pathosid" property="pathosid"/>
+        <result column="content" property="content" typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="course_time" property="courseTime"/>
+        <result column="symptoms" property="symptoms"/>
+        <result column="signs_and_examinations" property="signsAndExaminations"/>
+        <result column="doctor_assessment" property="doctorAssessment"/>
+        <result column="surgery_records" property="surgeryRecords"/>
+        <result column="treatment_plan" property="treatmentPlan"/>
+        <result column="consultation_opinions" property="consultationOpinions"/>
+        <result column="unclassified" property="unclassified"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, record_id, reqno, pathosid, content, course_time, symptoms, signs_and_examinations, doctor_assessment, surgery_records, treatment_plan, consultation_opinions, unclassified, created_at
+    </sql>
+
+    <select id="getPageByStructureCourse" resultMap="BaseResultMap">
+        SELECT mrs.*
+        FROM medical_record_structured mrs
+        WHERE NOT EXISTS (
+            SELECT 1 FROM medical_event event
+            WHERE event.medical_record_structured_id = mrs.id
+        )
+    </select>
+
+</mapper>
