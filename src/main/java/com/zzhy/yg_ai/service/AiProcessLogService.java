@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.service;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.zzhy.yg_ai.domain.entity.AiProcessLog;
+import java.util.List;
 
 /**
  * AI 处理日志服务接口
@@ -45,4 +46,13 @@ public interface AiProcessLogService extends IService<AiProcessLog> {
      * @return 分页结果
      */
     Page<AiProcessLog> getPage(Integer pageNum, Integer pageSize);
+
+    /**
+     * 按 runId 查询日志，runId 存放在 extra_data JSON 中。
+     *
+     * @param runId 批次 runId
+     * @param limit 返回条数限制
+     * @return 日志列表，按 created_at 倒序
+     */
+    List<AiProcessLog> listByRunId(String runId, Integer limit);
 }

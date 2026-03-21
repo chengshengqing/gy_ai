@@ -3,7 +3,7 @@ package com.zzhy.yg_ai.ai.reactAgent;
 import com.zzhy.yg_ai.ai.reactAgent.tools.MedicalStructValidationTools;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.model.OpenAIChatModel;
-import io.agentscope.core.ExecutionConfig;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.tool.Toolkit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;

@@ -743,4 +743,30 @@
         ORDER BY prd.last_time ASC, prd.id ASC
     </select>
 
+    <select id="selectPendingReqnosForDataHandler" resultType="java.lang.String">
+        SELECT TOP (#{limit}) prd.reqno
+        FROM patient_raw_data prd
+        WHERE prd.data_json IS NOT NULL
+          AND prd.struct_data_json IS NULL
+        GROUP BY prd.reqno
+        ORDER BY MIN(prd.data_date) ASC, MIN(prd.id) ASC
+    </select>
+
+    <select id="selectPendingRowsByReqnoForDataHandler" resultMap="BaseResultMap">
+        SELECT prd.id,
+               prd.reqno,
+               prd.data_date,
+               prd.clinical_notes,
+               prd.data_json,
+               prd.filter_data_json,
+               prd.struct_data_json,
+               prd.create_time,
+               prd.last_time
+        FROM patient_raw_data prd
+        WHERE prd.reqno = #{reqno}
+          AND prd.data_json IS NOT NULL
+          AND prd.struct_data_json IS NULL
+        ORDER BY prd.data_date DESC, prd.id DESC
+    </select>
+
 </mapper>

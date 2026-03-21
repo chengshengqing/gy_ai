@@ -2,10 +2,10 @@ package com.zzhy.yg_ai.ai.reactAgent.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.core.tool.annotation.Tool;
-import io.agentscope.core.tool.annotation.ToolParam;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,13 +29,13 @@ public class MedicalStructValidationTools {
 
     @Tool(name = "validate_structured_json", description = "校验病程一级结构化结果是否为合法 JSON 且包含全部必需字段")
     public String validateStructuredJson(
-            @ToolParam(name = "json", description = "待校验的结构化 JSON 字符串") String json) {
+            @ToolParam(description = "待校验的结构化 JSON 字符串") String json) {
         return validateStructured(json);
     }
 
     @Tool(name = "validate_event_json", description = "校验事件抽取结果是否为合法 JSON 或 JSON 数组")
     public String validateEventJson(
-            @ToolParam(name = "json", description = "待校验的事件 JSON 字符串") String json) {
+            @ToolParam(description = "待校验的事件 JSON 字符串") String json) {
         try {
             objectMapper.readTree(json);
             return "VALID";
