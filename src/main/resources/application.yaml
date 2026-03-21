@@ -92,6 +92,14 @@ mybatis-plus:
 
 # app-level OpenAI client timeouts
 app:
+  agentscope:
+    medical-struct:
+      api-key: ${spring.ai.openai.api-key}
+      base-url: ${spring.ai.openai.base-url}
+      model-name: ${spring.ai.openai.chat.options.model}
+      classify-batch-size: 1
+      structured-batch-size: 10
+      max-retries: 3
   ai:
     openai:
       connect-timeout: 10s
