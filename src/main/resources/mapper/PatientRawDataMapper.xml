@@ -8,6 +8,7 @@
         <result column="data_date" property="dataDate"/>
         <result column="clinical_notes" property="clinicalNotes"/>
         <result column="data_json" property="dataJson"/>
+        <result column="filter_data_json" property="filterDataJson"/>
         <result column="struct_data_json" property="structDataJson"/>
         <result column="create_time" property="createTime"/>
         <result column="last_time" property="lastTime"/>
