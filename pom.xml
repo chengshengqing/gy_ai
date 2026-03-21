@@ -63,9 +63,13 @@
             <artifactId>spring-ai-alibaba-agent-framework</artifactId>
         </dependency>
 
-        <!-- Agentscope -->
+        <!-- AgentScope Java -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope</artifactId>
+            <version>1.0.9</version>
+        </dependency>
 
-        <!-- Agentscope -->
 
         <!--<dependency>
             <groupId>org.springframework.ai</groupId>

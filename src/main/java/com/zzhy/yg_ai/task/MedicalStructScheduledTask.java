@@ -1,6 +1,6 @@
 package com.zzhy.yg_ai.task;
 
-import com.zzhy.yg_ai.ai.agent.MedicalStructAgent;
+import com.zzhy.yg_ai.service.react.ReactMedicalStructService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -15,7 +15,7 @@ import java.time.format.DateTimeFormatter;
 @Component
 @RequiredArgsConstructor
 public class MedicalStructScheduledTask {
-    private final MedicalStructAgent medicalStructAgent;
+    private final ReactMedicalStructService reactMedicalStructService;
 
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -51,7 +51,7 @@ public class MedicalStructScheduledTask {
 //    @Scheduled(fixedDelay = 60000) // 1 小时 = 60 分钟 × 60 秒 × 1000 毫秒
     public void executeClassifyData() {
         log.info("一级分类任务执行时间：{}", LocalDateTime.now().format(FORMATTER));
-        medicalStructAgent.handerClassifyData();
+        reactMedicalStructService.executeClassifyData();
     }
 
     /**
@@ -61,7 +61,7 @@ public class MedicalStructScheduledTask {
 //    @Scheduled(fixedDelay = 60000)
     public void executeMedicalEvent() {
         log.info("二级事件抽取任务执行时间：{}", LocalDateTime.now().format(FORMATTER));
-        medicalStructAgent.handerMedicalEvent();
+        reactMedicalStructService.executeMedicalEvent();
     }
 
     /**
@@ -71,7 +71,7 @@ public class MedicalStructScheduledTask {
 //    @Scheduled(fixedDelay = 60000)
     public void executeMedicalStructured() {
         log.info("病程格式化任务执行时间：{}", LocalDateTime.now().format(FORMATTER));
-        medicalStructAgent.handerMedicalStructured();
+        reactMedicalStructService.executeMedicalStructured();
     }
 
 
