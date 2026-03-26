@@ -85,9 +85,11 @@ public class PatientCourseData {
      */
     @Data
     public static class PatIllnessCourse {
+        private String illnessCourseId;
         private String reqno;
         private String illnesscontent;
         private LocalDateTime creattime;
+        private LocalDateTime changetime;
         private String itemname;
     }
 

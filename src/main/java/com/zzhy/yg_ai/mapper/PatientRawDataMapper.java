@@ -78,5 +78,7 @@ public interface PatientRawDataMapper extends BaseMapper<PatientRawDataEntity> {
 
     List<String> selectReqnosWithUnprocessedStructData(@Param("limit") int limit);
 
+    List<String> selectPendingStructReqnos(@Param("limit") int limit);
+
     List<PatientRawDataEntity> selectUnprocessedStructDataByReqno(@Param("reqno") String reqno);
 }

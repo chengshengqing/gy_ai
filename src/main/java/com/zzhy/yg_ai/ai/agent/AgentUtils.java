@@ -5,30 +5,31 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 
 import java.util.*;
 import java.util.function.Function;
+
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Slf4j
+@Component
 public class AgentUtils {
 
     private static final int MAX_SECTION_LENGTH = 10000;
     private static final int CHUNK_TARGET_LENGTH = 5500;
 
-    private final ObjectMapper objectMapper;
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    public AgentUtils(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
 
     /**
      * 分割输入JSON为病程信息和其他信息
      * @param inputJson 输入JSON字符串
      * @return 包含illnessJson和otherJson的Map
      */
-    public Map<String, String> splitInput(String inputJson) {
+    public static Map<String, String> splitInput(String inputJson) {
         String input = StringUtils.hasText(inputJson) ? inputJson : "{}";
         Map<String, String> result = new LinkedHashMap<>();
 
@@ -45,7 +46,7 @@ public class AgentUtils {
                     boolean hasFirstCourse = false;
                     if (clinicalNotes != null && clinicalNotes.isArray()) {
                         for (JsonNode note : clinicalNotes) {
-                            if (note.asText().contains("首次病程记录")) {
+                            if (IllnessRecordType.FIRST_COURSE.matches(note.asText())) {
                                 hasFirstCourse = true;
                                 break;
                             }
@@ -76,14 +77,14 @@ public class AgentUtils {
      * @param otherPart 其他部分处理结果
      * @return 合并后的结果
      */
-    public Map<String, Object> prepareMergeInput(String illnessPart, String otherPart) {
+    public static Map<String, Object> prepareMergeInput(String illnessPart, String otherPart) {
         Map<String, Object> mergeInput = new LinkedHashMap<>();
         mergeInput.put("illness_course_part", parseToNode(illnessPart));
         mergeInput.put("other_info_part", parseToNode(otherPart));
         return mergeInput;
     }
 
-    public String formatSectionWithSplit(String sectionName, String sectionJson, Function<String, String> callFn) {
+    public static String formatSectionWithSplit(String sectionName, String sectionJson, Function<String, String> callFn) {
         if ("otherInfo".equals(sectionName)) {
             String input = StringUtils.hasText(sectionJson) ? sectionJson : "{}";
             if (input.length() > MAX_SECTION_LENGTH) {
@@ -127,7 +128,7 @@ public class AgentUtils {
 
     }
 
-    public String processSplitAndMerge(String illnessSectionName,
+    public static String processSplitAndMerge(String illnessSectionName,
                                        String otherSectionName,
                                        String illnessJson,
                                        String otherJson,
@@ -145,7 +146,7 @@ public class AgentUtils {
      * @param obj 要转换的对象
      * @return JSON字符串
      */
-    public String toJson(Object obj) {
+    public static String toJson(Object obj) {
         try {
             return objectMapper.writeValueAsString(obj);
         } catch (Exception e) {
@@ -158,7 +159,7 @@ public class AgentUtils {
      * @param json JSON字符串
      * @return JsonNode对象
      */
-    public JsonNode parseToNode(String json) {
+    public static JsonNode parseToNode(String json) {
         try {
             return objectMapper.readTree(json);
         } catch (Exception e) {
@@ -166,7 +167,7 @@ public class AgentUtils {
         }
     }
 
-    private List<String> splitJsonForLlm(String json, int targetLen) {
+    private static List<String> splitJsonForLlm(String json, int targetLen) {
         if (!StringUtils.hasText(json)) {
             return List.of("{}");
         }
@@ -281,7 +282,7 @@ public class AgentUtils {
         return result;
     }
 
-    private JsonNode mergePartialNodes(List<JsonNode> partialNodes) {
+    private static JsonNode mergePartialNodes(List<JsonNode> partialNodes) {
         ObjectNode merged = objectMapper.createObjectNode();
         for (JsonNode node : partialNodes) {
             if (node == null || !node.isObject()) {
@@ -309,7 +310,7 @@ public class AgentUtils {
         return merged;
     }
 
-    private boolean containsArrayItem(ArrayNode arrayNode, JsonNode item) {
+    private static boolean containsArrayItem(ArrayNode arrayNode, JsonNode item) {
         for (JsonNode existing : arrayNode) {
             if (existing.equals(item)) {
                 return true;
@@ -361,5 +362,29 @@ public class AgentUtils {
         }
 
         return sentences;
+    }
+
+    public static String normalizeToJson(String modelOutput) {
+        if (!StringUtils.hasText(modelOutput)) {
+            return "{}";
+        }
+        String trimmed = modelOutput.trim();
+        try {
+            objectMapper.readTree(trimmed);
+            return trimmed;
+        } catch (Exception ignored) {
+            int start = trimmed.indexOf('{');
+            int end = trimmed.lastIndexOf('}');
+            if (start >= 0 && end > start) {
+                String candidate = trimmed.substring(start, end + 1);
+                try {
+                    objectMapper.readTree(candidate);
+                    return candidate;
+                } catch (Exception e) {
+                    log.warn("格式化模型返回非JSON，保留原文");
+                }
+            }
+            return trimmed;
+        }
     }
 }

@@ -1,0 +1,109 @@
+timeline-view:
+  rules:
+    max-badges: 10
+    primary-statuses:
+      - active
+      - acute_exacerbation
+      - worsening
+      - improving
+    key-day-source-badges:
+      - 入院日
+      - 手术日
+      - 会诊
+      - 拟出院
+    high-badges:
+      - 手术日
+      - 高风险
+    high-post-op-badge-prefixes:
+      - 术后第1天
+    medium-badges:
+      - 会诊
+      - 拟手术
+    source-surgery-patterns:
+      - 手术记录
+    source-consult-patterns:
+      - 会诊记录|请会诊记录
+    source-discharge-patterns:
+      - 出院记录
+    source-admission-patterns:
+      - 首次病程记录
+    admission-summary-patterns:
+      - 入院|收住|初诊
+    discharge-summary-patterns:
+      - 拟办理出院|拟出院|出院
+    fever-evidence-patterns:
+      - 体温[^0-9]{0,8}3[8-9](\\.\\d+)?
+    fever-text-patterns:
+      - 发热|持续发热|体温最高
+    fever-risk-patterns:
+      - 感染
+    surgery-planning-patterns:
+      - 拟行|择期手术|置换术|手术审批|排期|评估手术可行性
+    post-op-patterns:
+      - 术后|术区|引流|切口
+    performed-surgery-patterns:
+      - (?<!拟)(已行|下行|行)[^。；]{0,15}(术|置换)
+    critical-risk-patterns:
+      - 感染|出血|血栓|围术期心脏|呼吸衰竭|猝死
+    hide-problem-type-patterns:
+      - status: differential
+        label: 鉴别诊断
+    hide-problem-name-patterns:
+      - 鉴别诊断
+    important-unconfirmed-patterns:
+      - status: suspected
+        label: 疑似
+      - status: possible
+        label: 可能
+      - status: workup_needed
+        label: 待排/待查
+      - status: risk_only
+        label: 风险提示
+    treatment-patterns:
+      - 注射|静滴|静脉|口服|给药|用药|抗凝|抗感染|镇痛|保肝|治疗|手术|置换|麻醉|导尿|备皮|禁饮|禁食|吸氧|补液|输液|冰敷|热敷|熏洗|气压治疗|cpm
+    test-patterns:
+      - 复查|检查|检验|筛查|病理|培养|彩超|超声|影像|ct|mri|x线|x-ray|血常规|尿常规|凝血|d-二聚体|crp|血沉|因子|指标
+    monitoring-patterns:
+      - 监测|观察|评估|随访|记录|动态|跟踪|警惕|关注|复评|查房
+    test-boost-keywords:
+      - 复查
+      - 检查
+      - 检验
+      - 筛查
+      - 病理
+      - 培养
+    monitoring-boost-keywords:
+      - 监测
+      - 观察
+      - 动态
+      - 评估
+      - 随访
+      - 记录
+    treatment-boost-keywords:
+      - 注射
+      - 口服
+      - 静滴
+      - 治疗
+      - 手术
+      - 抗凝
+      - 抗感染
+    abnormal-hint-patterns:
+      - 升高|降低|增高|减少|异常|阳性|波动|偏高|偏低|最高\\s*3[8-9]
+    abnormal-lab-tokens:
+      - crp
+      - d-二聚体
+      - hb
+      - alt
+      - ast
+      - ggt
+      - inr
+      - 血沉
+    primary-problem-badge-rules:
+      - pattern: 贫血
+        badge: 贫血
+      - pattern: 感染
+        badge: 感染
+      - pattern: 血栓|抗凝
+        badge: 血栓风险
+      - pattern: 疼痛
+        badge: 疼痛

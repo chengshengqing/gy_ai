@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>患者病程总览时间轴</title>
+    <style>
+        :root {
+            --bg: #eef4fb;
+            --panel: #ffffff;
+            --line: #d5e2f0;
+            --ink: #17324a;
+            --muted: #5e7790;
+            --primary: #0e4c76;
+            --accent: #2d89b4;
+            --danger: #c13c2f;
+            --success: #1f7d5a;
+            --warning: #b06712;
+            --risk-normal: #2d89b4;
+            --shadow: 0 16px 34px -18px rgba(16, 48, 76, 0.35);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", sans-serif;
+            background:
+                radial-gradient(circle at 15% 12%, rgba(60, 149, 199, 0.16), transparent 26%),
+                radial-gradient(circle at 86% 88%, rgba(19, 112, 74, 0.13), transparent 24%),
+                var(--bg);
+            color: var(--ink);
+            min-height: 100vh;
+            padding: 24px 14px 30px;
+        }
+        .shell {
+            max-width: 1360px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+        .title {
+            font-size: 30px;
+            font-weight: 800;
+            letter-spacing: 0.4px;
+            color: #0d3b62;
+        }
+        .subtitle {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 15px;
+        }
+        .toolbar {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 14px;
+        }
+        .toolbar input {
+            width: 320px;
+            max-width: 100%;
+            border: 1px solid #c7d9eb;
+            border-radius: 10px;
+            padding: 9px 12px;
+            font-size: 14px;
+            color: #15324a;
+            background: #f9fcff;
+        }
+        .toolbar button {
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #155b8a, #0b3d62);
+            color: #fff;
+            font-weight: 700;
+            padding: 9px 18px;
+            cursor: pointer;
+        }
+        .toolbar button:hover { filter: brightness(1.05); }
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(410px, 41%) minmax(560px, 59%);
+            gap: 18px;
+        }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            min-height: 620px;
+        }
+        .panel-head {
+            padding: 14px 16px;
+            border-bottom: 1px solid #e3edf7;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        .panel-title {
+            font-size: 17px;
+            font-weight: 800;
+            color: #0f4368;
+        }
+        .panel-desc {
+            font-size: 13px;
+            color: var(--muted);
+        }
+        .timeline-scroll {
+            max-height: 760px;
+            overflow: auto;
+            padding: 16px;
+        }
+        .day-card {
+            border: 1px solid #d8e6f3;
+            border-radius: 14px;
+            padding: 14px;
+            background: #fcfeff;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all .18s ease;
+            position: relative;
+            animation: fadeIn .28s ease both;
+        }
+        .day-card:hover { border-color: #9ab7d1; transform: translateY(-1px); }
+        .day-card.active {
+            border-color: #2e82b8;
+            box-shadow: 0 10px 20px -14px rgba(31, 97, 142, 0.9);
+            background: #f4faff;
+        }
+        .day-card.key-day { border-left: 5px solid var(--risk-normal); }
+        .day-card.key-day-high { border-left-color: var(--danger); }
+        .day-card.key-day-medium { border-left-color: var(--warning); }
+        .day-card.key-day-low { border-left-color: var(--success); }
+        .day-card.key-day-normal { border-left-color: var(--risk-normal); }
+        .day-card.surgery-day { border-top: 2px solid #2d89b4; }
+        .risk-dot {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--risk-normal);
+            box-shadow: 0 0 0 5px rgba(45, 137, 180, 0.15);
+        }
+        .risk-dot-high {
+            background: var(--danger);
+            box-shadow: 0 0 0 5px rgba(193, 60, 47, 0.12);
+        }
+        .risk-dot-medium {
+            background: var(--warning);
+            box-shadow: 0 0 0 5px rgba(176, 103, 18, 0.14);
+        }
+        .risk-dot-low {
+            background: var(--success);
+            box-shadow: 0 0 0 5px rgba(31, 125, 90, 0.12);
+        }
+        .risk-dot-normal {
+            background: var(--risk-normal);
+            box-shadow: 0 0 0 5px rgba(45, 137, 180, 0.15);
+        }
+        .day-date {
+            font-size: 14px;
+            color: #316182;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .day-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: #163f61;
+            line-height: 1.35;
+            margin-bottom: 6px;
+        }
+        .day-summary {
+            font-size: 14px;
+            color: #4e6780;
+            line-height: 2;
+            overflow: visible;
+            margin-bottom: 8px;
+        }
+        .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+        .pill {
+            display: inline-block;
+            border-radius: 999px;
+            font-size: 11px;
+            padding: 2px 9px;
+            border: 1px solid #d2deea;
+            color: #43647e;
+            background: #f4f8fc;
+        }
+        .pill.danger { border-color: #f1bdb7; color: #9b2b22; background: #fff1ef; }
+        .pill.success { border-color: #b7e1d0; color: #1d704f; background: #edfbf5; }
+        .pill.info { border-color: #b9d7ef; color: #1c5f8a; background: #edf7ff; }
+        .detail-wrap {
+            padding: 14px;
+            max-height: 760px;
+            overflow: auto;
+        }
+        .summary-card {
+            border: 1px solid #d8e6f3;
+            border-radius: 14px;
+            padding: 12px;
+            background: #fcfeff;
+            margin-bottom: 12px;
+        }
+        .summary-head {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .summary-date {
+            font-size: 15px;
+            font-weight: 800;
+            color: #1c527d;
+        }
+        .summary-text {
+            font-size: 16px;
+            font-weight: 700;
+            line-height: 2;
+            color: #13364f;
+        }
+        .section {
+            border: 1px solid #dde9f5;
+            border-radius: 14px;
+            background: #fff;
+            margin-bottom: 11px;
+            overflow: hidden;
+        }
+        .section-toggle {
+            width: 100%;
+            border: none;
+            background: #f5faff;
+            border-bottom: 1px solid #e4edf7;
+            padding: 10px 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            text-align: left;
+        }
+        .section-title {
+            font-size: 15px;
+            font-weight: 800;
+            color: #0f466d;
+        }
+        .section-caret {
+            color: #3e6786;
+            font-size: 12px;
+            transition: transform .18s ease;
+        }
+        .section.collapsed .section-caret {
+            transform: rotate(-90deg);
+        }
+        .section.collapsed .section-body {
+            display: none;
+        }
+        .section-body { padding: 10px 12px; }
+        .problem-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .problem-card {
+            border: 1px solid #dbe8f5;
+            border-radius: 12px;
+            padding: 9px;
+            background: #fcfeff;
+        }
+        .problem-name {
+            font-size: 14px;
+            font-weight: 800;
+            color: #173f61;
+            line-height: 1.8;
+            margin-bottom: 5px;
+        }
+        .problem-meta {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-bottom: 6px;
+        }
+        .problem-list {
+            font-size: 13px;
+            color: #49647c;
+            line-height: 1.55;
+            padding-left: 16px;
+            margin-bottom: 6px;
+        }
+        .action-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        .action-col {
+            border: 1px solid #dbe8f5;
+            border-radius: 12px;
+            padding: 8px;
+            background: #fafeff;
+        }
+        .action-title {
+            font-size: 13px;
+            color: #1f5c86;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+        .mini-list {
+            font-size: 13px;
+            color: #48647c;
+            line-height: 1.52;
+            padding-left: 14px;
+        }
+        .risk-focus {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .risk-box, .focus-box {
+            border: 1px solid #dbe8f5;
+            border-radius: 12px;
+            padding: 8px;
+            background: #fcfeff;
+        }
+        .risk-box h4, .focus-box h4 {
+            font-size: 13px;
+            color: #275f87;
+            margin-bottom: 4px;
+        }
+        .risk-box h4 { color: #9b352a; }
+        details {
+            border: 1px dashed #c9d9ea;
+            border-radius: 10px;
+            padding: 6px 8px;
+            background: #f8fbff;
+            margin-top: 8px;
+        }
+        details summary {
+            cursor: pointer;
+            color: #2f6287;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .source-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .source-link {
+            border: 1px solid #d2e1ef;
+            border-radius: 999px;
+            padding: 3px 9px;
+            background: #fff;
+            color: #2a5f86;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .source-link:hover { border-color: #9fc1dd; }
+        .empty {
+            border: 1px dashed #c8d7e6;
+            border-radius: 12px;
+            background: #f8fbff;
+            padding: 18px;
+            text-align: center;
+            color: #66829a;
+            font-size: 15px;
+        }
+        .modal {
+            position: fixed;
+            inset: 0;
+            display: none;
+            background: rgba(7, 28, 43, 0.42);
+            align-items: center;
+            justify-content: center;
+            z-index: 99;
+            padding: 16px;
+        }
+        .modal.show { display: flex; }
+        .modal-card {
+            background: #fff;
+            border-radius: 14px;
+            width: min(480px, 100%);
+            border: 1px solid #d5e1ed;
+            box-shadow: 0 18px 38px -16px rgba(8, 29, 48, 0.45);
+            padding: 14px;
+        }
+        .modal-title {
+            font-weight: 800;
+            color: #184567;
+            margin-bottom: 8px;
+        }
+        .modal-content {
+            font-size: 14px;
+            color: #4b667d;
+            line-height: 1.8;
+            margin-bottom: 10px;
+        }
+        .modal-close {
+            border: none;
+            background: #0d486f;
+            color: #fff;
+            border-radius: 9px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @media (max-width: 1080px) {
+            .layout { grid-template-columns: 1fr; }
+            .panel { min-height: 0; }
+            .timeline-scroll, .detail-wrap { max-height: none; }
+        }
+        @media (max-width: 760px) {
+            .title { font-size: 24px; }
+            .problem-grid, .risk-focus, .action-grid { grid-template-columns: 1fr; }
+            .toolbar { justify-content: stretch; }
+            .toolbar input, .toolbar button { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+    <div class="header">
+        <div class="title">患者病程总览时间轴</div>
+        <div class="subtitle">左侧时间轴快速定位关键日，右侧展示当天主问题、处理、风险和证据来源</div>
+    </div>
+    <div class="toolbar">
+        <input type="text" id="reqnoInput" placeholder="输入 reqno（留空默认加载最新摘要）">
+        <button type="button" id="loadBtn">加载时间轴</button>
+    </div>
+    <div class="layout">
+        <section class="panel">
+            <div class="panel-head">
+                <div class="panel-title">时间轴</div>
+                <div class="panel-desc" id="timelineMeta">0 天</div>
+            </div>
+            <div class="timeline-scroll" id="timelineList"></div>
+        </section>
+        <section class="panel">
+            <div class="panel-head">
+                <div class="panel-title">单日详情</div>
+                <div class="panel-desc" id="detailMeta">未选择</div>
+            </div>
+            <div class="detail-wrap" id="detailPane"></div>
+        </section>
+    </div>
+</div>
+
+<div class="modal" id="sourceModal">
+    <div class="modal-card">
+        <div class="modal-title" id="modalTitle"></div>
+        <div class="modal-content" id="modalBody"></div>
+        <button type="button" class="modal-close" id="modalClose">关闭</button>
+    </div>
+</div>
+
+<script>
+(function () {
+    const state = {
+        data: { reqno: '', items: [] },
+        selectedIndex: -1
+    };
+    const PRIMARY_STATUS_LABELS = {
+        active: '活动期',
+        acute_exacerbation: '急性加重',
+        worsening: '恶化',
+        improving: '好转',
+        chronic: '慢性',
+        stable: '稳定',
+        clarified: '明确',
+        unclear: '未明'
+    };
+    const CERTAINTY_LABELS = {
+        confirmed: '明确',
+        suspected: '疑似',
+        possible: '可能',
+        workup_needed: '待排/待查',
+        risk_only: '风险提示'
+    };
+    const SEVERITY_LABELS = {
+        high: '高',
+        medium: '中',
+        low: '低',
+        mild: '轻度',
+        moderate: '中度',
+        severe: '重度',
+        critical: '危重',
+        unclear: '未明'
+    };
+    const DEMO_DATA = {
+        reqno: '260118631',
+        items: [
+            {
+                date: '2026-01-26',
+                title: '双侧膝关节重度骨性关节炎',
+                summary: '双侧膝关节重度骨性关节炎术后首日，生命体征平稳，已予抗炎、镇痛、预防血栓及抗感染治疗，需完善风湿及感染相关检查。',
+                badges: ['手术日', '术后', '高风险'],
+                severity: 'high',
+                is_key_day: true,
+                primary_problems: [
+                    {
+                        name: '双侧膝关节重度骨性关节炎',
+                        problem_key: 'knee_oa',
+                        status: 'active',
+                        certainty: 'confirmed',
+                        evidence: ['双膝关节稍变形，轻度外翻', '双膝关节研磨试验阳性'],
+                        actions: ['氯诺昔康抗炎止痛', '头孢呋辛抗感染', '预防下肢深静脉血栓'],
+                        risks: ['手术相关风险', '血栓风险（长期活动受限）'],
+                        sources: [{ name: '术后首次病程记录', time: '2026-01-26 15:33:58' }]
+                    }
+                ],
+                secondary_problems: [],
+                risk_items: [
+                    { name: '血栓风险（长期活动受限）', basis: '术后状态', sources: [{ name: '术后首次病程记录', time: '2026-01-26 15:33:58' }] }
+                ],
+                actions: {
+                    treatment: ['氯诺昔康抗炎止痛', '头孢呋辛抗感染', '冰敷患肢消肿'],
+                    tests: ['复查血常规及凝血功能', '完善风湿因子及血沉'],
+                    monitoring: ['监测生命体征及体温变化', '观察切口渗血及引流液'],
+                    other: ['持续吸氧']
+                },
+                next_focus: ['复查血常规及凝血功能', '观察切口渗血及引流液性质'],
+                evidence_highlights: ['体温最高 37.5℃', '双膝关节研磨试验阳性', '血压 148/84mmHg'],
+                source_notes: [{ name: '术后首次病程记录', time: '2026-01-26 15:33:58' }, { name: '手术记录', time: '2026-01-26 10:57:25' }],
+                raw_ref: { record_type: 'daily_fusion', source_note_refs: ['术后首次病程记录@2026-01-26 15:33:58', '手术记录@2026-01-26 10:57:25'] }
+            },
+            {
+                date: '2026-01-27',
+                title: '术后发热待排感染',
+                summary: '术后第1天持续发热伴疼痛，考虑吸收热待排感染，已予退热镇痛、抗凝及补液，需复查炎症指标。',
+                badges: ['术后第1天', '发热', '高风险'],
+                severity: 'high',
+                is_key_day: true,
+                primary_problems: [
+                    {
+                        name: '术后发热待排感染或吸收热',
+                        problem_key: 'postop_fever',
+                        status: 'active',
+                        certainty: 'suspected',
+                        evidence: ['体温最高38.5℃', '脉搏最高102次/分', '引流出淡血性液体70mL'],
+                        actions: ['退热处理', '物理降温', '复查血常规/CRP/血沉'],
+                        risks: ['术后感染风险', '发热待排血栓性事件'],
+                        sources: [{ name: '术后日常病程记录', time: '2026-01-27 16:45:54' }]
+                    }
+                ],
+                secondary_problems: [
+                    {
+                        name: '术后疼痛',
+                        problem_key: 'postop_pain',
+                        status: 'active',
+                        certainty: 'confirmed',
+                        evidence: ['氯诺昔康止痛后疼痛仍较重'],
+                        actions: ['曲马多静滴镇痛', '冷热湿敷止痛消肿'],
+                        risks: [],
+                        sources: [{ name: '术后首次副主任查房记录', time: '2026-01-27 15:14:00' }]
+                    }
+                ],
+                risk_items: [
+                    {
+                        name: '深静脉血栓形成风险',
+                        basis: '术后第1天，活动受限',
+                        sources: [{ name: '术后首次副主任查房记录', time: '2026-01-27 15:14:00' }]
+                    }
+                ],
+                actions: {
+                    treatment: ['复方氨林巴比妥/柴胡注射液退热', '曲马多镇痛', '依诺肝素抗凝', '补液支持'],
+                    tests: ['复查血常规', '复查CRP及血沉', '复查凝血功能及D-二聚体'],
+                    monitoring: ['动态监测体温', '观察引流液与伤口', '评估镇痛效果'],
+                    other: ['气压治疗', 'CPM治疗']
+                },
+                next_focus: ['监测退热效果', '跟踪炎症指标', '评估感染与血栓风险'],
+                evidence_highlights: ['体温最高38.5℃', '脉搏最高102次/分', '引流液70mL'],
+                source_notes: [{ name: '术后首次副主任查房记录', time: '2026-01-27 15:14:00' }, { name: '术后日常病程记录', time: '2026-01-27 16:45:54' }],
+                raw_ref: { record_type: 'daily_fusion', source_note_refs: ['术后首次副主任（主任）查房记录@2026-01-27 15:14:00', '术后日常病程记录@2026-01-27 16:45:54'] }
+            },
+            {
+                date: '2026-02-03',
+                title: '患者术后恢复良好拟出院',
+                summary: '患者术后恢复良好拟出院，术区愈合佳。确诊中度贫血，已予生血宝合剂治疗；房颤风险持续，已予利伐沙班抗凝。',
+                badges: ['拟出院', '术后'],
+                severity: 'medium',
+                is_key_day: true,
+                primary_problems: [],
+                secondary_problems: [
+                    {
+                        name: '中度贫血',
+                        problem_key: 'anemia',
+                        status: 'chronic',
+                        certainty: 'confirmed',
+                        evidence: ['诊断事实确认中度贫血'],
+                        actions: ['生血宝合剂口服'],
+                        risks: ['中度贫血需持续治疗'],
+                        sources: [{ name: '术后日常病程记录', time: '2026-02-03 13:46:17' }]
+                    }
+                ],
+                risk_items: [{ name: '出院后血栓风险', basis: '房颤风险持续', sources: [{ name: '术后日常病程记录', time: '2026-02-03 13:46:17' }] }],
+                actions: {
+                    treatment: ['利伐沙班片口服', '风湿骨痛胶囊口服', '塞来昔布胶囊口服', '生血宝合剂口服'],
+                    tests: [],
+                    monitoring: ['监测贫血改善情况', '随访关节功能恢复'],
+                    other: ['指导出院后康复训练及助步器使用']
+                },
+                next_focus: ['办理出院手续', '指导出院后康复训练', '随访关节功能恢复'],
+                evidence_highlights: ['术区伤口愈合良好，无渗湿', '病理结果：右膝关节慢性滑膜炎'],
+                source_notes: [{ name: '术后日常病程记录', time: '2026-02-03 13:46:17' }],
+                raw_ref: { record_type: 'daily_fusion', source_note_refs: ['术后日常病程记录@2026-02-03 13:46:17'] }
+            }
+        ]
+    };
+
+    function apiBase() { return ''; }
+
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function listHtml(items, cls) {
+        if (!items || !items.length) return '<div class="empty">暂无数据</div>';
+        const li = items.map(v => '<li>' + escapeHtml(v) + '</li>').join('');
+        return '<ul class="' + cls + '">' + li + '</ul>';
+    }
+
+    function primaryStatusLabel(status, label) {
+        if (label) return label;
+        if (!status) return '未知状态';
+        return PRIMARY_STATUS_LABELS[status] || status;
+    }
+
+    function certaintyLabel(certainty, label) {
+        if (label) return label;
+        if (!certainty) return '未知判断';
+        return CERTAINTY_LABELS[certainty] || certainty;
+    }
+
+    function severityLabel(severity, label) {
+        if (label) return label;
+        if (!severity) return '未分级';
+        return SEVERITY_LABELS[severity] || severity;
+    }
+
+    function pickPillClass(tag) {
+        if (tag === '高风险' || tag === '发热') return 'danger';
+        if (tag === '拟出院') return 'success';
+        if (tag === '手术日' || tag === '会诊' || tag === '术后第1天' || tag === '术后') return 'info';
+        return '';
+    }
+
+    function severityClass(severity) {
+        const s = String(severity || '').toLowerCase();
+        if (s === 'high' || s === 'critical' || s === 'severe') return 'high';
+        if (s === 'medium' || s === 'moderate') return 'medium';
+        if (s === 'low' || s === 'mild') return 'low';
+        return 'normal';
+    }
+
+    function buildProblemCard(p) {
+        const evidence = listHtml(p.evidence || [], 'problem-list');
+        const actions = listHtml(p.actions || [], 'problem-list');
+        const risks = (p.risks && p.risks.length) ? listHtml(p.risks, 'problem-list') : '';
+        return (
+            '<article class="problem-card">' +
+            '<div class="problem-name">' + escapeHtml(p.name || '-') + '</div>' +
+            '<div class="problem-meta">' +
+            '<span class="pill">' + escapeHtml(primaryStatusLabel((p.status || 'unknown') || 'unknown', p.status_label || '')) + '</span>' +
+            '<span class="pill">' + escapeHtml(certaintyLabel((p.certainty || 'unknown') || 'unknown', p.certainty_label || '')) + '</span>' +
+            '</div>' +
+            '<div class="panel-desc">关键证据</div>' + evidence +
+            '<div class="panel-desc">关键处理</div>' + actions +
+            (risks ? ('<div class="panel-desc">关联风险</div>' + risks) : '') +
+            '</article>'
+        );
+    }
+
+    function buildSection(sectionId, title, bodyHtml) {
+        return (
+            '<section class="section" data-section-id="' + escapeHtml(sectionId) + '">' +
+            '<button type="button" class="section-toggle" data-section-id="' + escapeHtml(sectionId) + '" aria-expanded="true">' +
+            '<span class="section-title">' + escapeHtml(title) + '</span>' +
+            '<span class="section-caret">▾</span>' +
+            '</button>' +
+            '<div class="section-body">' + bodyHtml + '</div>' +
+            '</section>'
+        );
+    }
+
+    function buildRiskItemCard(r) {
+        const sourceButtons = (r.sources || []).map(function (s) {
+            const label = s.time ? (s.name + ' @ ' + s.time) : s.name;
+            return '<button type="button" class="source-link" data-name="' + escapeHtml(s.name || '') + '" data-time="' + escapeHtml(s.time || '') + '">' + escapeHtml(label || '来源') + '</button>';
+        }).join('');
+        return (
+            '<article class="problem-card">' +
+            '<div class="problem-name">' + escapeHtml(r.name || '-') + '</div>' +
+            '<div class="panel-desc">依据</div>' +
+            '<div style="font-size:12px;color:#4d667e;line-height:1.8;margin-top:3px;">' + escapeHtml(r.basis || '无') + '</div>' +
+            (sourceButtons ? '<div class="source-list">' + sourceButtons + '</div>' : '') +
+            '</article>'
+        );
+    }
+
+    function renderTimeline() {
+        const box = document.getElementById('timelineList');
+        const items = state.data.items || [];
+        document.getElementById('timelineMeta').textContent = items.length + ' 天';
+        if (!items.length) {
+            box.innerHTML = '<div class="empty">未查询到可展示的 timeline 数据</div>';
+            return;
+        }
+        const html = items.map(function (item, i) {
+            const badges = (item.badges || []).slice(0, 5).map(function (b) {
+                const cls = pickPillClass(b);
+                return '<span class="pill ' + cls + '">' + escapeHtml(b) + '</span>';
+            }).join('');
+            const selected = i === state.selectedIndex ? ' active' : '';
+            const sevClass = severityClass(item.severity);
+            const keyDay = item.is_key_day ? (' key-day key-day-' + sevClass) : '';
+            const surgeryDay = (item.badges || []).includes('手术日') ? ' surgery-day' : '';
+            const riskDot = '<span class="risk-dot risk-dot-' + sevClass + '"></span>';
+            return (
+                '<article class="day-card' + selected + keyDay + surgeryDay + '" data-index="' + i + '">' +
+                riskDot +
+                '<div class="day-date">' + escapeHtml(item.date || '-') + '</div>' +
+                '<div class="day-title">' + escapeHtml(item.title || '-') + '</div>' +
+                '<div class="day-summary">' + escapeHtml(item.summary || '无摘要') + '</div>' +
+                '<div class="pills">' + badges + '</div>' +
+                '</article>'
+            );
+        }).join('');
+        box.innerHTML = html;
+        box.querySelectorAll('.day-card').forEach(function (card) {
+            card.addEventListener('click', function () {
+                state.selectedIndex = Number(card.getAttribute('data-index'));
+                renderTimeline();
+                renderDetail();
+            });
+        });
+    }
+
+    function renderDetail() {
+        const pane = document.getElementById('detailPane');
+        const items = state.data.items || [];
+        if (!items.length || state.selectedIndex < 0 || state.selectedIndex >= items.length) {
+            document.getElementById('detailMeta').textContent = '未选择';
+            pane.innerHTML = '<div class="empty">点击左侧任意一天查看详情</div>';
+            return;
+        }
+        const item = items[state.selectedIndex];
+        document.getElementById('detailMeta').textContent = item.date || '-';
+
+        const badges = (item.badges || []).map(function (b) {
+            const cls = pickPillClass(b);
+            return '<span class="pill ' + cls + '">' + escapeHtml(b) + '</span>';
+        }).join('');
+
+        const primary = (item.primary_problems || []).map(buildProblemCard).join('');
+        const secondary = (item.secondary_problems || []).map(buildProblemCard).join('');
+        const risks = (item.risk_items || []).map(buildRiskItemCard).join('');
+
+        const actionCols = [
+            { title: '治疗', list: item.actions ? item.actions.treatment : [] },
+            { title: '检查', list: item.actions ? item.actions.tests : [] },
+            { title: '监测', list: item.actions ? item.actions.monitoring : [] },
+            { title: '其他', list: item.actions ? item.actions.other : [] }
+        ].map(function (g) {
+            return '<div class="action-col"><div class="action-title">' + g.title + '</div>' + listHtml(g.list || [], 'mini-list') + '</div>';
+        }).join('');
+
+        const sourceNotes = (item.source_notes || []).map(function (s) {
+            const label = s.time ? (s.name + ' @ ' + s.time) : s.name;
+            return '<button type="button" class="source-link" data-name="' + escapeHtml(s.name || '') + '" data-time="' + escapeHtml(s.time || '') + '">' + escapeHtml(label || '来源') + '</button>';
+        }).join('');
+
+        const summarySection =
+            '<section class="summary-card">' +
+            '<div class="summary-head"><span class="summary-date">' + escapeHtml(item.date || '-') + '</span><span class="pill">' + escapeHtml(severityLabel(item.severity || 'low', item.severity_label || '')) + '</span>' + badges + '</div>' +
+            '<div class="summary-text">' + escapeHtml(item.summary || '无摘要') + '</div>' +
+            '</section>';
+
+        const primarySection = buildSection(
+            'primary',
+            '主问题',
+            (item.primary_problems && item.primary_problems.length) ? ('<div class="problem-grid">' + primary + '</div>') : '<div class="empty">暂无主问题</div>'
+        );
+
+        const secondarySection = buildSection(
+            'secondary',
+            '次问题 / 风险待排',
+            ((item.secondary_problems && item.secondary_problems.length) ? ('<div class="problem-grid">' + secondary + '</div>') : '<div class="empty">暂无次问题</div>') +
+            ((item.risk_items && item.risk_items.length) ? ('<div class="panel-desc" style="margin:8px 0 4px;">风险待排（' + item.risk_items.length + '）</div><div class="problem-grid">' + risks + '</div>') : '')
+        );
+
+        const actionSection = buildSection(
+            'actions',
+            '关键处理',
+            '<div class="action-grid">' + actionCols + '</div>'
+        );
+
+        const riskFocusSection = buildSection(
+            'risk_focus',
+            '风险与24小时关注',
+            '<div class="risk-focus">' +
+            '<div class="risk-box"><h4>当前风险（Top 3）</h4>' + listHtml((item.risk_items || []).map(function (r) { return r.name; }).slice(0, 3), 'mini-list') + '</div>' +
+            '<div class="focus-box"><h4>24小时关注</h4>' + listHtml(item.next_focus || [], 'mini-list') + '</div>' +
+            '</div>'
+        );
+
+        const evidenceSection = buildSection(
+            'evidence_source',
+            '证据与来源',
+            '<div class="panel-desc" style="margin-bottom:4px;">关键证据（' + ((item.evidence_highlights || []).length) + '）</div>' +
+            listHtml(item.evidence_highlights || [], 'mini-list') +
+            '<div class="panel-desc" style="margin:8px 0 4px;">来源文书（' + ((item.source_notes || []).length) + '）</div>' +
+            '<div class="source-list">' + (sourceNotes || '<span class="panel-desc">无来源文书</span>') + '</div>'
+        );
+
+        pane.innerHTML = summarySection + primarySection + secondarySection + actionSection + riskFocusSection + evidenceSection;
+
+        bindSectionToggle();
+        bindSourceModal();
+    }
+
+    function bindSectionToggle() {
+        document.querySelectorAll('.section-toggle').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const section = btn.closest('.section');
+                if (!section) return;
+                const collapsed = section.classList.toggle('collapsed');
+                btn.setAttribute('aria-expanded', String(!collapsed));
+            });
+        });
+    }
+
+    function bindSourceModal() {
+        const modal = document.getElementById('sourceModal');
+        const title = document.getElementById('modalTitle');
+        const body = document.getElementById('modalBody');
+        document.querySelectorAll('.source-link').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const name = btn.getAttribute('data-name') || '来源文书';
+                const time = btn.getAttribute('data-time') || '';
+                title.textContent = name;
+                body.textContent = time ? ('记录时间：' + time + '。当前页面已完成来源定位，原文弹窗可在下一步接入文书详情接口。') : '当前页面已完成来源定位，原文弹窗可在下一步接入文书详情接口。';
+                modal.classList.add('show');
+            });
+        });
+    }
+
+    function loadData() {
+        const reqno = document.getElementById('reqnoInput').value.trim();
+        const pane = document.getElementById('detailPane');
+        const list = document.getElementById('timelineList');
+        pane.innerHTML = '<div class="empty">加载中...</div>';
+        list.innerHTML = '<div class="empty">加载中...</div>';
+        function useFallback(reason) {
+            console.warn(reason);
+            state.data = JSON.parse(JSON.stringify(DEMO_DATA));
+            if (reqno) state.data.reqno = reqno;
+            state.selectedIndex = state.data.items.length ? 0 : -1;
+            renderTimeline();
+            renderDetail();
+        }
+        const q = reqno ? ('?reqno=' + encodeURIComponent(reqno)) : '';
+        fetch(apiBase() + '/api/patient-summary/timeline-view' + q)
+            .then(function (r) { return r.json(); })
+            .then(function (body) {
+                if (!body || body.code !== 200) {
+                    useFallback('接口返回异常，已自动切换到内置演示数据');
+                    return;
+                }
+                state.data = body.data || { reqno: '', items: [] };
+                state.selectedIndex = (state.data.items && state.data.items.length) ? 0 : -1;
+                renderTimeline();
+                renderDetail();
+            })
+            .catch(function (e) {
+                useFallback('请求失败（' + e.message + '），已自动切换到内置演示数据');
+            });
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', loadData);
+    document.getElementById('reqnoInput').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') loadData();
+    });
+    document.getElementById('modalClose').addEventListener('click', function () {
+        document.getElementById('sourceModal').classList.remove('show');
+    });
+    document.getElementById('sourceModal').addEventListener('click', function (e) {
+        if (e.target.id === 'sourceModal') {
+            e.currentTarget.classList.remove('show');
+        }
+    });
+
+    const params = new URLSearchParams(window.location.search);
+    const initialReqno = params.get('reqno');
+    if (initialReqno) {
+        document.getElementById('reqnoInput').value = initialReqno;
+    }
+    loadData();
+})();
+</script>
+</body>
+</html>

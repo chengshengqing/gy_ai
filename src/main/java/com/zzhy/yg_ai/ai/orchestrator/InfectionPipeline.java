@@ -16,6 +16,8 @@ import com.zzhy.yg_ai.service.PatientService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -85,30 +87,53 @@ public class InfectionPipeline {
     }
 
     public int processPendingStructData() {
-        List<PatientRawDataEntity> pendingList = patientService.listPendingStructRawData(20);
-        if (pendingList == null || pendingList.isEmpty()) {
+        List<String> pendingReqnos = patientService.listPendingStructRawData(20);
+        if (pendingReqnos == null || pendingReqnos.isEmpty()) {
             return 0;
         }
 
         ExecutorService executor = Executors.newFixedThreadPool(6);
         List<CompletableFuture<Integer>> futures = new ArrayList<>();
-        for (PatientRawDataEntity rawData : pendingList) {
+        for (String reqno : pendingReqnos) {
             CompletableFuture<Integer> task = CompletableFuture.supplyAsync(() -> {
-                if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
+                if (!StringUtils.hasText(reqno)) {
                     return 0;
                 }
-                try {
-                    PatientRawDataEntity inhosdateRaw = patientService.getInhosdateRaw(rawData.getReqno());
-                    PatientContext context = formatAgent.format(
-                            rawData.getDataJson(),
-                            inhosdateRaw != null ? inhosdateRaw.getDataJson() : null
-                    );
-                    patientService.saveStructDataJson(rawData.getId(), context.getContextJson(), context.getEventJson());
-                    return 1;
-                } catch (Exception e) {
-                    log.error("结构化格式化失败，rowId={}, reqno={}", rawData.getId(), rawData.getReqno(), e);
+                List<PatientRawDataEntity> rows = patientService.listPendingStructRawData(reqno);
+                if (rows == null || rows.isEmpty()) {
                     return 0;
                 }
+                String firstCourse = patientService.getInhosdateRaw(reqno);
+                PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
+                int successCount = 0;
+                for (PatientRawDataEntity rawData : rows) {
+                    if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
+                        continue;
+                    }
+                    if (!StringUtils.hasText(rawData.getFilterDataJson())) {
+                        PatientRawDataEntity filterRaw = formatAgent.filterIllnessCourse(firstCourse, rawData);
+                        rawData.setFilterDataJson(filterRaw.getFilterDataJson());
+                        patientService.saveFilterJson(rawData.getId(), rawData.getFilterDataJson());
+                    }
+
+                    try {
+                        SummaryAgent.DailyIllnessResult dailyIllnessResult = summaryAgent.extractDailyIllness(latestSummary, rawData);
+                        String sortedSummaryJson = sortTimelineByTimeAsc(dailyIllnessResult.updatedSummaryJson());
+                        PatientSummaryEntity newSummary = new PatientSummaryEntity();
+                        newSummary.setReqno(reqno);
+                        newSummary.setSummaryJson(sortedSummaryJson);
+                        newSummary.setTokenCount(sortedSummaryJson.length());
+                        newSummary.setUpdateTime(rawData.getLastTime() == null ? LocalDateTime.now() : rawData.getLastTime());
+
+                        patientService.saveStructDataJson(rawData.getId(), dailyIllnessResult.structDataJson(), null);
+                        patientService.saveOrUpdateLatestSummary(newSummary);
+                        latestSummary = newSummary;
+                        successCount++;
+                    } catch (Exception e) {
+                        log.error("病程增量摘要失败，rowId={}, reqno={}", rawData.getId(), rawData.getReqno(), e);
+                    }
+                }
+                return successCount;
             }, executor);
             futures.add(task);
         }
@@ -184,53 +209,8 @@ public class InfectionPipeline {
     }
 
     public int evaluateWarnings() {
-        List<String> reqnos = patientService.listActiveReqnos();
-        int alerted = 0;
-        for (String reqno : reqnos) {
-            if (!StringUtils.hasText(reqno)) {
-                continue;
-            }
-            String timelineJson = buildTimelineJsonFromRedis(reqno);
-            if (!StringUtils.hasText(timelineJson) || "{}".equals(timelineJson)) {
-                PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
-                if (latestSummary != null) {
-                    timelineJson = latestSummary.getSummaryJson();
-                }
-            }
-            if (!StringUtils.hasText(timelineJson)) {
-                continue;
-            }
-            InfectionAlert alert = warningAgent.evaluateTimeline(reqno, timelineJson);
-            InfectionAlertEntity entity = new InfectionAlertEntity();
-            entity.setReqno(reqno);
-            entity.setRiskLevel(alert.getRiskLevel() == null ? "LOW" : alert.getRiskLevel().name());
-            entity.setInfectionType(alert.getInfectionType() == null ? "OTHER" : alert.getInfectionType().name());
-            entity.setEvidence(alert.getEvidence());
-            entity.setAlertTime(alert.getAlertTime() == null ? LocalDateTime.now() : alert.getAlertTime());
-            entity.setStatus(alert.getStatus() == null ? "NEW" : alert.getStatus());
 
-            LocalDateTime dayStart = entity.getAlertTime().toLocalDate().atStartOfDay();
-            LocalDateTime dayEnd = dayStart.plusDays(1);
-            boolean duplicated = alertService.existsAlertInWindow(
-                    entity.getReqno(),
-                    entity.getRiskLevel(),
-                    entity.getInfectionType(),
-                    dayStart,
-                    dayEnd
-            );
-            if (duplicated) {
-                log.info("预警去重跳过，reqno={}, risk={}, type={}",
-                        entity.getReqno(), entity.getRiskLevel(), entity.getInfectionType());
-                continue;
-            }
-
-            alertService.saveAlert(entity);
-            alerted++;
-        }
-        if (alerted > 0) {
-            log.info("WarningAgent预警完成，alerted={}", alerted);
-        }
-        return alerted;
+        return 0;
     }
 
     private void mergeDailyEventsToRedis(String reqno, LocalDate dataDate, String eventsJson) throws Exception {
@@ -385,6 +365,107 @@ public class InfectionPipeline {
             return objectMapper.writeValueAsString(result);
         } catch (Exception e) {
             return "{}";
+        }
+    }
+
+    private String sortTimelineByTimeAsc(String summaryJson) {
+        if (!StringUtils.hasText(summaryJson)) {
+            return summaryJson;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(summaryJson);
+            if (root == null) {
+                return summaryJson;
+            }
+            if (root.isArray()) {
+                ArrayNode sorted = sortTimelineArray((ArrayNode) root);
+                return objectMapper.writeValueAsString(sorted);
+            }
+            if (root.isObject()) {
+                ObjectNode objectNode = (ObjectNode) root;
+                JsonNode timelineNode = objectNode.get("timeline");
+                if (timelineNode != null && timelineNode.isArray()) {
+                    objectNode.set("timeline", sortTimelineArray((ArrayNode) timelineNode));
+                }
+                return objectMapper.writeValueAsString(objectNode);
+            }
+            return summaryJson;
+        } catch (Exception e) {
+            log.warn("timeline排序失败，使用原摘要");
+            return summaryJson;
+        }
+    }
+
+    private ArrayNode sortTimelineArray(ArrayNode timelineArray) {
+        if (timelineArray == null || timelineArray.size() <= 1) {
+            return timelineArray;
+        }
+        List<JsonNode> items = new ArrayList<>();
+        timelineArray.forEach(items::add);
+        items.sort((left, right) -> {
+            long leftEpoch = extractTimelineNodeEpoch(left);
+            long rightEpoch = extractTimelineNodeEpoch(right);
+            if (leftEpoch == rightEpoch) {
+                return 0;
+            }
+            if (leftEpoch == Long.MIN_VALUE) {
+                return 1;
+            }
+            if (rightEpoch == Long.MIN_VALUE) {
+                return -1;
+            }
+            return Long.compare(leftEpoch, rightEpoch);
+        });
+        ArrayNode sorted = objectMapper.createArrayNode();
+        items.forEach(sorted::add);
+        return sorted;
+    }
+
+    private long extractTimelineNodeEpoch(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return Long.MIN_VALUE;
+        }
+        List<String> keys = List.of("time", "dataDate", "date", "updateTime");
+        for (String key : keys) {
+            JsonNode valueNode = node.get(key);
+            if (valueNode == null || valueNode.isNull()) {
+                continue;
+            }
+            String value = valueNode.asText();
+            if (!StringUtils.hasText(value)) {
+                continue;
+            }
+            long epoch = parseTimeToEpoch(value.trim());
+            if (epoch != Long.MIN_VALUE) {
+                return epoch;
+            }
+        }
+        return Long.MIN_VALUE;
+    }
+
+    private long parseTimeToEpoch(String value) {
+        List<DateTimeFormatter> dateTimeFormatters = List.of(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
+                DateTimeFormatter.ISO_LOCAL_DATE_TIME
+        );
+        for (DateTimeFormatter formatter : dateTimeFormatters) {
+            try {
+                return LocalDateTime.parse(value, formatter)
+                        .atZone(java.time.ZoneId.systemDefault())
+                        .toInstant()
+                        .toEpochMilli();
+            } catch (DateTimeParseException ignored) {
+                // try next format
+            }
+        }
+        try {
+            return LocalDate.parse(value, DateTimeFormatter.ISO_LOCAL_DATE)
+                    .atTime(LocalTime.MIN)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .toInstant().toEpochMilli();
+        } catch (DateTimeParseException ignored) {
+            return Long.MIN_VALUE;
         }
     }
 

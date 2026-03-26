@@ -2,11 +2,14 @@ package com.zzhy.yg_ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zzhy.yg_ai.ai.agent.AgentUtils;
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
+import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
 import com.zzhy.yg_ai.mapper.PatientSummaryMapper;
 import com.zzhy.yg_ai.service.PatientService;
@@ -123,20 +126,14 @@ public class PatientServiceImpl implements PatientService {
         return patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .isNull("struct_data_json")
-                .isNull("event_json")
                 .isNotNull("data_json")
                 .orderByAsc("id"));
     }
 
     @Override
-    public List<PatientRawDataEntity> listPendingStructRawData(int limit) {
-        int size = limit <= 0 ? 50 : limit;
-        return patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
-                .isNull("struct_data_json")
-                .isNull("event_json")
-                .isNotNull("data_json")
-                .orderByAsc("id")
-                .last("OFFSET 0 ROWS FETCH NEXT " + size + " ROWS ONLY"));
+    public List<String> listPendingStructRawData(int limit) {
+        int size = limit <= 0 ? 20 : limit;
+        return patientRawDataMapper.selectPendingStructReqnos(size);
     }
 
     @Override
@@ -194,6 +191,17 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
+    public void saveFilterJson(Long id, String filterJson) {
+        if (id == null) {
+            return;
+        }
+        PatientRawDataEntity update = new PatientRawDataEntity();
+        update.setId(id);
+        update.setFilterDataJson(filterJson);
+        patientRawDataMapper.updateById(update);
+    }
+
+    @Override
     public void saveRawData(PatientRawDataEntity rawData) {
         if (rawData.getCreateTime() == null) {
             rawData.setCreateTime(LocalDateTime.now());
@@ -210,13 +218,47 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public PatientRawDataEntity getInhosdateRaw(String reqno) {
-        return patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
+    public void saveOrUpdateLatestSummary(PatientSummaryEntity summary) {
+        if (summary == null || !StringUtils.hasText(summary.getReqno())) {
+            return;
+        }
+        if (summary.getUpdateTime() == null) {
+            summary.setUpdateTime(LocalDateTime.now());
+        }
+        PatientSummaryEntity latest = getLatestSummary(summary.getReqno());
+        if (latest == null) {
+            patientSummaryMapper.insert(summary);
+            return;
+        }
+        latest.setSummaryJson(summary.getSummaryJson());
+        latest.setTokenCount(summary.getTokenCount());
+        latest.setUpdateTime(summary.getUpdateTime());
+        patientSummaryMapper.updateById(latest);
+    }
+
+    @Override
+    public String getInhosdateRaw(String reqno) {
+        PatientRawDataEntity patientRawDataEntity = patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
-                .isNotNull("struct_data_json")
-                .isNotNull("data_date")
-                .orderByDesc("data_date")
+                .isNotNull("data_json")
+                .orderByAsc("data_date")
                 .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+        if (patientRawDataEntity == null || !StringUtils.hasText(patientRawDataEntity.getDataJson())) {
+            return null;
+        }
+        JsonNode jsonNode = AgentUtils.parseToNode(patientRawDataEntity.getDataJson());
+        JsonNode illnessCourseNodeArray = jsonNode.get("pat_illnessCourse");
+        if (illnessCourseNodeArray == null || !illnessCourseNodeArray.isArray()) {
+            return null;
+        }
+        String firstIllnessCourse = null;
+        for (JsonNode illnessCourseNode : illnessCourseNodeArray) {
+            String itemname = illnessCourseNode.path("itemname").asText();
+            if (IllnessRecordType.FIRST_COURSE.matches(itemname)) {
+                firstIllnessCourse = illnessCourseNode.path("illnesscontent").asText();
+            }
+        }
+        return firstIllnessCourse;
     }
 
     @Override
@@ -378,7 +420,7 @@ public class PatientServiceImpl implements PatientService {
             semantic.put("imaging", buildImaging(dailyData.getPatVideoResultList()));
             semantic.put("doctor_orders", buildDoctorOrders(dailyData.getLongDoctorAdviceList(), dailyData.getTemporaryDoctorAdviceList(), dailyData.getSgDoctorAdviceList()));
             semantic.put("clinical_notes", buildClinicalNotes(dailyData.getPatIllnessCourseList()));
-            semantic.put("pat_illnessCourse", buildPatIllnessCourseText(dailyData.getPatIllnessCourseList()));
+            semantic.put("pat_illnessCourse", dailyData.getPatIllnessCourseList());
             return objectMapper.writeValueAsString(semantic);
         } catch (Exception e) {
             log.error("语义块JSON生成失败，回退普通序列化", e);

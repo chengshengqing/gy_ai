@@ -65,7 +65,7 @@ spring:
         read-timeout: 60s
       chat:
         options:
-          model: Qwen3.5-9B
+          model: Qwen3.5-27B-FP8
           extra-body:
             chat_template_kwargs:
               enable_thinking: false

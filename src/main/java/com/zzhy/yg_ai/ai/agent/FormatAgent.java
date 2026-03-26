@@ -1,11 +1,16 @@
 package com.zzhy.yg_ai.ai.agent;
 
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.prompt.FormatAgentPrompt;
 import com.zzhy.yg_ai.ai.prompt.SummaryAgentPrompt;
+import com.zzhy.yg_ai.common.FilterTextUtils;
+import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.domain.model.PatientContext;
 import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
@@ -13,6 +18,8 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -24,34 +31,27 @@ import org.springframework.util.StringUtils;
 
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class FormatAgent extends AbstractAgent {
 
-    private final ReactAgent reactAgent;
     private final ObjectMapper objectMapper;
-    private final AgentUtils agentUtils;
-
-    public FormatAgent(@Qualifier("formatReactAgent") ReactAgent reactAgent,
-                       ObjectMapper objectMapper) {
-        this.reactAgent = reactAgent;
-        this.objectMapper = objectMapper;
-        this.agentUtils = new AgentUtils(objectMapper);
-    }
+    private final FilterTextUtils filterTextUtils;
 
     public PatientContext format(String rawDataJson, String inhosdateRawJson) {
         String input = StringUtils.hasText(rawDataJson) ? rawDataJson : "{}";
         String inhosdateJson = StringUtils.hasText(inhosdateRawJson) ? inhosdateRawJson : "{}";
         try {
-            Map<String, String> splitInput = agentUtils.splitInput(input);
+            Map<String, String> splitInput = AgentUtils.splitInput(input);
             String illnessJson = splitInput.get("illnessJson");
             String otherJson = splitInput.get("otherJson");
 
-            Map<String, String> splitInhosdate = agentUtils.splitInput(inhosdateJson);
+            Map<String, String> splitInhosdate = AgentUtils.splitInput(inhosdateJson);
             String InhosdateIllnessJson = splitInhosdate.get("illnessJson");
 
             illnessJson = AgentUtils.removeDuplicateSentences(InhosdateIllnessJson, illnessJson);
             final String finalIllnessJson = illnessJson;
             final String finalOtherJson = otherJson;
-            boolean hasFirstIllnessCourse = StringUtils.hasText(finalIllnessJson) && finalIllnessJson.contains("首次病程记录");
+            boolean hasFirstIllnessCourse = IllnessRecordType.FIRST_COURSE.matches(finalIllnessJson);
 
             CompletableFuture<String> illnessFuture =
                     CompletableFuture.supplyAsync(() -> formatIllnessSection(finalIllnessJson));
@@ -60,7 +60,7 @@ public class FormatAgent extends AbstractAgent {
             CompletableFuture<String> finalOutputFuture = illnessFuture.thenCombineAsync(
                     otherFuture,
                     (illnessPart, otherPart) -> {
-                        String finalInput = agentUtils.toJson(agentUtils.prepareMergeInput(illnessPart, otherPart));
+                        String finalInput = AgentUtils.toJson(AgentUtils.prepareMergeInput(illnessPart, otherPart));
                         String finalPrompt = buildFinalMergePrompt(hasFirstIllnessCourse);
                         return callWithPrompt(finalPrompt, finalInput);
                     }
@@ -84,7 +84,7 @@ public class FormatAgent extends AbstractAgent {
             PatientContext context = new PatientContext();
             context.setSource("format-agent");
             context.setCreatedAt(LocalDateTime.now());
-            context.setContextJson(normalizeToJson(finalOutput));
+            context.setContextJson(AgentUtils.normalizeToJson(finalOutput));
 //            context.setEventJson(normalizeToJson(finalEventOutput));
             return context;
         } catch (Exception e) {
@@ -98,7 +98,7 @@ public class FormatAgent extends AbstractAgent {
     }
 
     private String formatIllnessSection(String illnessJson) {
-        return agentUtils.formatSectionWithSplit(
+        return AgentUtils.formatSectionWithSplit(
                 "pat_illnessCourse",
                 illnessJson,
                 chunk -> callWithPrompt(FormatAgentPrompt.ILLNESS_COURSE_PROMPT, chunk)
@@ -106,7 +106,7 @@ public class FormatAgent extends AbstractAgent {
     }
 
     private String formatOtherSection(String otherJson) {
-        return agentUtils.formatSectionWithSplit(
+        return AgentUtils.formatSectionWithSplit(
                 "otherInfo",
                 otherJson,
                 chunk -> callWithPrompt(FormatAgentPrompt.OTHER_INFO_PROMPT, chunk)
@@ -209,11 +209,11 @@ public class FormatAgent extends AbstractAgent {
     }*/
 
     private String callWithPrompt(String promptTemplate, String inputJson) {
-        if (StringUtils.hasText(inputJson) && inputJson.contains("首次病程记录")) {
+        if (IllnessRecordType.FIRST_COURSE.matches(inputJson)) {
             promptTemplate = FormatAgentPrompt.FIRST_ILLNESS_COURSE_PROMPT;
-        } else if (StringUtils.hasText(inputJson) && inputJson.contains("会诊记录")) {
+        } else if (IllnessRecordType.CONSULTATION.matches(inputJson)) {
             promptTemplate = FormatAgentPrompt.CONSULTATION_ILLNESS_COURSE_PROMPT;
-        } else if (StringUtils.hasText(inputJson) && inputJson.contains("手术记录")) {
+        } else if (IllnessRecordType.SURGERY.matches(inputJson)) {
             promptTemplate = FormatAgentPrompt.SURGERY_ILLNESS_COURSE_PROMPT;
         }
         Prompt prompt = new Prompt(List.of(
@@ -221,35 +221,34 @@ public class FormatAgent extends AbstractAgent {
                 new UserMessage(inputJson)
         ));
         ChatResponse response = super.callModelByPrompt(prompt);
-        return normalizeToJson(response.getResult().getOutput().getText());
+        return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
     }
 
-    public ReactAgent getReactAgent() {
-        return reactAgent;
-    }
-
-    private String normalizeToJson(String modelOutput) {
-        if (!StringUtils.hasText(modelOutput)) {
-            return "{}";
-        }
-        String trimmed = modelOutput.trim();
-        try {
-            objectMapper.readTree(trimmed);
-            return trimmed;
-        } catch (Exception ignored) {
-            int start = trimmed.indexOf('{');
-            int end = trimmed.lastIndexOf('}');
-            if (start >= 0 && end > start) {
-                String candidate = trimmed.substring(start, end + 1);
-                try {
-                    objectMapper.readTree(candidate);
-                    return candidate;
-                } catch (Exception e) {
-                    log.warn("格式化模型返回非JSON，保留原文");
-                }
+    public PatientRawDataEntity filterIllnessCourse(String firstIllnessCourse, PatientRawDataEntity rawData) {
+        String dataJson = StringUtils.hasText(rawData.getDataJson()) ? rawData.getDataJson() : "{}";
+        JsonNode root = AgentUtils.parseToNode(dataJson);
+        String filterJson = null;
+        List<PatientCourseData.PatIllnessCourse> illnessCourseList = objectMapper.convertValue(
+                root.path("pat_illnessCourse"),
+                new TypeReference<List<PatientCourseData.PatIllnessCourse>>() {
+                });
+        for (PatientCourseData.PatIllnessCourse illnessCourse : illnessCourseList) {
+            String itemname = illnessCourse.getItemname();
+            String illnesscontent = illnessCourse.getIllnesscontent();
+            boolean isFirstIllnessCourse = IllnessRecordType.FIRST_COURSE.matches(itemname);
+            if (isFirstIllnessCourse) {
+                illnessCourse.setIllnesscontent(firstIllnessCourse);
+                continue;
             }
-            return trimmed;
+            String filterContent = filterTextUtils.filterContent(firstIllnessCourse, illnesscontent);
+            illnessCourse.setIllnesscontent(filterContent);
         }
+        if (root.isObject()) {
+            ((ObjectNode) root).set("pat_illnessCourse", objectMapper.valueToTree(illnessCourseList));
+            rawData.setFilterDataJson(AgentUtils.toJson(root));
+        } else {
+            rawData.setFilterDataJson(AgentUtils.toJson(illnessCourseList));
+        }
+        return rawData;
     }
-
 }

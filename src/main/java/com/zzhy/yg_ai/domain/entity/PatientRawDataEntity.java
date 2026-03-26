@@ -37,6 +37,10 @@ public class PatientRawDataEntity {
      */
     private String dataJson;
     /**
+     * 算法去重后的json
+     */
+    private String filterDataJson;
+    /**
      * LLM格式化数据JSON
      */
     private String structDataJson;

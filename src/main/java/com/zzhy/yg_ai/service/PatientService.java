@@ -29,9 +29,9 @@ public interface PatientService {
     List<PatientRawDataEntity> listPendingStructRawData(String reqno);
 
     /**
-     * 批量查询待格式化结构数据（struct_data_json 为空）。
+     * 批量查询待格式化结构数据对应的 reqno（data_json 非空且 struct_data_json 为空）。
      */
-    List<PatientRawDataEntity> listPendingStructRawData(int limit);
+    List<String> listPendingStructRawData(int limit);
 
     /**
      * 批量查询已格式化结构数据（struct_data_json 不为空）。
@@ -62,7 +62,9 @@ public interface PatientService {
 
     void saveSummary(PatientSummaryEntity summary);
 
-    PatientRawDataEntity getInhosdateRaw(String reqno);
+    void saveOrUpdateLatestSummary(PatientSummaryEntity summary);
+
+    String getInhosdateRaw(String reqno);
 
     /**
      * 演示用：查询 patient_raw_data，按 reqno 分组；组内按 dataDate、id 升序。
@@ -70,4 +72,6 @@ public interface PatientService {
      * @param reqno 非空时仅查询该患者
      */
     List<PatientRawDataTimelineGroup> listRawDataGroupedByReqnoForDemo(String reqno);
+
+    void saveFilterJson(Long id, String filterJson);
 }

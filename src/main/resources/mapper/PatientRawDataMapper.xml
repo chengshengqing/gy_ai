@@ -9,12 +9,13 @@
         <result column="clinical_notes" property="clinicalNotes"/>
         <result column="data_json" property="dataJson"/>
         <result column="struct_data_json" property="structDataJson"/>
+        <result column="filter_data_json" property="filterDataJson"/>
         <result column="create_time" property="createTime"/>
         <result column="last_time" property="lastTime"/>
     </resultMap>
 
     <sql id="Base_Column_List">
-        id, reqno,data_date, clinical_notes, data_json, struct_data_json, create_time, last_time
+        id, reqno,data_date, clinical_notes, data_json, filter_data_json, struct_data_json, create_time, last_time
     </sql>
 
     <resultMap id="PatInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatInfor">
@@ -57,9 +58,11 @@
     </resultMap>
 
     <resultMap id="PatIllnessCourseResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatIllnessCourse">
+        <result column="id" property="illnessCourseId"/>
         <result column="reqno" property="reqno"/>
         <result column="illnesscontent" property="illnesscontent"/>
         <result column="creattime" property="creattime"/>
+        <result column="changetime" property="changetime"/>
         <result column="itemname" property="itemname"/>
     </resultMap>
 
@@ -357,9 +360,11 @@
 
     <select id="selectIllnessCourseByReqno" resultMap="PatIllnessCourseResultMap">
         SELECT
+            i.id,
             i.reqno,
             i.illnesscontent,
-            i.changetime creattime,
+            i.creattime, --创建时间
+            i.changetime, --创建时间
             i.itemname
             FROM
             patillnesscourse i
@@ -720,6 +725,15 @@
 
         GROUP BY prd.reqno
         ORDER BY MIN(prd.last_time) ASC
+    </select>
+
+    <select id="selectPendingStructReqnos" resultType="java.lang.String">
+        SELECT TOP (#{limit}) prd.reqno
+        FROM patient_raw_data prd
+        WHERE prd.struct_data_json IS NULL
+          AND prd.data_json IS NOT NULL
+        GROUP BY prd.reqno
+        ORDER BY MIN(prd.id) ASC
     </select>
 
     <select id="selectUnprocessedStructDataByReqno" resultMap="BaseResultMap">
