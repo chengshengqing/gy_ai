@@ -34,33 +34,9 @@ public interface PatientService {
     List<String> listPendingStructRawData(int limit);
 
     /**
-     * 批量查询已格式化结构数据（struct_data_json 不为空）。
-     */
-    List<PatientRawDataEntity> listReadyStructRawData(int limit);
-
-    /**
-     * 联查 patient_raw_data 与 patient_summary，批量查询存在未处理数据的 reqno。
-     */
-    List<String> listReqnosWithUnprocessedStructData(int limit);
-
-    /**
-     * 联查 patient_raw_data 与 patient_summary，查询某患者未处理结构化数据。
-     */
-    List<PatientRawDataEntity> listUnprocessedStructDataByReqno(String reqno);
-
-    /**
-     * 标记患者处理进度（patient_summary.update_time = last_time）。
-     */
-    void markSummaryUpdateTime(String reqno,String eventsJson, LocalDateTime lastTime);
-
-    /**
      * 更新格式化后的结构化 JSON。
      */
     void saveStructDataJson(Long id, String structDataJson,String eventJson);
-
-    void saveRawData(PatientRawDataEntity rawData);
-
-    void saveSummary(PatientSummaryEntity summary);
 
     void saveOrUpdateLatestSummary(PatientSummaryEntity summary);
 

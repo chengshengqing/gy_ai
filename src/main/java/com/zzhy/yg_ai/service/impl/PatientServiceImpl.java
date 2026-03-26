@@ -137,48 +137,6 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public List<PatientRawDataEntity> listReadyStructRawData(int limit) {
-        int size = limit <= 0 ? 50 : limit;
-        return patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
-                .isNotNull("struct_data_json")
-                .orderByAsc("id")
-                .last("OFFSET 0 ROWS FETCH NEXT " + size + " ROWS ONLY"));
-    }
-
-    @Override
-    public List<String> listReqnosWithUnprocessedStructData(int limit) {
-        int size = limit <= 0 ? 50 : limit;
-        return patientRawDataMapper.selectReqnosWithUnprocessedStructData(size);
-    }
-
-    @Override
-    public List<PatientRawDataEntity> listUnprocessedStructDataByReqno(String reqno) {
-        if (!StringUtils.hasText(reqno)) {
-            return Collections.emptyList();
-        }
-        return patientRawDataMapper.selectUnprocessedStructDataByReqno(reqno);
-    }
-
-    @Override
-    public void markSummaryUpdateTime(String reqno,String eventsJson, LocalDateTime lastTime) {
-        if (!StringUtils.hasText(reqno) || lastTime == null) {
-            return;
-        }
-        PatientSummaryEntity latestSummary = getLatestSummary(reqno);
-        if (latestSummary == null) {
-            PatientSummaryEntity summary = new PatientSummaryEntity();
-            summary.setReqno(reqno);
-            summary.setSummaryJson(eventsJson);
-            summary.setTokenCount(eventsJson.length());
-            summary.setUpdateTime(lastTime);
-            patientSummaryMapper.insert(summary);
-            return;
-        }
-        latestSummary.setUpdateTime(lastTime);
-        patientSummaryMapper.updateById(latestSummary);
-    }
-
-    @Override
     public void saveStructDataJson(Long id, String structDataJson,String eventJson) {
         if (id == null) {
             return;
@@ -199,22 +157,6 @@ public class PatientServiceImpl implements PatientService {
         update.setId(id);
         update.setFilterDataJson(filterJson);
         patientRawDataMapper.updateById(update);
-    }
-
-    @Override
-    public void saveRawData(PatientRawDataEntity rawData) {
-        if (rawData.getCreateTime() == null) {
-            rawData.setCreateTime(LocalDateTime.now());
-        }
-        patientRawDataMapper.insert(rawData);
-    }
-
-    @Override
-    public void saveSummary(PatientSummaryEntity summary) {
-        if (summary.getUpdateTime() == null) {
-            summary.setUpdateTime(LocalDateTime.now());
-        }
-        patientSummaryMapper.insert(summary);
     }
 
     @Override
@@ -611,17 +553,6 @@ public class PatientServiceImpl implements PatientService {
             }
         }
         return clinicalNotes;
-    }
-
-    private List<String> buildPatIllnessCourseText(List<PatientCourseData.PatIllnessCourse> illnessCourseList) {
-        List<String> illnessCourseTextList = new ArrayList<>();
-        for (PatientCourseData.PatIllnessCourse course : nonNullList(illnessCourseList)) {
-            if (!StringUtils.hasText(course.getIllnesscontent())) {
-                continue;
-            }
-            illnessCourseTextList.add(course.getIllnesscontent());
-        }
-        return illnessCourseTextList;
     }
 
     private Integer parseAgeNumber(String ageText) {
