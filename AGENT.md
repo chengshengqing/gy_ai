@@ -24,6 +24,22 @@
 
 `SQL Server -> patient_raw_data -> AI 摘要 -> patient_summary -> timeline API`
 
+当前已经完成的任务：
+
+- 医疗住院数据采集
+- 病程结构化摘要
+- 时间线展示
+- 传染病症候群监测的 AI 辅助分析
+
+下一阶段主任务：
+
+- 院感预警分析
+
+规划任务：
+
+- 最终审核 Agent
+  当前只做规划，不进入开发实现
+
 ## 技术栈约束
 
 - Java 17
@@ -95,6 +111,14 @@ LLM 默认背景：
 
 如果能复用现有 `service / ai / mapper / task` 分层，就不要新增绕行实现。
 
+后续院感预警分析的扩展默认沿以下链路推进：
+
+- 增量快照差异识别
+- 标准化事件入池
+- 病例状态快照
+- 院感法官节点
+- 结果版本化
+
 ### 2. 不要绕过 Mapper 直接拼 JDBC
 
 数据库访问优先顺序：
@@ -114,6 +138,7 @@ LLM 默认背景：
 - `SummaryWarningScheduler`
 - Redis 记忆相关能力
 - ReactAgent 相关能力
+- 最终审核 Agent
 
 不要默认这些模块已经完整可用。
 
@@ -130,8 +155,21 @@ LLM 默认背景：
 
 - `SummaryAgent` 输出会进入摘要与 timeline 转换
 - `SurveillanceAgent` 输出需要经过校验器验证
+- 后续院感预警节点输出必须先经过标准化和护栏校验，不能直接入主结果
 
-### 5. 时间线视图是稳定输出层
+### 5. 增量模式是强约束
+
+本项目的数据处理模型不是“每日全量重跑”，而是：
+
+- 每日定时拉取增量数据
+- 比较新旧快照
+- 识别新增 / 更正 / 撤销
+- 将差异转为标准化事件
+- 只对受影响病例做局部重算
+
+后续院感预警分析设计必须严格遵守这个约束。
+
+### 6. 时间线视图是稳定输出层
 
 `PatientSummaryTimelineViewServiceImpl` 与 `timeline-view-rules.yaml` 共同定义了展示模型。
 
@@ -140,6 +178,27 @@ LLM 默认背景：
 - 前端依赖的数据结构不要轻易破坏
 - 标签、风险、徽章规则优先在规则配置层扩展
 - 只有在规则无法表达时，再改 Java 逻辑
+
+## 开发阶段边界
+
+### 当前优先开发
+
+- 标准化事件入池
+- `infection_event_pool`
+- `infection_llm_node_run`
+- `infection_case_snapshot`
+- 院感法官基础节点
+- `infection_alert_result`
+
+### 当前不开发
+
+- 最终审核 Agent
+
+要求：
+
+- 可以做架构规划
+- 可以做接口预留
+- 不做正式实现
 
 ## 修改优先级建议
 
@@ -176,6 +235,9 @@ LLM 默认背景：
 - 时间线转换测试
 - JSON 解析与校验测试
 - Mapper 集成测试
+- 事件标准化测试
+- 增量差异识别测试
+- 院感预警节点输入输出测试
 
 ## 配置与安全要求
 
@@ -207,3 +269,11 @@ LLM 默认背景：
 - 空泛描述
 - 只讲概念不落到类和文件
 - 未确认现有结构就直接重构
+
+## 输出规则
+
+所有代码定位必须输出为：
+<module_path>/<file_path>:<line_number>
+
+示例：
+infection-monitor/src/main/java/com/xxx/InfectionMonitorScheduler.java:29

@@ -1,0 +1,36 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${YG_AI_DB_URL:jdbc:sqlserver://127.0.0.1:1433;databaseName=yg_ai_local;encrypt=true;trustServerCertificate=true;}
+    username: ${YG_AI_DB_USERNAME:sa}
+    password: ${YG_AI_DB_PASSWORD:changeit}
+  data:
+    redis:
+      host: ${YG_AI_REDIS_HOST:127.0.0.1}
+      port: ${YG_AI_REDIS_PORT:6379}
+      database: ${YG_AI_REDIS_DB:0}
+  ai:
+    openai:
+      api-key: ${YG_AI_OPENAI_API_KEY:EMPTY}
+      base-url: ${YG_AI_OPENAI_BASE_URL:http://127.0.0.1:6001}
+      chat:
+        options:
+          model: ${YG_AI_OPENAI_MODEL:Qwen3.5-27B-FP8}
+
+infection:
+  monitor:
+    scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:20}
+    batch-size: ${YG_AI_MONITOR_BATCH_SIZE:20}
+    worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:4}
+    max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:3}
+    retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:60}
+    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:7}
+    debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
+    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
+  format:
+    batch-size: ${YG_AI_FORMAT_BATCH_SIZE:20}
+    worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:4}
+    max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:3}
+    retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:60}

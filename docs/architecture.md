@@ -16,6 +16,28 @@
 
 当前系统是单体架构，不区分独立微服务。
 
+当前采集主链路已经从“定时任务直接采集并继续做摘要”演进为“任务驱动的两段式流水线”：
+
+- 扫描阶段只负责识别需要采集的 `reqno` 并写入采集任务表
+- 采集执行阶段只负责查询业务源表并更新 `patient_raw_data`
+- 下游摘要、预警或扩展任务通过独立任务表解耦，不再直接耦在原始采集流程里
+
+当前已经完成的业务能力：
+
+- 医疗住院数据采集
+- 病程结构化摘要
+- 时间线展示
+- 传染病症候群监测的 AI 辅助分析
+
+下一阶段主任务：
+
+- 院感预警分析
+
+规划任务：
+
+- 最终审核 Agent
+  当前仅做规划，不进入开发实现
+
 ## 3. 总体架构
 
 ```text
@@ -25,56 +47,180 @@
                +---------+---------+
                          |
                          v
-              +----------+-----------+
-              |   PatientService     |
-              | 原始数据查询与按天组装 |
-              +----------+-----------+
-                         |
-                         v
-              +----------+-----------+
-              |  patient_raw_data    |
-              | 原始病程语义块落库      |
-              +----------+-----------+
-                         |
-                         v
-              +----------+-----------+
-              |  InfectionPipeline   |
-              | AI 编排入口           |
-              +----------+-----------+
-                         |
-         +---------------+----------------+
-         |                                |
-         v                                v
-+--------+--------+             +---------+--------+
-|   FormatAgent   |             |   SummaryAgent   |
-| 病程过滤 / 规整   |             | 摘要 / timeline  |
-+--------+--------+             +---------+--------+
-         |                                |
-         +---------------+----------------+
-                         |
-                         v
-              +----------+-----------+
-              |   patient_summary    |
-              | 最新时间线摘要         |
-              +----------+-----------+
-                         |
-                         v
-              +----------+-----------+
-              | TimelineViewService  |
-              | 视图转换与规则应用      |
-              +----------+-----------+
-                         |
-                         v
-              +----------+-----------+
-              | REST API / Static UI |
-              +----------------------+
+      +---------------------------------------------+
+      | InfectionMonitorScheduler                   |
+      | 1. 扫描入队  2. 执行采集任务                   |
+      +----------------------+----------------------+
+                             |
+           +-----------------+-----------------+
+           |                                   |
+           v                                   v
+  +--------+----------------+        +---------+----------+
+  | patient_raw_data_       |        | InfectionPipeline  |
+  | collect_task            |        | 原始采集任务消费入口   |
+  +--------+----------------+        +---------+----------+
+                                                    |
+                                                    v
+                                         +----------+-----------+
+                                         |   PatientService     |
+                                         | 原始数据查询与按天组装 |
+                                         +----------+-----------+
+                                                    |
+                                                    v
+                                         +----------+-----------+
+                                         |  patient_raw_data    |
+                                         | 原始每日快照落库       |
+                                         +----------+-----------+
+                                                    |
+                                                    v
+                                         +----------+-----------+
+                                         | patient_raw_data_    |
+                                         | change_task          |
+                                         +----------+-----------+
+                                                    |
+                              +---------------------+---------------------+
+                              |                                           |
+                              v                                           v
+                 +------------+------------+                 +------------+------------+
+                 | 当前摘要任务消费者         |                 | 未来预警/扩展任务消费者    |
+                 | patient_struct_data_task |                 | event/snapshot/...     |
+                 +------------+------------+                 +------------+------------+
+                              |
+                              v
+                 +------------+------------+
+                 |      SummaryAgent       |
+                 | 摘要 / timeline         |
+                 +------------+------------+
+                              |
+                              v
+                 +------------+------------+
+                 |    patient_summary      |
+                 | 最新时间线摘要            |
+                 +------------+------------+
+                              |
+                              v
+                 +------------+------------+
+                 | TimelineViewService     |
+                 +------------+------------+
+                              |
+                              v
+                 +------------+------------+
+                 | REST API / Static UI    |
+                 +-------------------------+
 ```
+
+## 3.1 当前采集设计原则
+
+### 1. 原始数据与规则数据分层存储
+
+`patient_raw_data` 当前按以下原则落库：
+
+- `data_json` 只保存原始采集块，不做规则加工
+- `filter_data_json` 保存规则处理后的可读事实块
+- `struct_data_json` 保存 LLM 结构化结果
+- `event_json` 预留给后续事件抽取结果
+
+处理顺序为：
+
+1. 查询业务源表
+2. 按天聚合为 `DailyPatientRawData`
+3. 原样写入 `data_json`
+4. 规则处理写入 `filter_data_json`
+5. 后续再由摘要或预警链路消费
+
+### 2. 原始采集只做事实更新，不做下游业务耦合
+
+当前采集阶段的职责被限制为：
+
+- 识别新患者 / 增量患者
+- 识别本轮 `changedTypes`
+- 查询需要的业务源表
+- 更新 `patient_raw_data`
+- 更新 `last_time`
+- 写入 `patient_raw_data_change_task`
+
+当前不在这一阶段直接决定摘要、预警、审核等后续业务执行。
+
+### 3. 现有患者按变更类型查询
+
+对于已有患者：
+
+- 先基于各业务表 `last_time` 识别 `changedTypes`
+- 再按 `changedTypes` 定向查询对应业务表
+- 能按主键命中时做增量 merge
+- 只有旧 `data_json` 缺少对应原始块时，才回退到单日全量重建
 
 并行存在的第二条链路：
 
 ```text
 PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_infor_zhq
 ```
+
+下一阶段将新增第三条核心链路：
+
+```text
+patient_raw_data / patient_summary
+    -> 增量差异识别
+    -> EvidenceBlock 切分
+    -> LlmEventExtractor
+    -> EventNormalizer
+    -> infection_event_pool
+    -> infection_case_snapshot
+    -> 院感法官节点
+    -> infection_alert_result
+```
+
+## 3.2 架构总目标
+
+系统目标不是单次全量分析器，而是：
+
+> 以住院病例为单位、基于每日增量数据持续更新的院感监测系统
+
+其核心形态是：
+
+> 增量接入 + 事件驱动 + 状态快照 + LLM 判决 + 结果版本化
+
+## 3.3 总体设计原则
+
+### 1. 增量模式，而不是每日全量重跑
+
+系统按日定时拉取增量数据，但内部分析不能退化成“每天把整个病例历史重新分析一遍”。
+
+正确处理方式是：
+
+- 接收新的病例快照
+- 和历史快照比较
+- 识别新增 / 更正 / 撤销
+- 将变化转成标准化事件
+- 基于事件更新病例状态
+- 只对受影响病例做局部重算
+
+### 2. 工作流骨架保留，但复杂判断交给 LLM
+
+整体架构仍然是工作流主架构：
+
+- 工作流负责调度
+- 数据层负责证据组织
+- LLM 负责复杂医学判断
+- 规则只负责约束、校验、兜底
+
+### 3. 事件池是院感分析中枢
+
+后续院感预警分析不应直接围绕原始 JSON 反复重做判断，而应围绕标准化事件池展开。
+
+中枢对象是：
+
+- `infection_event_pool`
+
+### 4. Summary 只做上下文，不做最终事实源
+
+在后续院感预警分析中：
+
+- `filter_data_json` 是主事实源
+- `struct_data_json` 是中间层语义增强源
+- `summary_json` 是时间轴摘要上下文源
+
+最终分析仍以“原始事实 + 标准化事件”为主。
 
 ## 4. 模块划分
 
@@ -89,7 +235,9 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 模块：
 
 - `InfectionMonitorScheduler`
-  定时扫描患者并触发数据采集
+  定时扫描患者并写入 `patient_raw_data_collect_task`
+- `InfectionMonitorScheduler.processPendingCollectTasks`
+  定时消费原始采集任务，执行详情查询与落库
 - `StructDataFormatScheduler`
   定时消费待结构化病程记录
 - `InfectiousSyndromeSurveillanceTask`
@@ -100,6 +248,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 设计说明：
 
 - 调度层只负责触发，不做复杂数据拼装。
+- 原始采集已拆分为“扫描入队”和“执行采集”两个独立任务。
 - 当前症候群监测任务默认未启用自动调度。
 
 ### 4.2 编排层 `ai/orchestrator`
@@ -110,14 +259,16 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 职责：
 
-- 组织原始病程采集与结构化摘要主流程
-- 协调 `PatientService`、`FormatAgent`、`SummaryAgent`
+- 组织原始采集任务消费与结构化摘要任务消费
+- 协调 `PatientService`、`SummaryAgent`
 - 负责待处理批次的并发消费
 
 设计说明：
 
 - 该类是院感主链路的统一业务编排入口。
+- 原始采集阶段的过滤规则构建已下沉到 `PatientService`，不再在编排层兜底构建 `filter_data_json`。
 - 当前类中已经注入 `WarningAgent`、`AuditAgent`、`StringRedisTemplate`，但主流程尚未完整使用这些能力。
+- 下一阶段可继续作为上游编排入口之一，但不应直接承担全部事件池与法官节点逻辑。
 
 ### 4.3 AI 层 `ai/agent`
 
@@ -132,7 +283,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 - `AbstractAgent`
   提供统一 `ChatModel` 调用能力
 - `FormatAgent`
-  负责病程文本过滤、规整
+  当前主要负责面向 LLM 的格式化与规整，原始采集阶段的规则过滤已下沉到 `PatientService`
 - `SummaryAgent`
   负责每日病程摘要抽取与时间线追加
 - `SurveillanceAgent`
@@ -143,11 +294,18 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 - `WarningAgent`
 - `AuditAgent`
 
+后续规划模块：
+
+- `LlmEventExtractor`
+- 院感法官节点
+- 最终审核 Agent
+
 设计原则：
 
 - Agent 不直接持有过多业务状态
 - 输入输出尽量 JSON 化、结构化
 - 复杂业务协调尽量放在编排层或 Service 层
+- 最终审核 Agent 当前只保留在规划层
 
 ### 4.4 业务服务层 `service`
 
@@ -160,7 +318,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 核心服务：
 
 - `PatientServiceImpl`
-  原始数据采集、按天聚合、落库、摘要更新
+  原始数据采集、按天聚合、`data_json/filter_data_json` 落库、增量 merge、变更任务写入
 - `PatientSummaryTimelineViewServiceImpl`
   摘要转时间线展示数据
 - `AiProcessLogServiceImpl`
@@ -191,6 +349,13 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 - `PatientRawDataMapper.xml` 包含最重的查询逻辑，负责从业务库抽取患者多维住院数据。
 - 当前项目优先依赖 MyBatis-Plus 与 XML 映射，不应在 Service 中直接堆 JDBC 逻辑。
 
+后续建议新增的数据对象：
+
+- `infection_event_pool`
+- `infection_llm_node_run`
+- `infection_case_snapshot`
+- `infection_alert_result`
+
 ### 4.6 展示转换层
 
 核心类：
@@ -216,31 +381,35 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 触发入口：
 
-- `InfectionMonitorScheduler.scanPatients()`
+- `InfectionMonitorScheduler.enqueuePendingPatients()`
+- `InfectionMonitorScheduler.processPendingCollectTasks()`
 
 执行过程：
 
 1. 查询待处理患者 `reqno`
-2. 遍历患者调用 `InfectionPipeline.processPatient(reqno)`
-3. 进入 `LoadDataTool.loadPatientRawData(reqno)`
-4. `PatientServiceImpl.collectAndSaveRawData(reqno)` 从 SQL Server 聚合查询：
-   - 患者信息
-   - 诊断
-   - 体征
-   - 医嘱
-   - 病程记录
-   - 检验
-   - 用药
-   - 影像
-   - 转科
-   - 手术
-   - 微生物与药敏
-5. 将结果按天分组并写入 `patient_raw_data`
+2. 将 `reqno` 写入 `patient_raw_data_collect_task`
+3. 采集执行任务 claim 原始采集任务
+4. `PatientServiceImpl.collectAndSaveRawDataResult(reqno)` 识别：
+   - 是否为新患者
+   - 上次成功采集时间
+   - 本轮 `changedTypes`
+5. 按查询类型读取业务源表：
+   - 新患者：`PatientCourseDataType.fullSnapshot()`
+   - 已有患者：按 `changedTypes` 定向查询
+6. 将结果按天分组
+7. 原始块写入 `patient_raw_data.data_json`
+8. 规则处理结果写入 `patient_raw_data.filter_data_json`
+9. 更新 `patient_raw_data.last_time`
+10. 将变更的 `patient_raw_data.id + last_time` 写入 `patient_raw_data_change_task`
 
 架构特征：
 
 - 采用“源库读取 + 本地中间表缓存”的模式
-- 为后续 LLM 处理提供稳定输入
+- 原始采集与下游摘要已解耦
+- 为后续 LLM、预警和扩展任务提供统一事实输入
+- 数据输入模型属于每日定时增量拉取
+- 新患者限制为最近 30 天入院
+- 增量患者候选必须已经存在于 `patient_raw_data`
 
 ### 5.2 结构化摘要链路
 
@@ -252,7 +421,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 1. 查询待结构化患者列表
 2. 读取 `patient_raw_data` 中 `struct_data_json` 为空的记录
-3. 使用 `FormatAgent.filterIllnessCourse()` 去重和清洗病程
+3. 直接读取已生成的 `filter_data_json`
 4. 使用 `SummaryAgent.extractDailyIllness()` 生成：
    - `structDataJson`
    - `updatedSummaryJson`
@@ -262,6 +431,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 架构特征：
 
 - 摘要采用增量构建，而不是每次整份重算
+- `pat_illnessCourse` 的过滤规则已经前移到采集落库阶段
 - 时间线在落库前会按时间排序
 
 ### 5.3 时间线展示链路
@@ -307,6 +477,74 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 - 这条链路和主时间线链路基本并行
 - 当前更接近“独立分析任务”，尚未完全并入统一院感编排
+
+### 5.5 下一阶段院感预警分析链路
+
+这是下一阶段的主开发任务。
+
+目标主流程：
+
+```text
+每日定时拉取 patient_raw_data / patient_summary
+    -> 按 reqno + data_date 读取病例快照
+    -> 与历史快照做差异识别
+    -> 切分 4 类 EvidenceBlock
+    -> 调用统一 LLM 事件抽取器
+    -> EventNormalizer 规范化
+    -> 写入 infection_event_pool
+    -> 更新 infection_case_snapshot
+    -> 判断是否需要触发局部重算
+    -> 构建硬事实证据包
+    -> 调用院感法官节点
+    -> 产出结果版本
+    -> 更新 infection_alert_result / infection_case_snapshot
+```
+
+#### 4 类 EvidenceBlock
+
+- `StructuredFactBlock`
+  来自 `filter_data_json` 的结构化事实块
+- `ClinicalTextBlock`
+  来自病程、查房、会诊、申请等临床文本块
+- `MidSemanticBlock`
+  来自 `struct_data_json` 的中间层语义块
+- `TimelineContextBlock`
+  来自 `summary_json` 的时间轴背景块，仅供 LLM 参考
+
+#### EventNormalizer 作用
+
+统一事件抽取结果入库前必须经过规范化，至少完成：
+
+- 时间标准化
+- 枚举校验
+- 默认值填充
+- `event_key` 生成
+- 幂等去重
+- 非法输出兜底
+
+#### LLM 运行记录
+
+后续所有院感预警相关模型调用都应记录到：
+
+- `infection_llm_node_run`
+
+#### 触发局部重算原则
+
+建议触发完整分析的关键事件：
+
+- 新发热
+- WBC / CRP / PCT 异常
+- 培养送检 / 阳性
+- 抗菌药新开或升级
+- 新手术 / 导尿 / 置管 / 插管
+- 文本出现“感染 / 排除感染 / 污染 / 定植”
+- 影像提示感染灶
+
+仅更新事件池但不触发完整分析的情况：
+
+- 与感染无关的重复数据
+- 非关键字段修订
+- 纯背景摘要变化
 
 ## 6. 数据模型与存储角色
 
@@ -383,6 +621,32 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 - 主链路中未形成强依赖
 
+### 6.7 下一阶段新增核心表
+
+#### `infection_event_pool`
+
+角色：
+
+- 院感分析中枢事件池
+
+#### `infection_llm_node_run`
+
+角色：
+
+- 院感预警相关 LLM 节点运行记录
+
+#### `infection_case_snapshot`
+
+角色：
+
+- 每个病例当前最新的院感状态快照
+
+#### `infection_alert_result`
+
+角色：
+
+- 每次院感预警分析后的结果版本记录
+
 ## 7. 配置架构
 
 ### 7.1 主配置 `application.yaml`
@@ -427,6 +691,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 - AI 结构化摘要
 - 时间线视图转换
 - 症候群监测单链路逻辑
+- 传染病症候群监测 AI 辅助分析
 
 ### 8.2 预留能力
 
@@ -435,6 +700,15 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 - SummaryWarning 调度
 - Redis 记忆增强
 - ReactAgent 深度接入
+- 最终审核 Agent
+
+### 8.3 当前进入开发的下一阶段能力
+
+- 增量差异识别
+- 标准化事件入池
+- 院感法官基础节点
+- 病例状态快照
+- 结果版本化
 
 ## 9. 当前架构问题
 
@@ -477,23 +751,27 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 
 ### 10.1 短期
 
-- 清理未使用依赖
-- 梳理主链路与预留模块边界
-- 增加时间线转换测试
-- 增加 `SummaryAgent` 输出结构校验测试
+- 标准化事件入池
+- 建立 `infection_event_pool`
+- 建立 `infection_llm_node_run`
+- 梳理增量差异识别层
+- 明确院感法官节点输入输出契约
 
 ### 10.2 中期
 
-- 将症候群监测纳入统一任务调度管理
-- 将告警能力从占位模块推进为闭环功能
-- 补齐 Redis 在主链路中的明确职责
+- 建立 `infection_case_snapshot`
+- 事件驱动局部重算
+- 院感法官基础节点
+- 建立 `infection_alert_result`
+- 页面联动与解释输出
 
 ### 10.3 长期
 
 - 将 Prompt、规则、校验进一步标准化
+- 引入人工复核闭环
+- 规划并设计最终审核 Agent
 - 形成 AI 处理链路的可观测性和回放能力
-- 视复杂度决定是否拆分独立分析服务
 
 ## 11. 架构结论
 
-`yg_ai` 当前是一个以“住院病程采集与 AI 时间线摘要”为主链路的单体后端系统，已经具备较清晰的分层结构和可运行流程；同时保留了告警、审计、症候群监测、Redis 记忆等扩展方向，但其中部分能力仍处于预留或过渡阶段。
+`yg_ai` 当前是一个以“住院病程增量采集与 AI 时间线摘要”为已完成主链路、以“院感预警分析”为下一阶段主任务的单体后端系统；系统后续将围绕标准化事件池、病例状态快照、LLM 法官节点和结果版本化展开演进，而最终审核 Agent 当前仅保留在规划层。

@@ -1,27 +1,42 @@
 package com.zzhy.yg_ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.agent.AgentUtils;
+import com.zzhy.yg_ai.common.FilterTextUtils;
+import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
+import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
+import com.zzhy.yg_ai.domain.enums.PatientCourseDataType;
+import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
+import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
 import com.zzhy.yg_ai.mapper.PatientSummaryMapper;
+import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -35,10 +50,33 @@ public class PatientServiceImpl implements PatientService {
     private final PatientRawDataMapper patientRawDataMapper;
     private final PatientSummaryMapper patientSummaryMapper;
     private final ObjectMapper objectMapper;
+    private final FilterTextUtils filterTextUtils;
+    private final InfectionMonitorProperties infectionMonitorProperties;
+    private final InfectionDailyJobLogService infectionDailyJobLogService;
+    private final PatientRawDataChangeTaskService patientRawDataChangeTaskService;
 
     @Override
     public List<String> listActiveReqnos() {
-        return patientRawDataMapper.selectActiveReqnos();
+        List<String> debugReqnos = normalizeReqnos(infectionMonitorProperties.getDebugReqnos());
+        if (infectionMonitorProperties.isDebugMode()) {
+            if (debugReqnos.isEmpty()) {
+                log.warn("院感扫描当前处于调试模式，但未配置 debugReqnos，跳过本轮扫描");
+                return Collections.emptyList();
+            }
+            log.info("院感扫描使用调试名单，patients={}", debugReqnos.size());
+            return debugReqnos;
+        }
+
+        int recentAdmissionDays = infectionMonitorProperties.getRecentAdmissionDays() <= 0
+                ? 30 : infectionMonitorProperties.getRecentAdmissionDays();
+        int scanLimit = infectionMonitorProperties.getScanLimit() <= 0
+                ? 200 : infectionMonitorProperties.getScanLimit();
+        LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
+        List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
+        if (!debugReqnos.isEmpty()) {
+            log.info("已配置 debugReqnos，但 debugMode=false，当前仍按正式扫描策略执行");
+        }
+        return normalizeReqnos(activeReqnos);
     }
 
     @Override
@@ -54,86 +92,129 @@ public class PatientServiceImpl implements PatientService {
 
     @Override
     public String collectAndSaveRawData(String reqno) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("reqno", reqno);
-
-        if (!StringUtils.hasText(reqno)) {
-            result.put("status", "failed");
-            result.put("message", "reqno不能为空");
-            return writeJson(result);
-        }
-
-        LocalDateTime sourceLastTime = patientRawDataMapper.selectSourceLastTime();
-        LocalDateTime storedLastTime = patientRawDataMapper.selectStoredLastTimeByReqno(reqno);
-        if (storedLastTime != null && (sourceLastTime.isBefore(storedLastTime) || sourceLastTime.isEqual(storedLastTime))) {
-            result.put("status", "no_data");
-            result.put("message", "患者信息已是最新");
-            result.put("storedLastTime", storedLastTime);
-            result.put("sourceLastTime", sourceLastTime);
-            return writeJson(result);
-        }
-
-        PatientCourseData courseData = buildCourseData(reqno, storedLastTime, sourceLastTime);
-        if (courseData.getPatInfor() == null) {
-            result.put("status", "no_data");
-            result.put("message", "未查询到患者信息");
-            result.put("storedLastTime", storedLastTime);
-            result.put("sourceLastTime", sourceLastTime);
-            return writeJson(result);
-        }
-
-        Map<LocalDate, DailyPatientRawData> dailyDataMap = groupByDay(courseData);
-        if (dailyDataMap.isEmpty()) {
-            LocalDate fallbackDate = courseData.getPatInfor().getInhosday() == null
-                    ? LocalDate.now()
-                    : courseData.getPatInfor().getInhosday().toLocalDate();
-            DailyPatientRawData fallbackData = new DailyPatientRawData();
-            fallbackData.setReqno(reqno);
-            fallbackData.setDataDate(fallbackDate);
-            fallbackData.setPatInfor(courseData.getPatInfor());
-            fallbackData.setOtherInfo(courseData.getOtherInfo());
-            dailyDataMap.put(fallbackDate, fallbackData);
-        }
-
-        int savedCount = 0;
-        LocalDateTime now = LocalDateTime.now();
-        for (DailyPatientRawData dailyData : dailyDataMap.values()) {
-            PatientRawDataEntity rawDataEntity = new PatientRawDataEntity();
-            rawDataEntity.setReqno(reqno);
-            rawDataEntity.setDataDate(dailyData.getDataDate());
-            rawDataEntity.setDataJson(buildSemanticBlockJson(dailyData));
-            rawDataEntity.setClinicalNotes(String.join(" ", buildClinicalNotes(dailyData.getPatIllnessCourseList())));
-            rawDataEntity.setStructDataJson(null);
-            rawDataEntity.setCreateTime(now);
-            rawDataEntity.setLastTime(sourceLastTime);
-            
-            patientRawDataMapper.insert(rawDataEntity);
-            savedCount++;
-        }
-
-        result.put("status", "success");
-        result.put("savedDays", savedCount);
-        result.put("storedLastTime", storedLastTime);
-        result.put("sourceLastTime", sourceLastTime);
-        return writeJson(result);
+        return writeJson(collectAndSaveRawDataResult(reqno));
     }
 
     @Override
-    public List<PatientRawDataEntity> listPendingStructRawData(String reqno) {
+    public RawDataCollectResult collectAndSaveRawDataResult(String reqno) {
+        RawDataCollectResult result = new RawDataCollectResult();
+        result.setReqno(reqno);
+        if (!StringUtils.hasText(reqno)) {
+            result.setStatus("failed");
+            result.setMessage("reqno不能为空");
+            return result;
+        }
+
+        boolean isNewPatient = !hasPatientRawData(reqno);
+        LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
+        EnumSet<PatientCourseDataType> changedTypes = detectChangedDataTypes(reqno, latestLoadSuccessTime, isNewPatient);
+        result.setStoredLastTime(null);
+        result.setSourceLastTime(latestLoadSuccessTime);
+        result.setChangeTypes(PatientCourseDataType.toCsv(changedTypes));
+
+        int savedCount = 0;
+        List<PatientRawDataChangeTaskEntity> changedTasks = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        if (!isNewPatient) {
+            if (latestLoadSuccessTime == null) {
+                result.setStatus("no_data");
+                result.setMessage("缺少上次成功采集时间，跳过本轮增量更新");
+                return result;
+            }
+            if (changedTypes.isEmpty()) {
+                result.setStatus("no_data");
+                result.setMessage("当前无增量更新");
+                return result;
+            }
+        }
+
+        EnumSet<PatientCourseDataType> requestedTypes = isNewPatient
+                ? PatientCourseDataType.fullSnapshot()
+                : EnumSet.copyOf(changedTypes);
+        PatientCourseData queriedCourseData = buildCourseData(
+                reqno,
+                isNewPatient ? null : latestLoadSuccessTime,
+                latestLoadSuccessTime,
+                requestedTypes
+        );
+        if (queriedCourseData.getPatInfor() == null) {
+            result.setStatus("no_data");
+            result.setMessage("未查询到患者信息");
+            return result;
+        }
+
+        String firstCourse = resolveFirstIllnessCourse(reqno, queriedCourseData.getPatIllnessCourseList());
+        Map<LocalDate, DailyPatientRawData> queriedDayDataMap = groupByDay(queriedCourseData);
+
+        if (isNewPatient) {
+            if (queriedDayDataMap.isEmpty()) {
+                LocalDate fallbackDate = queriedCourseData.getPatInfor().getInhosday() == null
+                        ? LocalDate.now()
+                        : queriedCourseData.getPatInfor().getInhosday().toLocalDate();
+                DailyPatientRawData fallbackData = new DailyPatientRawData();
+                fallbackData.setReqno(reqno);
+                fallbackData.setDataDate(fallbackDate);
+                fallbackData.setPatInfor(queriedCourseData.getPatInfor());
+                fallbackData.setOtherInfo(queriedCourseData.getOtherInfo());
+                queriedDayDataMap.put(fallbackDate, fallbackData);
+            }
+            for (DailyPatientRawData dailyData : queriedDayDataMap.values()) {
+                changedTasks.add(buildChangeTask(insertPatientRawData(reqno, dailyData, now, firstCourse)));
+                savedCount++;
+            }
+        } else {
+            if (queriedDayDataMap.isEmpty()) {
+                result.setStatus("no_data");
+                result.setMessage("当前无增量更新");
+                return result;
+            }
+
+            PatientCourseData fullCourseData = null;
+            Map<LocalDate, DailyPatientRawData> fullDailyDataMap = new TreeMap<>();
+            for (Map.Entry<LocalDate, DailyPatientRawData> entry : queriedDayDataMap.entrySet()) {
+                LocalDate changedDay = entry.getKey();
+                DailyPatientRawData changedDailyData = entry.getValue();
+                PatientRawDataEntity existing = findPatientRawDataByReqnoAndDate(reqno, changedDay);
+                if (existing == null || !hasRequiredRawSections(existing.getDataJson(), changedTypes)) {
+                    if (fullCourseData == null) {
+                        fullCourseData = buildCourseData(reqno, null, latestLoadSuccessTime, PatientCourseDataType.fullSnapshot());
+                        fullDailyDataMap.putAll(groupByDay(fullCourseData));
+                    }
+                    DailyPatientRawData fullDailyData = fullDailyDataMap.get(changedDay);
+                    if (fullDailyData == null) {
+                        continue;
+                    }
+                    changedTasks.add(buildChangeTask(upsertPatientRawData(reqno, fullDailyData, now, firstCourse)));
+                } else {
+                    changedTasks.add(buildChangeTask(mergeChangedRawData(existing, changedDailyData, changedTypes, now, firstCourse)));
+                }
+                savedCount++;
+            }
+        }
+
+        result.setStatus("success");
+        result.setSavedDays(savedCount);
+        result.setMessage("患者语义块采集完成");
+        if (savedCount > 0) {
+            patientRawDataChangeTaskService.appendChanges(changedTasks);
+        }
+        return result;
+    }
+
+    @Override
+    public List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate) {
         if (!StringUtils.hasText(reqno)) {
             return Collections.emptyList();
         }
-        return patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
+        QueryWrapper<PatientRawDataEntity> queryWrapper = new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .isNull("struct_data_json")
                 .isNotNull("data_json")
-                .orderByAsc("id"));
-    }
-
-    @Override
-    public List<String> listPendingStructRawData(int limit) {
-        int size = limit <= 0 ? 20 : limit;
-        return patientRawDataMapper.selectPendingStructReqnos(size);
+                .orderByAsc("data_date", "id");
+        if (replayFromDate != null) {
+            queryWrapper.ge("data_date", replayFromDate);
+        }
+        return patientRawDataMapper.selectList(queryWrapper);
     }
 
     @Override
@@ -223,42 +304,77 @@ public class PatientServiceImpl implements PatientService {
         return result;
     }
 
-    private PatientCourseData buildCourseData(String reqno, LocalDateTime lastTime, LocalDateTime sourceLastTime) {
+    private PatientCourseData buildCourseData(String reqno,
+                                              LocalDateTime lastTime,
+                                              LocalDateTime sourceLastTime,
+                                              EnumSet<PatientCourseDataType> requestedTypes) {
         PatientCourseData data = new PatientCourseData();
         data.setPatInfor(patientRawDataMapper.selectPatInfor(reqno));
-        data.setPatDiagInforList(patientRawDataMapper.selectDiagByReqno(reqno, lastTime));
-        data.setPatBodySurfaceList(patientRawDataMapper.selectBodySurfaceByReqno(reqno, lastTime));
-        data.setLongDoctorAdviceList(patientRawDataMapper.selectLongDoctorAdviceByReqno(reqno, lastTime));
-        data.setTemporaryDoctorAdviceList(patientRawDataMapper.selectTemporaryDoctorAdviceByReqno(reqno, lastTime));
-        data.setSgDoctorAdviceList(patientRawDataMapper.selectSgDoctorAdviceByReqno(reqno, lastTime));
-        data.setPatIllnessCourseList(patientRawDataMapper.selectIllnessCourseByReqno(reqno, lastTime));
+        EnumSet<PatientCourseDataType> effectiveTypes = requestedTypes == null || requestedTypes.isEmpty()
+                ? EnumSet.noneOf(PatientCourseDataType.class)
+                : EnumSet.copyOf(requestedTypes);
+        boolean fullSnapshot = effectiveTypes.contains(PatientCourseDataType.FULL_PATIENT);
 
-        List<PatientCourseData.PatTestSam> testSamList = patientRawDataMapper.selectTestSamByReqno(reqno, lastTime);
-        for (PatientCourseData.PatTestSam testSam : nonNullList(testSamList)) {
-            testSam.setResultList(patientRawDataMapper.selectTestResultBySamreqno(reqno, testSam.getSamreqno(), lastTime));
+        data.setPatDiagInforList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.DIAGNOSIS)
+                ? patientRawDataMapper.selectDiagByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setPatBodySurfaceList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.BODY_SURFACE)
+                ? patientRawDataMapper.selectBodySurfaceByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setLongDoctorAdviceList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.DOCTOR_ADVICE)
+                ? patientRawDataMapper.selectLongDoctorAdviceByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setTemporaryDoctorAdviceList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.DOCTOR_ADVICE)
+                ? patientRawDataMapper.selectTemporaryDoctorAdviceByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setSgDoctorAdviceList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.DOCTOR_ADVICE)
+                ? patientRawDataMapper.selectSgDoctorAdviceByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setPatIllnessCourseList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.ILLNESS_COURSE)
+                ? patientRawDataMapper.selectIllnessCourseByReqno(reqno, lastTime)
+                : new ArrayList<>());
+
+        List<PatientCourseData.PatTestSam> testSamList = new ArrayList<>();
+        if (shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.LAB_TEST)) {
+            testSamList = patientRawDataMapper.selectTestSamByReqno(reqno, lastTime);
+            for (PatientCourseData.PatTestSam testSam : nonNullList(testSamList)) {
+                testSam.setResultList(patientRawDataMapper.selectTestResultBySamreqno(reqno, testSam.getSamreqno(), lastTime));
+            }
         }
         data.setPatTestSamList(testSamList);
 
-        data.setPatUseMedicineList(patientRawDataMapper.selectUseMedicineByReqno(reqno, lastTime));
-        data.setPatVideoResultList(patientRawDataMapper.selectVideoResultByReqno(reqno, lastTime));
-        data.setPatTransferList(patientRawDataMapper.selectTransferByReqno(reqno, lastTime));
+        data.setPatUseMedicineList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.USE_MEDICINE)
+                ? patientRawDataMapper.selectUseMedicineByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setPatVideoResultList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.VIDEO_RESULT)
+                ? patientRawDataMapper.selectVideoResultByReqno(reqno, lastTime)
+                : new ArrayList<>());
+        data.setPatTransferList(shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.TRANSFER)
+                ? patientRawDataMapper.selectTransferByReqno(reqno, lastTime)
+                : new ArrayList<>());
 
-        List<PatientCourseData.PatOpsCutInfor> opsList = patientRawDataMapper.selectOpsByReqno(reqno, lastTime);
-        for (PatientCourseData.PatOpsCutInfor ops : nonNullList(opsList)) {
-            ops.setPreWardMedicineList(patientRawDataMapper.selectPreWardOpsMedicine(reqno, ops.getOpsId(), lastTime));
-            ops.setPerioperativeMedicineList(patientRawDataMapper.selectPerioperativeOpsMedicine(reqno, ops.getOpsId(), lastTime));
+        List<PatientCourseData.PatOpsCutInfor> opsList = new ArrayList<>();
+        if (shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.OPERATION)) {
+            opsList = patientRawDataMapper.selectOpsByReqno(reqno, lastTime);
+            for (PatientCourseData.PatOpsCutInfor ops : nonNullList(opsList)) {
+                ops.setPreWardMedicineList(patientRawDataMapper.selectPreWardOpsMedicine(reqno, ops.getOpsId(), lastTime));
+                ops.setPerioperativeMedicineList(patientRawDataMapper.selectPerioperativeOpsMedicine(reqno, ops.getOpsId(), lastTime));
+            }
         }
         data.setPatOpsCutInforList(opsList);
 
-        List<PatientCourseData.PatTest> patTestList = patientRawDataMapper.selectPatTestByReqno(reqno, lastTime);
-        for (PatientCourseData.PatTest patTest : nonNullList(patTestList)) {
-            List<PatientCourseData.MicrobeInfo> microbeList =
-                    patientRawDataMapper.selectMicrobeBySamreqno(reqno, patTest.getSamreqno(), lastTime);
-            for (PatientCourseData.MicrobeInfo microbeInfo : nonNullList(microbeList)) {
-                microbeInfo.setAntiDrugList(
-                        patientRawDataMapper.selectAntiDrugByMicrobe(reqno, microbeInfo.getSamreqno(), microbeInfo.getDataCode(), lastTime));
+        List<PatientCourseData.PatTest> patTestList = new ArrayList<>();
+        if (shouldLoad(fullSnapshot, effectiveTypes, PatientCourseDataType.MICROBE)) {
+            patTestList = patientRawDataMapper.selectPatTestByReqno(reqno, lastTime);
+            for (PatientCourseData.PatTest patTest : nonNullList(patTestList)) {
+                List<PatientCourseData.MicrobeInfo> microbeList =
+                        patientRawDataMapper.selectMicrobeBySamreqno(reqno, patTest.getSamreqno(), lastTime);
+                for (PatientCourseData.MicrobeInfo microbeInfo : nonNullList(microbeList)) {
+                    microbeInfo.setAntiDrugList(
+                            patientRawDataMapper.selectAntiDrugByMicrobe(reqno, microbeInfo.getSamreqno(), microbeInfo.getDataCode(), lastTime));
+                }
+                patTest.setMicrobeList(microbeList);
             }
-            patTest.setMicrobeList(microbeList);
         }
         data.setPatTestList(patTestList);
 
@@ -268,6 +384,560 @@ public class PatientServiceImpl implements PatientService {
         otherInfo.setDataStartTime(lastTime);
         data.setOtherInfo(otherInfo);
         return data;
+    }
+
+    private boolean shouldLoad(boolean fullSnapshot,
+                               EnumSet<PatientCourseDataType> requestedTypes,
+                               PatientCourseDataType targetType) {
+        return fullSnapshot || requestedTypes.contains(targetType);
+    }
+
+    private boolean hasPatientRawData(String reqno) {
+        return patientRawDataMapper.selectCount(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno)) > 0;
+    }
+
+    private PatientRawDataEntity insertPatientRawData(String reqno,
+                                                      DailyPatientRawData dailyData,
+                                                      LocalDateTime now,
+                                                      String firstCourse) {
+        PatientRawDataEntity rawDataEntity = new PatientRawDataEntity();
+        rawDataEntity.setReqno(reqno);
+        rawDataEntity.setDataDate(dailyData.getDataDate());
+        rawDataEntity.setDataJson(buildSemanticBlockJson(dailyData));
+        rawDataEntity.setFilterDataJson(buildFilterDataJson(dailyData, firstCourse));
+        rawDataEntity.setClinicalNotes(String.join(" ", buildClinicalNotes(dailyData.getPatIllnessCourseList())));
+        rawDataEntity.setStructDataJson(null);
+        rawDataEntity.setEventJson(null);
+        rawDataEntity.setCreateTime(now);
+        rawDataEntity.setLastTime(now);
+        patientRawDataMapper.insert(rawDataEntity);
+        return rawDataEntity;
+    }
+
+    private PatientRawDataEntity upsertPatientRawData(String reqno,
+                                                      DailyPatientRawData dailyData,
+                                                      LocalDateTime now,
+                                                      String firstCourse) {
+        PatientRawDataEntity existing = patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno)
+                .eq("data_date", dailyData.getDataDate())
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+        if (existing == null) {
+            return insertPatientRawData(reqno, dailyData, now, firstCourse);
+        }
+        PatientRawDataEntity update = new PatientRawDataEntity();
+        update.setId(existing.getId());
+        update.setDataJson(buildSemanticBlockJson(dailyData));
+        update.setFilterDataJson(buildFilterDataJson(dailyData, firstCourse));
+        update.setClinicalNotes(String.join(" ", buildClinicalNotes(dailyData.getPatIllnessCourseList())));
+        update.setLastTime(now);
+        patientRawDataMapper.updateById(update);
+        existing.setLastTime(now);
+        return existing;
+    }
+
+    private PatientRawDataChangeTaskEntity buildChangeTask(PatientRawDataEntity rawDataEntity) {
+        if (rawDataEntity == null || rawDataEntity.getId() == null || !StringUtils.hasText(rawDataEntity.getReqno())
+                || rawDataEntity.getLastTime() == null) {
+            return null;
+        }
+        PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
+        task.setPatientRawDataId(rawDataEntity.getId());
+        task.setReqno(rawDataEntity.getReqno());
+        task.setRawDataLastTime(rawDataEntity.getLastTime());
+        task.setCreateTime(LocalDateTime.now());
+        return task;
+    }
+
+    private EnumSet<PatientCourseDataType> detectChangedDataTypes(String reqno,
+                                                                  LocalDateTime latestLoadSuccessTime,
+                                                                  boolean isNewPatient) {
+        if (isNewPatient || latestLoadSuccessTime == null) {
+            return PatientCourseDataType.fullSnapshot();
+        }
+        return PatientCourseDataType.fromNames(
+                patientRawDataMapper.selectChangedDataTypes(reqno, latestLoadSuccessTime)
+        );
+    }
+
+    private PatientRawDataEntity findPatientRawDataByReqnoAndDate(String reqno, LocalDate dataDate) {
+        return patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno)
+                .eq("data_date", dataDate)
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+    }
+
+    private boolean hasRequiredRawSections(String dataJson, EnumSet<PatientCourseDataType> changedTypes) {
+        if (!StringUtils.hasText(dataJson) || changedTypes == null || changedTypes.isEmpty()) {
+            return false;
+        }
+        JsonNode root = AgentUtils.parseToNode(dataJson);
+        if (root == null || !root.isObject()) {
+            return false;
+        }
+        for (PatientCourseDataType type : changedTypes) {
+            if (type == PatientCourseDataType.FULL_PATIENT) {
+                return false;
+            }
+            if (!hasTypeRawSection(root, type)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean hasTypeRawSection(JsonNode root, PatientCourseDataType type) {
+        return switch (type) {
+            case DIAGNOSIS -> root.has("pat_diagInfor");
+            case BODY_SURFACE -> root.has("pat_bodySurface");
+            case DOCTOR_ADVICE -> root.has("pat_doctorAdvice_long")
+                    && root.has("pat_doctorAdvice_temporary")
+                    && root.has("pat_doctorAdvice_sg");
+            case ILLNESS_COURSE -> root.has("pat_illnessCourse");
+            case LAB_TEST -> root.has("pat_testSam");
+            case USE_MEDICINE -> root.has("pat_useMedicine");
+            case VIDEO_RESULT -> root.has("pat_videoResult");
+            case TRANSFER -> root.has("pat_transfer");
+            case OPERATION -> root.has("pat_opsCutInfor");
+            case MICROBE -> root.has("pat_test");
+            case FULL_PATIENT -> false;
+        };
+    }
+
+    private PatientRawDataEntity mergeChangedRawData(PatientRawDataEntity existing,
+                                                     DailyPatientRawData changedDailyData,
+                                                     EnumSet<PatientCourseDataType> changedTypes,
+                                                     LocalDateTime now,
+                                                     String firstCourse) {
+        try {
+            ObjectNode root = parseObjectNode(existing.getDataJson());
+            root.put("reqno", existing.getReqno());
+            if (existing.getDataDate() != null) {
+                root.put("dataDate", existing.getDataDate().toString());
+            }
+
+            for (PatientCourseDataType changedType : changedTypes) {
+                switch (changedType) {
+                    case DIAGNOSIS -> {
+                        List<PatientCourseData.PatDiagInfor> mergedDiag = mergeByKey(
+                                readList(root, "pat_diagInfor", new TypeReference<List<PatientCourseData.PatDiagInfor>>() {}),
+                                changedDailyData.getPatDiagInforList(),
+                                this::diagKey
+                        );
+                        root.set("pat_diagInfor", objectMapper.valueToTree(mergedDiag));
+                    }
+                    case BODY_SURFACE -> {
+                        List<PatientCourseData.PatBodySurface> mergedBodySurface = mergeByKey(
+                                readList(root, "pat_bodySurface", new TypeReference<List<PatientCourseData.PatBodySurface>>() {}),
+                                changedDailyData.getPatBodySurfaceList(),
+                                this::bodySurfaceKey
+                        );
+                        root.set("pat_bodySurface", objectMapper.valueToTree(mergedBodySurface));
+                    }
+                    case DOCTOR_ADVICE -> {
+                        List<PatientCourseData.PatDoctorAdvice> mergedLong = mergeByKey(
+                                readList(root, "pat_doctorAdvice_long", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                                changedDailyData.getLongDoctorAdviceList(),
+                                this::doctorAdviceKey
+                        );
+                        List<PatientCourseData.PatDoctorAdvice> mergedTemporary = mergeByKey(
+                                readList(root, "pat_doctorAdvice_temporary", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                                changedDailyData.getTemporaryDoctorAdviceList(),
+                                this::doctorAdviceKey
+                        );
+                        List<PatientCourseData.PatDoctorAdvice> mergedSg = mergeByKey(
+                                readList(root, "pat_doctorAdvice_sg", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                                changedDailyData.getSgDoctorAdviceList(),
+                                this::doctorAdviceKey
+                        );
+                        root.set("pat_doctorAdvice_long", objectMapper.valueToTree(mergedLong));
+                        root.set("pat_doctorAdvice_temporary", objectMapper.valueToTree(mergedTemporary));
+                        root.set("pat_doctorAdvice_sg", objectMapper.valueToTree(mergedSg));
+                    }
+                    case ILLNESS_COURSE -> {
+                        List<PatientCourseData.PatIllnessCourse> mergedCourse = mergeByKey(
+                                readList(root, "pat_illnessCourse", new TypeReference<List<PatientCourseData.PatIllnessCourse>>() {}),
+                                changedDailyData.getPatIllnessCourseList(),
+                                this::illnessCourseKey
+                        );
+                        root.set("pat_illnessCourse", objectMapper.valueToTree(mergedCourse));
+                    }
+                    case LAB_TEST -> {
+                        List<PatientCourseData.PatTestSam> mergedTestSam = mergePatTestSamList(
+                                readList(root, "pat_testSam", new TypeReference<List<PatientCourseData.PatTestSam>>() {}),
+                                changedDailyData.getPatTestSamList()
+                        );
+                        root.set("pat_testSam", objectMapper.valueToTree(mergedTestSam));
+                    }
+                    case USE_MEDICINE -> {
+                        List<PatientCourseData.PatUseMedicine> mergedUseMedicine = mergeByKey(
+                                readList(root, "pat_useMedicine", new TypeReference<List<PatientCourseData.PatUseMedicine>>() {}),
+                                changedDailyData.getPatUseMedicineList(),
+                                this::useMedicineKey
+                        );
+                        root.set("pat_useMedicine", objectMapper.valueToTree(mergedUseMedicine));
+                    }
+                    case VIDEO_RESULT -> {
+                        List<PatientCourseData.PatVideoResult> mergedVideoResult = mergeByKey(
+                                readList(root, "pat_videoResult", new TypeReference<List<PatientCourseData.PatVideoResult>>() {}),
+                                changedDailyData.getPatVideoResultList(),
+                                this::videoResultKey
+                        );
+                        root.set("pat_videoResult", objectMapper.valueToTree(mergedVideoResult));
+                    }
+                    case TRANSFER -> {
+                        List<PatientCourseData.PatTransfer> mergedTransfer = mergeByKey(
+                                readList(root, "pat_transfer", new TypeReference<List<PatientCourseData.PatTransfer>>() {}),
+                                changedDailyData.getPatTransferList(),
+                                this::transferKey
+                        );
+                        root.set("pat_transfer", objectMapper.valueToTree(mergedTransfer));
+                    }
+                    case OPERATION -> {
+                        List<PatientCourseData.PatOpsCutInfor> mergedOps = mergePatOpsCutInforList(
+                                readList(root, "pat_opsCutInfor", new TypeReference<List<PatientCourseData.PatOpsCutInfor>>() {}),
+                                changedDailyData.getPatOpsCutInforList()
+                        );
+                        root.set("pat_opsCutInfor", objectMapper.valueToTree(mergedOps));
+                    }
+                    case MICROBE -> {
+                        List<PatientCourseData.PatTest> mergedPatTest = mergePatTestList(
+                                readList(root, "pat_test", new TypeReference<List<PatientCourseData.PatTest>>() {}),
+                                changedDailyData.getPatTestList()
+                        );
+                        root.set("pat_test", objectMapper.valueToTree(mergedPatTest));
+                    }
+                    case FULL_PATIENT -> {
+                        // fallback path already handles full rebuild, no-op here
+                    }
+                }
+            }
+
+            PatientRawDataEntity update = new PatientRawDataEntity();
+            update.setId(existing.getId());
+            update.setDataJson(objectMapper.writeValueAsString(root));
+            update.setFilterDataJson(mergeFilterDataJson(existing.getFilterDataJson(), root, changedTypes, firstCourse));
+            update.setLastTime(now);
+            patientRawDataMapper.updateById(update);
+            existing.setLastTime(now);
+            return existing;
+        } catch (Exception e) {
+            log.warn("按主键合并原始数据失败，reqno={}, dataDate={}", existing.getReqno(), existing.getDataDate(), e);
+            return upsertPatientRawData(existing.getReqno(), changedDailyData, now, firstCourse);
+        }
+    }
+
+    private ObjectNode parseObjectNode(String dataJson) {
+        JsonNode node = AgentUtils.parseToNode(dataJson);
+        if (node != null && node.isObject()) {
+            return (ObjectNode) node.deepCopy();
+        }
+        return objectMapper.createObjectNode();
+    }
+
+    private <T> List<T> readList(ObjectNode root, String fieldName, TypeReference<List<T>> typeReference) {
+        if (root == null || !root.has(fieldName) || root.get(fieldName) == null || root.get(fieldName).isNull()) {
+            return new ArrayList<>();
+        }
+        try {
+            return objectMapper.convertValue(root.get(fieldName), typeReference);
+        } catch (IllegalArgumentException e) {
+            return new ArrayList<>();
+        }
+    }
+
+    private <T> List<T> mergeByKey(List<T> existingItems, List<T> changedItems, Function<T, String> keyExtractor) {
+        Map<String, T> merged = new LinkedHashMap<>();
+        int index = 0;
+        for (T existingItem : nonNullList(existingItems)) {
+            merged.put(normalizeKey(keyExtractor.apply(existingItem), "existing-" + index), existingItem);
+            index++;
+        }
+        for (T changedItem : nonNullList(changedItems)) {
+            String changedKey = normalizeKey(keyExtractor.apply(changedItem), null);
+            if (changedKey != null && merged.containsKey(changedKey)) {
+                merged.put(changedKey, changedItem);
+            } else {
+                merged.put(normalizeKey(keyExtractor.apply(changedItem), "changed-" + index), changedItem);
+            }
+            index++;
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<PatientCourseData.PatTestSam> mergePatTestSamList(List<PatientCourseData.PatTestSam> existingItems,
+                                                                   List<PatientCourseData.PatTestSam> changedItems) {
+        Map<String, PatientCourseData.PatTestSam> merged = new LinkedHashMap<>();
+        int index = 0;
+        for (PatientCourseData.PatTestSam existingItem : nonNullList(existingItems)) {
+            merged.put(normalizeKey(testSamKey(existingItem), "test-sam-existing-" + index), existingItem);
+            index++;
+        }
+        for (PatientCourseData.PatTestSam changedItem : nonNullList(changedItems)) {
+            String key = normalizeKey(testSamKey(changedItem), "test-sam-changed-" + index);
+            PatientCourseData.PatTestSam existing = merged.get(key);
+            if (existing != null) {
+                changedItem.setResultList(mergeByKey(existing.getResultList(), changedItem.getResultList(), this::testResultKey));
+            }
+            merged.put(key, changedItem);
+            index++;
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<PatientCourseData.PatOpsCutInfor> mergePatOpsCutInforList(List<PatientCourseData.PatOpsCutInfor> existingItems,
+                                                                            List<PatientCourseData.PatOpsCutInfor> changedItems) {
+        Map<String, PatientCourseData.PatOpsCutInfor> merged = new LinkedHashMap<>();
+        int index = 0;
+        for (PatientCourseData.PatOpsCutInfor existingItem : nonNullList(existingItems)) {
+            merged.put(normalizeKey(opsKey(existingItem), "ops-existing-" + index), existingItem);
+            index++;
+        }
+        for (PatientCourseData.PatOpsCutInfor changedItem : nonNullList(changedItems)) {
+            String key = normalizeKey(opsKey(changedItem), "ops-changed-" + index);
+            PatientCourseData.PatOpsCutInfor existing = merged.get(key);
+            if (existing != null) {
+                changedItem.setPreWardMedicineList(mergeByKey(existing.getPreWardMedicineList(),
+                        changedItem.getPreWardMedicineList(), this::opsMedicineKey));
+                changedItem.setPerioperativeMedicineList(mergeByKey(existing.getPerioperativeMedicineList(),
+                        changedItem.getPerioperativeMedicineList(), this::opsMedicineKey));
+            }
+            merged.put(key, changedItem);
+            index++;
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<PatientCourseData.PatTest> mergePatTestList(List<PatientCourseData.PatTest> existingItems,
+                                                             List<PatientCourseData.PatTest> changedItems) {
+        Map<String, PatientCourseData.PatTest> merged = new LinkedHashMap<>();
+        int index = 0;
+        for (PatientCourseData.PatTest existingItem : nonNullList(existingItems)) {
+            merged.put(normalizeKey(patTestKey(existingItem), "pat-test-existing-" + index), existingItem);
+            index++;
+        }
+        for (PatientCourseData.PatTest changedItem : nonNullList(changedItems)) {
+            String key = normalizeKey(patTestKey(changedItem), "pat-test-changed-" + index);
+            PatientCourseData.PatTest existing = merged.get(key);
+            if (existing != null) {
+                changedItem.setMicrobeList(mergeMicrobeList(existing.getMicrobeList(), changedItem.getMicrobeList()));
+            }
+            merged.put(key, changedItem);
+            index++;
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private List<PatientCourseData.MicrobeInfo> mergeMicrobeList(List<PatientCourseData.MicrobeInfo> existingItems,
+                                                                 List<PatientCourseData.MicrobeInfo> changedItems) {
+        Map<String, PatientCourseData.MicrobeInfo> merged = new LinkedHashMap<>();
+        int index = 0;
+        for (PatientCourseData.MicrobeInfo existingItem : nonNullList(existingItems)) {
+            merged.put(normalizeKey(microbeKey(existingItem), "microbe-existing-" + index), existingItem);
+            index++;
+        }
+        for (PatientCourseData.MicrobeInfo changedItem : nonNullList(changedItems)) {
+            String key = normalizeKey(microbeKey(changedItem), "microbe-changed-" + index);
+            PatientCourseData.MicrobeInfo existing = merged.get(key);
+            if (existing != null) {
+                changedItem.setAntiDrugList(mergeByKey(existing.getAntiDrugList(), changedItem.getAntiDrugList(), this::antiDrugKey));
+            }
+            merged.put(key, changedItem);
+            index++;
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private String normalizeKey(String key, String fallback) {
+        if (StringUtils.hasText(key)) {
+            return key;
+        }
+        return fallback;
+    }
+
+    private String diagKey(PatientCourseData.PatDiagInfor item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getDiagId(),
+                formatDateTime(item == null ? null : item.getDiagTime(), "yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private String bodySurfaceKey(PatientCourseData.PatBodySurface item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                formatDateTime(item == null ? null : item.getMeasuredate(), "yyyy-MM-dd HH:mm:ss"),
+                item == null ? null : item.getFlag());
+    }
+
+    private String doctorAdviceKey(PatientCourseData.PatDoctorAdvice item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getDocadvno(),
+                formatDateTime(item == null ? null : item.getBegtime(), "yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private String illnessCourseKey(PatientCourseData.PatIllnessCourse item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                formatDateTime(item == null ? null : item.getCreattime(), "yyyy-MM-dd HH:mm:ss"),
+                item == null ? null : item.getItemname());
+    }
+
+    private String testSamKey(PatientCourseData.PatTestSam item) {
+        return joinKey(item == null ? null : item.getReqno(), item == null ? null : item.getSamreqno());
+    }
+
+    private String testResultKey(PatientCourseData.PatTestResult item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getSamreqno(),
+                item == null ? null : item.getItemno());
+    }
+
+    private String useMedicineKey(PatientCourseData.PatUseMedicine item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getUseorderno(),
+                item == null ? null : item.getMediId());
+    }
+
+    private String videoResultKey(PatientCourseData.PatVideoResult item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getSamreqno(),
+                item == null ? null : item.getItemno(),
+                item == null ? null : item.getDocadvtime());
+    }
+
+    private String transferKey(PatientCourseData.PatTransfer item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                formatDateTime(item == null ? null : item.getIndeptdate(), "yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private String opsKey(PatientCourseData.PatOpsCutInfor item) {
+        return joinKey(item == null ? null : item.getReqno(), item == null ? null : item.getOpsId());
+    }
+
+    private String opsMedicineKey(PatientCourseData.OpsMedicine item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getUseorderno(),
+                item == null ? null : item.getMediId());
+    }
+
+    private String patTestKey(PatientCourseData.PatTest item) {
+        return joinKey(item == null ? null : item.getReqno(), item == null ? null : item.getSamreqno());
+    }
+
+    private String microbeKey(PatientCourseData.MicrobeInfo item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getSamreqno(),
+                item == null ? null : item.getDataCode());
+    }
+
+    private String antiDrugKey(PatientCourseData.AntiDrugInfo item) {
+        return joinKey(item == null ? null : item.getReqno(),
+                item == null ? null : item.getSamreqno(),
+                item == null ? null : item.getMicrobecode(),
+                item == null ? null : item.getDatano());
+    }
+
+    private String joinKey(String... values) {
+        List<String> parts = new ArrayList<>();
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                parts.add(value.trim());
+            }
+        }
+        return parts.isEmpty() ? null : String.join("|", parts);
+    }
+
+    private void resetDerivedData(String reqno, LocalDate changedFromDate) {
+        UpdateWrapper<PatientRawDataEntity> rawDataUpdateWrapper = new UpdateWrapper<>();
+        rawDataUpdateWrapper.eq("reqno", reqno)
+                .ge("data_date", changedFromDate)
+                .set("filter_data_json", null)
+                .set("struct_data_json", null)
+                .set("event_json", null);
+//        patientRawDataMapper.update(null, rawDataUpdateWrapper);
+        truncateSummaryFromDate(reqno, changedFromDate);
+    }
+
+    private void truncateSummaryFromDate(String reqno, LocalDate changedFromDate) {
+        PatientSummaryEntity latest = getLatestSummary(reqno);
+        if (latest == null || !StringUtils.hasText(latest.getSummaryJson())) {
+            return;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(latest.getSummaryJson());
+            if (root == null) {
+                return;
+            }
+
+            if (root.isObject()) {
+                ObjectNode objectNode = (ObjectNode) root;
+                JsonNode timelineNode = objectNode.get("timeline");
+                if (timelineNode != null && timelineNode.isArray()) {
+                    objectNode.set("timeline", truncateTimelineArray((ArrayNode) timelineNode, changedFromDate));
+                    latest.setSummaryJson(objectMapper.writeValueAsString(objectNode));
+                }
+            } else if (root.isArray()) {
+                ArrayNode truncated = truncateTimelineArray((ArrayNode) root, changedFromDate);
+                latest.setSummaryJson(objectMapper.writeValueAsString(truncated));
+            } else {
+                return;
+            }
+            latest.setTokenCount(latest.getSummaryJson() == null ? 0 : latest.getSummaryJson().length());
+            latest.setUpdateTime(LocalDateTime.now());
+            patientSummaryMapper.updateById(latest);
+        } catch (Exception e) {
+            log.warn("截断摘要时间轴失败，reqno={}, changedFromDate={}", reqno, changedFromDate, e);
+        }
+    }
+
+    private ArrayNode truncateTimelineArray(ArrayNode timelineArray, LocalDate changedFromDate) {
+        ArrayNode truncated = objectMapper.createArrayNode();
+        if (timelineArray == null) {
+            return truncated;
+        }
+        for (JsonNode item : timelineArray) {
+            if (item == null || !item.isObject()) {
+                continue;
+            }
+            LocalDate itemDate = extractTimelineDate(item);
+            if (itemDate != null && !itemDate.isBefore(changedFromDate)) {
+                continue;
+            }
+            truncated.add(item);
+        }
+        return truncated;
+    }
+
+    private LocalDate extractTimelineDate(JsonNode timelineNode) {
+        if (timelineNode == null || !timelineNode.isObject()) {
+            return null;
+        }
+        String rawDate = firstNonBlank(
+                timelineNode.path("time").asText(null),
+                timelineNode.path("date").asText(null)
+        );
+        if (!StringUtils.hasText(rawDate)) {
+            return null;
+        }
+        String normalized = rawDate.trim();
+        if (normalized.length() >= 10) {
+            normalized = normalized.substring(0, 10);
+        }
+        try {
+            return LocalDate.parse(normalized);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private Map<LocalDate, DailyPatientRawData> groupByDay(PatientCourseData data) {
@@ -352,22 +1022,173 @@ public class PatientServiceImpl implements PatientService {
 
     private String buildSemanticBlockJson(DailyPatientRawData dailyData) {
         try {
-            Map<String, Object> semantic = new LinkedHashMap<>();
-            semantic.put("reqno", dailyData.getReqno());
-            semantic.put("dataDate", dailyData.getDataDate() == null ? null : dailyData.getDataDate().toString());
-            semantic.put("patient_info", buildPatientInfo(dailyData.getPatInfor()));
-            semantic.put("diagnosis", buildDiagnosis(dailyData.getPatDiagInforList()));
-            semantic.put("vital_signs", buildVitalSigns(dailyData.getPatBodySurfaceList()));
-            semantic.put("lab_results", buildLabResults(dailyData.getPatTestSamList(), dailyData.getPatTestList()));
-            semantic.put("imaging", buildImaging(dailyData.getPatVideoResultList()));
-            semantic.put("doctor_orders", buildDoctorOrders(dailyData.getLongDoctorAdviceList(), dailyData.getTemporaryDoctorAdviceList(), dailyData.getSgDoctorAdviceList()));
-            semantic.put("clinical_notes", buildClinicalNotes(dailyData.getPatIllnessCourseList()));
-            semantic.put("pat_illnessCourse", dailyData.getPatIllnessCourseList());
-            return objectMapper.writeValueAsString(semantic);
+            Map<String, Object> raw = new LinkedHashMap<>();
+            raw.put("reqno", dailyData.getReqno());
+            raw.put("dataDate", dailyData.getDataDate() == null ? null : dailyData.getDataDate().toString());
+            raw.put("pat_diagInfor", dailyData.getPatDiagInforList());
+            raw.put("pat_bodySurface", dailyData.getPatBodySurfaceList());
+            raw.put("pat_doctorAdvice_long", dailyData.getLongDoctorAdviceList());
+            raw.put("pat_doctorAdvice_temporary", dailyData.getTemporaryDoctorAdviceList());
+            raw.put("pat_doctorAdvice_sg", dailyData.getSgDoctorAdviceList());
+            raw.put("pat_illnessCourse", dailyData.getPatIllnessCourseList());
+            raw.put("pat_testSam", dailyData.getPatTestSamList());
+            raw.put("pat_useMedicine", dailyData.getPatUseMedicineList());
+            raw.put("pat_videoResult", dailyData.getPatVideoResultList());
+            raw.put("pat_transfer", dailyData.getPatTransferList());
+            raw.put("pat_opsCutInfor", dailyData.getPatOpsCutInforList());
+            raw.put("pat_test", dailyData.getPatTestList());
+            return objectMapper.writeValueAsString(raw);
         } catch (Exception e) {
-            log.error("语义块JSON生成失败，回退普通序列化", e);
+            log.error("原始块JSON生成失败，回退普通序列化", e);
             return writeJson(dailyData);
         }
+    }
+
+    private String buildFilterDataJson(DailyPatientRawData dailyData, String firstCourse) {
+        try {
+            Map<String, Object> filtered = new LinkedHashMap<>();
+            filtered.put("reqno", dailyData.getReqno());
+            filtered.put("dataDate", dailyData.getDataDate() == null ? null : dailyData.getDataDate().toString());
+            filtered.put("patient_info", buildPatientInfo(dailyData.getPatInfor()));
+            filtered.put("diagnosis", buildDiagnosis(dailyData.getPatDiagInforList()));
+            filtered.put("vital_signs", buildVitalSigns(dailyData.getPatBodySurfaceList()));
+            filtered.put("lab_results", buildLabResults(dailyData.getPatTestSamList(), dailyData.getPatTestList()));
+            filtered.put("imaging", buildImaging(dailyData.getPatVideoResultList()));
+            filtered.put("doctor_orders",
+                    buildDoctorOrders(dailyData.getLongDoctorAdviceList(),
+                            dailyData.getTemporaryDoctorAdviceList(),
+                            dailyData.getSgDoctorAdviceList()));
+            List<PatientCourseData.PatIllnessCourse> filteredIllnessCourseList =
+                    filterIllnessCourseList(dailyData.getPatIllnessCourseList(), firstCourse);
+            filtered.put("clinical_notes", buildClinicalNotes(filteredIllnessCourseList));
+            filtered.put("pat_illnessCourse", filteredIllnessCourseList);
+            return objectMapper.writeValueAsString(filtered);
+        } catch (Exception e) {
+            log.error("过滤块JSON生成失败，回退空JSON", e);
+            return "{}";
+        }
+    }
+
+    private String mergeFilterDataJson(String existingFilterDataJson,
+                                       ObjectNode rawRoot,
+                                       EnumSet<PatientCourseDataType> changedTypes,
+                                       String firstCourse) {
+        try {
+            ObjectNode filterRoot = parseObjectNode(existingFilterDataJson);
+            filterRoot.put("reqno", rawRoot.path("reqno").asText(""));
+            filterRoot.put("dataDate", rawRoot.path("dataDate").asText(""));
+
+            if (filterRoot.path("patient_info").isMissingNode() || filterRoot.path("patient_info").isNull()) {
+                filterRoot.set("patient_info", objectMapper.createObjectNode());
+            }
+            for (PatientCourseDataType changedType : changedTypes) {
+                switch (changedType) {
+                    case DIAGNOSIS -> filterRoot.set("diagnosis", objectMapper.valueToTree(buildDiagnosis(
+                            readList(rawRoot, "pat_diagInfor", new TypeReference<List<PatientCourseData.PatDiagInfor>>() {}))));
+                    case BODY_SURFACE -> filterRoot.set("vital_signs", objectMapper.valueToTree(buildVitalSigns(
+                            readList(rawRoot, "pat_bodySurface", new TypeReference<List<PatientCourseData.PatBodySurface>>() {}))));
+                    case DOCTOR_ADVICE -> filterRoot.set("doctor_orders", objectMapper.valueToTree(buildDoctorOrders(
+                            readList(rawRoot, "pat_doctorAdvice_long", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                            readList(rawRoot, "pat_doctorAdvice_temporary", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                            readList(rawRoot, "pat_doctorAdvice_sg", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}))));
+                    case ILLNESS_COURSE -> {
+                        List<PatientCourseData.PatIllnessCourse> filteredIllnessCourseList = filterIllnessCourseList(
+                                readList(rawRoot, "pat_illnessCourse", new TypeReference<List<PatientCourseData.PatIllnessCourse>>() {}),
+                                firstCourse
+                        );
+                        filterRoot.set("clinical_notes", objectMapper.valueToTree(buildClinicalNotes(filteredIllnessCourseList)));
+                        filterRoot.set("pat_illnessCourse", objectMapper.valueToTree(filteredIllnessCourseList));
+                    }
+                    case LAB_TEST, MICROBE -> filterRoot.set("lab_results", objectMapper.valueToTree(buildLabResults(
+                            readList(rawRoot, "pat_testSam", new TypeReference<List<PatientCourseData.PatTestSam>>() {}),
+                            readList(rawRoot, "pat_test", new TypeReference<List<PatientCourseData.PatTest>>() {}))));
+                    case VIDEO_RESULT -> filterRoot.set("imaging", objectMapper.valueToTree(buildImaging(
+                            readList(rawRoot, "pat_videoResult", new TypeReference<List<PatientCourseData.PatVideoResult>>() {}))));
+                    case FULL_PATIENT, USE_MEDICINE, TRANSFER, OPERATION -> {
+                        // filter_data_json 当前不直接暴露这些原始块
+                    }
+                }
+            }
+            return objectMapper.writeValueAsString(filterRoot);
+        } catch (Exception e) {
+            log.warn("合并过滤块JSON失败，回退全量重建", e);
+            return rebuildFilterDataJsonFromRaw(rawRoot, firstCourse);
+        }
+    }
+
+    private String rebuildFilterDataJsonFromRaw(ObjectNode rawRoot, String firstCourse) {
+        try {
+            Map<String, Object> filtered = new LinkedHashMap<>();
+            filtered.put("reqno", rawRoot.path("reqno").asText(""));
+            filtered.put("dataDate", rawRoot.path("dataDate").asText(""));
+            filtered.put("patient_info", new LinkedHashMap<>());
+            filtered.put("diagnosis", buildDiagnosis(
+                    readList(rawRoot, "pat_diagInfor", new TypeReference<List<PatientCourseData.PatDiagInfor>>() {})));
+            filtered.put("vital_signs", buildVitalSigns(
+                    readList(rawRoot, "pat_bodySurface", new TypeReference<List<PatientCourseData.PatBodySurface>>() {})));
+            filtered.put("lab_results", buildLabResults(
+                    readList(rawRoot, "pat_testSam", new TypeReference<List<PatientCourseData.PatTestSam>>() {}),
+                    readList(rawRoot, "pat_test", new TypeReference<List<PatientCourseData.PatTest>>() {})));
+            filtered.put("imaging", buildImaging(
+                    readList(rawRoot, "pat_videoResult", new TypeReference<List<PatientCourseData.PatVideoResult>>() {})));
+            filtered.put("doctor_orders", buildDoctorOrders(
+                    readList(rawRoot, "pat_doctorAdvice_long", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                    readList(rawRoot, "pat_doctorAdvice_temporary", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
+                    readList(rawRoot, "pat_doctorAdvice_sg", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {})));
+            List<PatientCourseData.PatIllnessCourse> filteredIllnessCourseList = filterIllnessCourseList(
+                    readList(rawRoot, "pat_illnessCourse", new TypeReference<List<PatientCourseData.PatIllnessCourse>>() {}),
+                    firstCourse
+            );
+            filtered.put("clinical_notes", buildClinicalNotes(filteredIllnessCourseList));
+            filtered.put("pat_illnessCourse", filteredIllnessCourseList);
+            return objectMapper.writeValueAsString(filtered);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    private List<PatientCourseData.PatIllnessCourse> filterIllnessCourseList(List<PatientCourseData.PatIllnessCourse> illnessCourseList,
+                                                                              String firstCourse) {
+        List<PatientCourseData.PatIllnessCourse> filteredList = new ArrayList<>();
+        String normalizedFirstCourse = StringUtils.hasText(firstCourse) ? firstCourse : "";
+        for (PatientCourseData.PatIllnessCourse illnessCourse : nonNullList(illnessCourseList)) {
+            PatientCourseData.PatIllnessCourse copied = objectMapper.convertValue(illnessCourse, PatientCourseData.PatIllnessCourse.class);
+            String itemname = copied.getItemname();
+            String illnesscontent = copied.getIllnesscontent();
+            if (IllnessRecordType.FIRST_COURSE.matches(itemname)) {
+                copied.setIllnesscontent(normalizedFirstCourse);
+            } else {
+                copied.setIllnesscontent(filterTextUtils.filterContent(normalizedFirstCourse, illnesscontent));
+            }
+            filteredList.add(copied);
+        }
+        return filteredList;
+    }
+
+    private String resolveFirstIllnessCourse(String reqno, PatientCourseData courseData) {
+        String firstCourse = getInhosdateRaw(reqno);
+        if (StringUtils.hasText(firstCourse)) {
+            return firstCourse;
+        }
+        for (PatientCourseData.PatIllnessCourse illnessCourse : nonNullList(courseData == null ? null : courseData.getPatIllnessCourseList())) {
+            if (IllnessRecordType.FIRST_COURSE.matches(illnessCourse.getItemname())) {
+                return illnessCourse.getIllnesscontent();
+            }
+        }
+        return null;
+    }
+
+    private String resolveFirstIllnessCourse(String reqno, List<PatientCourseData.PatIllnessCourse> courseDataList) {
+        String firstCourse = getInhosdateRaw(reqno);
+        if (StringUtils.hasText(firstCourse)) {
+            return firstCourse;
+        }
+        for (PatientCourseData.PatIllnessCourse illnessCourse : courseDataList) {
+            if (IllnessRecordType.FIRST_COURSE.matches(illnessCourse.getItemname())) {
+                return illnessCourse.getIllnesscontent();
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> buildPatientInfo(PatientCourseData.PatInfor patInfor) {
@@ -695,6 +1516,16 @@ public class PatientServiceImpl implements PatientService {
             }
         }
         return orderNames;
+    }
+
+    private List<String> normalizeReqnos(List<String> reqnos) {
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String reqno : nonNullList(reqnos)) {
+            if (StringUtils.hasText(reqno)) {
+                normalized.add(reqno.trim());
+            }
+        }
+        return new ArrayList<>(normalized);
     }
 
     private <T> List<T> nonNullList(List<T> list) {

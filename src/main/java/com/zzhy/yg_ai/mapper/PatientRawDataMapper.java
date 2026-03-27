@@ -15,7 +15,12 @@ public interface PatientRawDataMapper extends BaseMapper<PatientRawDataEntity> {
 
     LocalDateTime selectStoredLastTimeByReqno(@Param("reqno") String reqno);
 
-    List<String> selectActiveReqnos();
+    List<String> selectActiveReqnos(@Param("sinceTime") LocalDateTime sinceTime,
+                                    @Param("recentAdmissionDays") int recentAdmissionDays,
+                                    @Param("limit") int limit);
+
+    List<String> selectChangedDataTypes(@Param("reqno") String reqno,
+                                        @Param("sinceTime") LocalDateTime sinceTime);
 
     PatientCourseData.PatInfor selectPatInfor(@Param("reqno") String reqno);
 
@@ -76,9 +81,4 @@ public interface PatientRawDataMapper extends BaseMapper<PatientRawDataEntity> {
                                                                   @Param("dataCode") String dataCode,
                                                                   @Param("lastTime") LocalDateTime lastTime);
 
-    List<String> selectReqnosWithUnprocessedStructData(@Param("limit") int limit);
-
-    List<String> selectPendingStructReqnos(@Param("limit") int limit);
-
-    List<PatientRawDataEntity> selectUnprocessedStructDataByReqno(@Param("reqno") String reqno);
 }

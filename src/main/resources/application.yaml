@@ -1,103 +1,84 @@
 server:
-  port: 8090
+  port: ${YG_AI_SERVER_PORT:8090}
 
 spring:
   application:
-    name: alibaba-ai-test
-#  datasource:
-#    url: jdbc:mysql://127.0.0.1:3306/yg_ai?useSSL=false&useUnicode=true&characterEncoding=UTF-8
-#    driver-class-name: com.mysql.jdbc.Driver
-#    username: root
-#    password: 123456
-#    hikari:
-#      minimum-idle: 10 # 池中维护的最小空闲连接数，默认为 10 个。
-#      maximum-pool-size: 10 # 池中最大连接数，包括闲置和使用中的连接，默认为 10 个。
+    name: ${YG_AI_APP_NAME:yg_ai}
   datasource:
     driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
-#    url: jdbc:sqlserver://192.168.0.112:1433;databaseName=hicisdata_crb_xtsy_test;encrypt=false;trustServerCertificate=true;sslProtocol=TLSv1
-    url: jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;
-    username: sa
-    password: Abcd@1234
+    url: ${YG_AI_DB_URL:jdbc:sqlserver://127.0.0.1:1433;databaseName=yg_ai;encrypt=true;trustServerCertificate=true;}
+    username: ${YG_AI_DB_USERNAME:sa}
+    password: ${YG_AI_DB_PASSWORD:changeit}
     hikari:
-      # 核心配置：解决连接关闭问题
-      connection-test-query: SELECT 1  # 显式指定测试语句（SQL Server 必需）
-      connection-timeout: 30000       # 连接超时时间（ms）
-      idle-timeout: 600000            # 空闲连接超时时间
-      max-lifetime: 1800000           # 连接最大存活时间
-      maximum-pool-size: 10           # 最大连接数（适配 SQL Server 2010 性能）
-      minimum-idle: 5                 # 最小空闲连接数
-      auto-commit: true               # 自动提交
+      connection-test-query: SELECT 1
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      maximum-pool-size: ${YG_AI_DB_MAX_POOL_SIZE:10}
+      minimum-idle: ${YG_AI_DB_MIN_IDLE:5}
+      auto-commit: true
       pool-name: SqlServerHikariPool
-      # 关键：禁用连接隔离级别自动设置（解决 setTransactionIsolation 导致的连接关闭）
       transaction-isolation: null
-  # 定时任务配置
   task:
     scheduling:
       pool:
-        size: 5  # 定时任务线程池大小
-      thread-name-prefix: scheduled-task-  # 线程名称前缀
+        size: ${YG_AI_TASK_POOL_SIZE:5}
+      thread-name-prefix: ${YG_AI_TASK_THREAD_PREFIX:scheduled-task-}
   data:
     redis:
-      # 业务侧 Redis（spring-boot-starter-data-redis）
-      host: 127.0.0.1
-      port: 6379
-      database: 0
+      host: ${YG_AI_REDIS_HOST:127.0.0.1}
+      port: ${YG_AI_REDIS_PORT:6379}
+      database: ${YG_AI_REDIS_DB:0}
+      password: ${YG_AI_REDIS_PASSWORD:}
   ai:
-#    deepseek:
-#      api-key: sk-aac6cbfecae2476f8c38c38ac3965146
-#      base-url: https://api.deepseek.com
-#      chat:
-#        options:
-#          model: deepseek-chat
-#          temperature: 0.8
     openai:
-#      api-key: sk-34f583feaeed464594d017079cb94200
-#      base-url: https://dashscope.aliyuncs.com/compatible-mode
-#      chat:
-#        options:
-#          model: qwen3-14b
-#          extra-body:
-#            enable_thinking: false #是否开启思考
-      api-key: EMPTY
-      base-url: http://192.168.0.205:6001
+      api-key: ${YG_AI_OPENAI_API_KEY:EMPTY}
+      base-url: ${YG_AI_OPENAI_BASE_URL:http://127.0.0.1:6001}
       client:
-        connect-timeout: 60s
-        read-timeout: 60s
+        connect-timeout: ${YG_AI_OPENAI_CONNECT_TIMEOUT:60s}
+        read-timeout: ${YG_AI_OPENAI_READ_TIMEOUT:60s}
       chat:
         options:
-          model: Qwen3.5-27B-FP8
+          model: ${YG_AI_OPENAI_MODEL:Qwen3.5-27B-FP8}
           extra-body:
             chat_template_kwargs:
-              enable_thinking: false
+              enable_thinking: ${YG_AI_OPENAI_ENABLE_THINKING:false}
     memory:
       redis:
-        # reactAgent 专用 Redis（spring-ai-alibaba-starter-memory-redis）
-        host: 127.0.0.1
-        port: 6379
-        database: 1
-        timeout: 60000
-        key-prefix: 'react-agent:memory:'
+        host: ${YG_AI_MEMORY_REDIS_HOST:${YG_AI_REDIS_HOST:127.0.0.1}}
+        port: ${YG_AI_MEMORY_REDIS_PORT:${YG_AI_REDIS_PORT:6379}}
+        database: ${YG_AI_MEMORY_REDIS_DB:1}
+        timeout: ${YG_AI_MEMORY_REDIS_TIMEOUT:60000}
+        key-prefix: ${YG_AI_MEMORY_REDIS_KEY_PREFIX:react-agent:memory:}
 
-#    dashscope:
-#      api-key: sk-3f204e2efe5e40deaeff3934612e0080
-#      base-url: https://api.deepseek.com
-#      chat:
-#        options:
-#          model: deepseek-chat
-#          temperature: 0.8
-
-# MyBatis-Plus 配置
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 
-# app-level OpenAI client timeouts
 app:
   ai:
     openai:
-      connect-timeout: 10s
-      read-timeout: 180s
-      response-timeout: 180s
+      connect-timeout: ${YG_AI_APP_OPENAI_CONNECT_TIMEOUT:10s}
+      read-timeout: ${YG_AI_APP_OPENAI_READ_TIMEOUT:180s}
+      response-timeout: ${YG_AI_APP_OPENAI_RESPONSE_TIMEOUT:180s}
+
+infection:
+  monitor:
+    fixed-delay: ${YG_AI_MONITOR_FIXED_DELAY:60000}
+    scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:200}
+    batch-size: ${YG_AI_MONITOR_BATCH_SIZE:100}
+    worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:8}
+    max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:5}
+    retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}
+    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:30}
+    debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
+    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
+  format:
+    fixed-delay: ${YG_AI_FORMAT_FIXED_DELAY:30000}
+    batch-size: ${YG_AI_FORMAT_BATCH_SIZE:50}
+    worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:8}
+    max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:5}
+    retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:300}
 
 logging:
   level:
-    org.springframework.ai.chat.client.advisor: debug
+    org.springframework.ai.chat.client.advisor: ${YG_AI_CHAT_ADVISOR_LOG_LEVEL:debug}

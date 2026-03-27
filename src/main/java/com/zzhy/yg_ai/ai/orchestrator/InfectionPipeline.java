@@ -1,14 +1,19 @@
 package com.zzhy.yg_ai.ai.orchestrator;
 
-import com.zzhy.yg_ai.ai.agent.AuditAgent;
-import com.zzhy.yg_ai.ai.agent.FormatAgent;
 import com.zzhy.yg_ai.ai.agent.SummaryAgent;
-import com.zzhy.yg_ai.ai.agent.WarningAgent;
-import com.zzhy.yg_ai.ai.tools.LoadDataTool;
+import com.zzhy.yg_ai.config.InfectionMonitorProperties;
+import com.zzhy.yg_ai.config.StructDataFormatProperties;
+import com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
+import com.zzhy.yg_ai.domain.entity.PatientStructDataTaskEntity;
+import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
+import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
+import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
+import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.PatientRawDataCollectTaskService;
 import com.zzhy.yg_ai.service.PatientService;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.zzhy.yg_ai.service.PatientStructDataTaskService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -19,118 +24,109 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Slf4j
 @Service
+/**
+ * 当前主链路编排入口，仅负责患者原始数据采集和结构化摘要流程。
+ * 预留的院感预警、审核等能力暂不在此类中启用。
+ */
 public class InfectionPipeline {
 
-    private static final String REDIS_EVENTS_PREFIX = "patient_events:";
-    private static final int MAX_EVENT_JSON_LENGTH = 6000;
-
-    private final LoadDataTool loadDataTool;
-    private final FormatAgent formatAgent;
+    private final InfectionMonitorProperties infectionMonitorProperties;
     private final SummaryAgent summaryAgent;
-    private final WarningAgent warningAgent;
-    private final AuditAgent auditAgent;
     private final PatientService patientService;
-    private final StringRedisTemplate stringRedisTemplate;
+    private final PatientRawDataCollectTaskService patientRawDataCollectTaskService;
+    private final PatientStructDataTaskService patientStructDataTaskService;
+    private final InfectionDailyJobLogService infectionDailyJobLogService;
+    private final StructDataFormatProperties structDataFormatProperties;
     private final ObjectMapper objectMapper;
 
-    public InfectionPipeline(LoadDataTool loadDataTool,
-                             FormatAgent formatAgent,
+    public InfectionPipeline(InfectionMonitorProperties infectionMonitorProperties,
                              SummaryAgent summaryAgent,
-                             WarningAgent warningAgent,
-                             AuditAgent auditAgent,
                              PatientService patientService,
-                             StringRedisTemplate stringRedisTemplate,
+                             PatientRawDataCollectTaskService patientRawDataCollectTaskService,
+                             PatientStructDataTaskService patientStructDataTaskService,
+                             InfectionDailyJobLogService infectionDailyJobLogService,
+                             StructDataFormatProperties structDataFormatProperties,
                              ObjectMapper objectMapper) {
-        this.loadDataTool = loadDataTool;
-        this.formatAgent = formatAgent;
+        this.infectionMonitorProperties = infectionMonitorProperties;
         this.summaryAgent = summaryAgent;
-        this.warningAgent = warningAgent;
-        this.auditAgent = auditAgent;
         this.patientService = patientService;
-        this.stringRedisTemplate = stringRedisTemplate;
+        this.patientRawDataCollectTaskService = patientRawDataCollectTaskService;
+        this.patientStructDataTaskService = patientStructDataTaskService;
+        this.infectionDailyJobLogService = infectionDailyJobLogService;
+        this.structDataFormatProperties = structDataFormatProperties;
         this.objectMapper = objectMapper;
     }
 
-    public void processPatient(String reqno) {
-        if (!StringUtils.hasText(reqno)) {
-            log.warn("processPatient 跳过，reqno为空");
-            return;
-        }
-        loadDataTool.loadPatientRawData(reqno);
-        log.info("患者语义块采集完成，reqno={}", reqno);
+    public int enqueueRawDataTasks(List<String> reqnos) {
+        return patientRawDataCollectTaskService.enqueueBatch(reqnos, LocalDateTime.now());
     }
 
-    public int processPendingStructData() {
-        List<String> pendingReqnos = patientService.listPendingStructRawData(20);
-        if (pendingReqnos == null || pendingReqnos.isEmpty()) {
+    public int processPendingRawDataTasks() {
+        List<PatientRawDataCollectTaskEntity> tasks =
+                patientRawDataCollectTaskService.claimPendingTasks(infectionMonitorProperties.getBatchSize());
+        if (tasks == null || tasks.isEmpty()) {
             return 0;
         }
 
-        ExecutorService executor = Executors.newFixedThreadPool(6);
-        List<CompletableFuture<Integer>> futures = new ArrayList<>();
-        for (String reqno : pendingReqnos) {
-            CompletableFuture<Integer> task = CompletableFuture.supplyAsync(() -> {
-                if (!StringUtils.hasText(reqno)) {
-                    return 0;
-                }
-                List<PatientRawDataEntity> rows = patientService.listPendingStructRawData(reqno);
-                if (rows == null || rows.isEmpty()) {
-                    return 0;
-                }
-                String firstCourse = patientService.getInhosdateRaw(reqno);
-                PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
-                int successCount = 0;
-                for (PatientRawDataEntity rawData : rows) {
-                    if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
-                        continue;
-                    }
-                    if (!StringUtils.hasText(rawData.getFilterDataJson())) {
-                        PatientRawDataEntity filterRaw = formatAgent.filterIllnessCourse(firstCourse, rawData);
-                        rawData.setFilterDataJson(filterRaw.getFilterDataJson());
-                        patientService.saveFilterJson(rawData.getId(), rawData.getFilterDataJson());
-                    }
+        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, infectionMonitorProperties.getWorkerThreads()));
+        List<CompletableFuture<RawCollectTaskExecutionResult>> futures = new ArrayList<>();
+        for (PatientRawDataCollectTaskEntity taskEntity : tasks) {
+            CompletableFuture<RawCollectTaskExecutionResult> task =
+                    CompletableFuture.supplyAsync(() -> processCollectTask(taskEntity), executor);
+            futures.add(task);
+        }
 
-                    try {
-                        SummaryAgent.DailyIllnessResult dailyIllnessResult = summaryAgent.extractDailyIllness(latestSummary, rawData);
-                        String sortedSummaryJson = sortTimelineByTimeAsc(dailyIllnessResult.updatedSummaryJson());
-                        PatientSummaryEntity newSummary = new PatientSummaryEntity();
-                        newSummary.setReqno(reqno);
-                        newSummary.setSummaryJson(sortedSummaryJson);
-                        newSummary.setTokenCount(sortedSummaryJson.length());
-                        newSummary.setUpdateTime(rawData.getLastTime() == null ? LocalDateTime.now() : rawData.getLastTime());
+        int processedCount;
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            processedCount = futures.stream()
+                    .map(CompletableFuture::join)
+                    .peek(this::finalizeCollectTask)
+                    .mapToInt(result -> result.isSuccessLike() ? 1 : 0)
+                    .sum();
+        } finally {
+            executor.shutdown();
+        }
 
-                        patientService.saveStructDataJson(rawData.getId(), dailyIllnessResult.structDataJson(), null);
-                        patientService.saveOrUpdateLatestSummary(newSummary);
-                        latestSummary = newSummary;
-                        successCount++;
-                    } catch (Exception e) {
-                        log.error("病程增量摘要失败，rowId={}, reqno={}", rawData.getId(), rawData.getReqno(), e);
-                    }
-                }
-                return successCount;
-            }, executor);
+        if (processedCount > 0) {
+            log.info("患者原始数据采集任务完成，processedCount={}", processedCount);
+        }
+        return processedCount;
+    }
+
+    public int processPendingStructData() {
+        List<PatientStructDataTaskEntity> tasks =
+                patientStructDataTaskService.claimPendingTasks(structDataFormatProperties.getBatchSize());
+        if (tasks == null || tasks.isEmpty()) {
+            return 0;
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, structDataFormatProperties.getWorkerThreads()));
+        List<CompletableFuture<StructTaskExecutionResult>> futures = new ArrayList<>();
+        for (PatientStructDataTaskEntity taskEntity : tasks) {
+            CompletableFuture<StructTaskExecutionResult> task =
+                    CompletableFuture.supplyAsync(() -> processStructTask(taskEntity), executor);
             futures.add(task);
         }
 
         int formattedCount;
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            formattedCount = futures.stream().mapToInt(CompletableFuture::join).sum();
+            formattedCount = futures.stream()
+                    .map(CompletableFuture::join)
+                    .peek(this::finalizeStructTask)
+                    .mapToInt(StructTaskExecutionResult::successCount)
+                    .sum();
         } finally {
             executor.shutdown();
         }
@@ -139,6 +135,119 @@ public class InfectionPipeline {
             log.info("患者结构化格式化完成，formattedCount={}", formattedCount);
         }
         return formattedCount;
+    }
+
+    private RawCollectTaskExecutionResult processCollectTask(PatientRawDataCollectTaskEntity taskEntity) {
+        String reqno = taskEntity == null ? null : taskEntity.getReqno();
+        if (!StringUtils.hasText(reqno)) {
+            return RawCollectTaskExecutionResult.failed(taskEntity == null ? null : taskEntity.getId(),
+                    reqno, "reqno为空");
+        }
+        try {
+            RawDataCollectResult result = patientService.collectAndSaveRawDataResult(reqno);
+            return new RawCollectTaskExecutionResult(taskEntity.getId(), reqno, result);
+        } catch (Exception e) {
+            log.error("患者原始数据采集失败，reqno={}", reqno, e);
+            return RawCollectTaskExecutionResult.failed(taskEntity.getId(), reqno, e.getMessage());
+        }
+    }
+
+    private StructTaskExecutionResult processStructTask(PatientStructDataTaskEntity taskEntity) {
+        String reqno = taskEntity == null ? null : taskEntity.getReqno();
+        LocalDate replayFromDate = taskEntity == null ? null : taskEntity.getReplayFromDate();
+        if (!StringUtils.hasText(reqno)) {
+            return StructTaskExecutionResult.failed(taskEntity == null ? null : taskEntity.getId(),
+                    reqno, 0, "reqno为空");
+        }
+
+        List<PatientRawDataEntity> rows = patientService.listPendingStructRawData(reqno, replayFromDate);
+        if (rows == null || rows.isEmpty()) {
+            return StructTaskExecutionResult.success(taskEntity.getId(), reqno, 0);
+        }
+
+        PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
+        int successCount = 0;
+        int failedCount = 0;
+        String lastErrorMessage = null;
+        for (PatientRawDataEntity rawData : rows) {
+            PatientSummaryEntity updatedSummary = processPendingRawData(reqno, latestSummary, rawData);
+            if (updatedSummary == null) {
+                failedCount++;
+                lastErrorMessage = "存在未完成的 rawData 行，需重试";
+                continue;
+            }
+            latestSummary = updatedSummary;
+            successCount++;
+        }
+        return new StructTaskExecutionResult(taskEntity.getId(), reqno, rows.size(), successCount, failedCount, lastErrorMessage);
+    }
+
+    private PatientSummaryEntity processPendingRawData(String reqno,
+                                                       PatientSummaryEntity latestSummary,
+                                                       PatientRawDataEntity rawData) {
+        if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
+            return null;
+        }
+
+        try {
+            SummaryAgent.DailyIllnessResult dailyIllnessResult = summaryAgent.extractDailyIllness(latestSummary, rawData);
+            PatientSummaryEntity newSummary = buildUpdatedSummary(reqno, rawData, dailyIllnessResult.updatedSummaryJson());
+            patientService.saveStructDataJson(rawData.getId(), dailyIllnessResult.structDataJson(), null);
+            patientService.saveOrUpdateLatestSummary(newSummary);
+            return newSummary;
+        } catch (Exception e) {
+            log.error("病程增量摘要失败，rowId={}, reqno={}", rawData.getId(), rawData.getReqno(), e);
+            return null;
+        }
+    }
+
+    private void finalizeStructTask(StructTaskExecutionResult result) {
+        if (result == null || result.taskId() == null) {
+            return;
+        }
+        if (result.failedCount() > 0) {
+            String message = StringUtils.hasText(result.lastErrorMessage())
+                    ? result.lastErrorMessage()
+                    : "部分结构化处理失败";
+            patientStructDataTaskService.markFailed(result.taskId(), message);
+            infectionDailyJobLogService.log(InfectionJobStage.NORMALIZE,
+                    InfectionJobStatus.ERROR,
+                    result.reqno(),
+                    message);
+            return;
+        }
+        String message = result.totalRows() == 0
+                ? "无待处理结构化数据"
+                : "结构化处理成功，successCount=" + result.successCount();
+        patientStructDataTaskService.markSuccess(result.taskId(), message);
+    }
+
+    private void finalizeCollectTask(RawCollectTaskExecutionResult result) {
+        if (result == null || result.taskId() == null) {
+            return;
+        }
+        patientRawDataCollectTaskService.updateChangeTypes(result.taskId(), result.changeTypes());
+        if (!result.isSuccessLike()) {
+            patientRawDataCollectTaskService.markFailed(result.taskId(), result.message());
+            infectionDailyJobLogService.log(InfectionJobStage.LOAD,
+                    InfectionJobStatus.ERROR,
+                    result.reqno(),
+                    result.message());
+            return;
+        }
+        patientRawDataCollectTaskService.markSuccess(result.taskId(), result.message());
+    }
+
+    private PatientSummaryEntity buildUpdatedSummary(String reqno,
+                                                    PatientRawDataEntity rawData,
+                                                    String updatedSummaryJson) {
+        String sortedSummaryJson = sortTimelineByTimeAsc(updatedSummaryJson);
+        PatientSummaryEntity newSummary = new PatientSummaryEntity();
+        newSummary.setReqno(reqno);
+        newSummary.setSummaryJson(sortedSummaryJson);
+        newSummary.setTokenCount(sortedSummaryJson.length());
+        newSummary.setUpdateTime(rawData.getLastTime() == null ? LocalDateTime.now() : rawData.getLastTime());
+        return newSummary;
     }
 
 
@@ -240,6 +349,47 @@ public class InfectionPipeline {
                     .toInstant().toEpochMilli();
         } catch (DateTimeParseException ignored) {
             return Long.MIN_VALUE;
+        }
+    }
+
+    private record StructTaskExecutionResult(Long taskId,
+                                             String reqno,
+                                             int totalRows,
+                                             int successCount,
+                                             int failedCount,
+                                             String lastErrorMessage) {
+
+        private static StructTaskExecutionResult success(Long taskId, String reqno, int successCount) {
+            return new StructTaskExecutionResult(taskId, reqno, successCount, successCount, 0, null);
+        }
+
+        private static StructTaskExecutionResult failed(Long taskId, String reqno, int totalRows, String lastErrorMessage) {
+            return new StructTaskExecutionResult(taskId, reqno, totalRows, 0, Math.max(1, totalRows), lastErrorMessage);
+        }
+    }
+
+    private record RawCollectTaskExecutionResult(Long taskId,
+                                                 String reqno,
+                                                 String status,
+                                                 String message,
+                                                 Integer savedDays,
+                                                 String changeTypes) {
+
+        private RawCollectTaskExecutionResult(Long taskId, String reqno, RawDataCollectResult result) {
+            this(taskId,
+                    reqno,
+                    result == null ? "failed" : result.getStatus(),
+                    result == null ? "原始数据采集结果为空" : result.getMessage(),
+                    result == null ? null : result.getSavedDays(),
+                    result == null ? null : result.getChangeTypes());
+        }
+
+        private static RawCollectTaskExecutionResult failed(Long taskId, String reqno, String message) {
+            return new RawCollectTaskExecutionResult(taskId, reqno, "failed", message, 0, null);
+        }
+
+        private boolean isSuccessLike() {
+            return "success".equalsIgnoreCase(status) || "no_data".equalsIgnoreCase(status);
         }
     }
 

@@ -2,6 +2,7 @@ package com.zzhy.yg_ai.service;
 
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
+import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 
@@ -23,15 +24,12 @@ public interface PatientService {
      */
     String collectAndSaveRawData(String reqno);
 
+    RawDataCollectResult collectAndSaveRawDataResult(String reqno);
+
     /**
      * 查询待格式化结构数据（struct_data_json 为空）。
      */
-    List<PatientRawDataEntity> listPendingStructRawData(String reqno);
-
-    /**
-     * 批量查询待格式化结构数据对应的 reqno（data_json 非空且 struct_data_json 为空）。
-     */
-    List<String> listPendingStructRawData(int limit);
+    List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate);
 
     /**
      * 更新格式化后的结构化 JSON。

@@ -33,6 +33,7 @@
     <resultMap id="PatDiagInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatDiagInfor">
         <result column="reqno" property="reqno"/>
         <result column="phase" property="phase"/>
+        <result column="diag_id" property="diagId"/>
         <result column="diag_name" property="diagName"/>
         <result column="diag_time" property="diagTime"/>
     </resultMap>
@@ -40,6 +41,7 @@
     <resultMap id="PatBodySurfaceResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatBodySurface">
         <result column="reqno" property="reqno"/>
         <result column="measuredate" property="measuredate"/>
+        <result column="flag" property="flag"/>
         <result column="temperature" property="temperature"/>
         <result column="stool_count" property="stoolCount"/>
         <result column="pulse" property="pulse"/>
@@ -49,6 +51,7 @@
 
     <resultMap id="PatDoctorAdviceResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatDoctorAdvice">
         <result column="reqno" property="reqno"/>
+        <result column="docadvno" property="docadvno"/>
         <result column="docadvice" property="docadvice"/>
         <result column="begtime" property="begtime"/>
         <result column="endtime" property="endtime"/>
@@ -78,6 +81,7 @@
     <resultMap id="PatTestResultResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatTestResult">
         <result column="reqno" property="reqno"/>
         <result column="samreqno" property="samreqno"/>
+        <result column="itemno" property="itemno"/>
         <result column="itemname" property="itemname"/>
         <result column="engname" property="engname"/>
         <result column="resultdesc" property="resultdesc"/>
@@ -89,6 +93,8 @@
 
     <resultMap id="PatUseMedicineResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatUseMedicine">
         <result column="reqno" property="reqno"/>
+        <result column="useorderno" property="useorderno"/>
+        <result column="medi_id" property="mediId"/>
         <result column="medi_name" property="mediName"/>
         <result column="med_calss" property="medCalss"/>
         <result column="medi_path" property="mediPath"/>
@@ -108,6 +114,8 @@
     <resultMap id="PatVideoResultResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatVideoResult">
         <result column="reqno" property="reqno"/>
         <result column="samreqno" property="samreqno"/>
+        <result column="itemno" property="itemno"/>
+        <result column="docadvtime" property="docadvtime"/>
         <result column="names" property="names"/>
         <result column="diagnose" property="diagnose"/>
         <result column="testresult" property="testresult"/>
@@ -119,6 +127,7 @@
         <result column="indeptdate" property="indeptdate"/>
         <result column="indeptname" property="indeptname"/>
         <result column="outhodate" property="outhodate"/>
+        <result column="outdeptname" property="outdeptname"/>
     </resultMap>
 
     <resultMap id="PatOpsCutInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatOpsCutInfor">
@@ -133,6 +142,8 @@
 
     <resultMap id="OpsMedicineResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$OpsMedicine">
         <result column="reqno" property="reqno"/>
+        <result column="useorderno" property="useorderno"/>
+        <result column="medi_id" property="mediId"/>
         <result column="ops_id" property="opsId"/>
         <result column="medi_name" property="mediName"/>
         <result column="dosage" property="dosage"/>
@@ -164,6 +175,7 @@
         <result column="reqno" property="reqno"/>
         <result column="samreqno" property="samreqno"/>
         <result column="microbecode" property="microbecode"/>
+        <result column="datano" property="datano"/>
         <result column="mic" property="mic"/>
         <result column="data_name" property="dataName"/>
         <result column="sensitivity" property="sensitivity"/>
@@ -180,16 +192,111 @@
     </select>
 
     <select id="selectActiveReqnos" resultType="java.lang.String">
+        WITH candidate_reqnos AS (
+            SELECT
+                pat.reqno,
+                pat.inhosdate AS sort_time
+            FROM pat_infor pat
+            WHERE pat.reqno IS NOT NULL
+              AND pat.inhosdate &gt;= DATEADD(DAY, -#{recentAdmissionDays}, GETDATE())
+              AND NOT EXISTS (
+                SELECT 1
+                FROM patient_raw_data prd
+                WHERE prd.reqno = pat.reqno
+              )
+            <if test="sinceTime != null">
+                UNION ALL
+                SELECT updated.reqno, MAX(updated.lasttime) AS sort_time
+                FROM (
+                    SELECT reqno, lasttime FROM patdiaginfor WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM PatBodySurface WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patdoctoradvice WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patillnesscourse WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM pattestsam WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM pattestresult WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patusemedicine WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patvideoresult WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM PatDeptChange WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patopscutinfor WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patusemedicine_ops WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM pattest WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patmicrobesource_rep WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patmicrobesource WHERE lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT reqno, lasttime FROM patantisource WHERE lasttime &gt; #{sinceTime}
+                ) updated
+                WHERE updated.reqno IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM patient_raw_data prd
+                    WHERE prd.reqno = updated.reqno
+                  )
+                GROUP BY updated.reqno
+            </if>
+        )
         SELECT reqno
-        FROM pat_infor
---         WHERE reqno = '2601247612'
---         WHERE reqno = '260215773'
---         WHERE reqno = '260304412'
---         WHERE reqno = '260302506'
---         WHERE reqno IS NOT NULL
-        where reqno in ('260302506', '2601247612', '260125429', '260124371','260118051', '260122324', '260117982', '260115913', '260118631')
-        GROUP BY reqno
-        order by reqno desc
+        FROM (
+            SELECT reqno, MAX(sort_time) AS latest_time
+            FROM candidate_reqnos
+            GROUP BY reqno
+        ) final_candidates
+        ORDER BY latest_time DESC, reqno DESC
+        OFFSET 0 ROWS FETCH NEXT #{limit} ROWS ONLY
+    </select>
+
+    <select id="selectChangedDataTypes" resultType="java.lang.String">
+        <choose>
+            <when test="sinceTime == null">
+                SELECT 'FULL_PATIENT'
+            </when>
+            <otherwise>
+                SELECT DISTINCT source_type
+                FROM (
+                    SELECT 'DIAGNOSIS' AS source_type FROM patdiaginfor WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'BODY_SURFACE' AS source_type FROM PatBodySurface WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'DOCTOR_ADVICE' AS source_type FROM patdoctoradvice WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'ILLNESS_COURSE' AS source_type FROM patillnesscourse WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'LAB_TEST' AS source_type FROM pattestsam WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'LAB_TEST' AS source_type FROM pattestresult WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'USE_MEDICINE' AS source_type FROM patusemedicine WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'VIDEO_RESULT' AS source_type FROM patvideoresult WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'TRANSFER' AS source_type FROM PatDeptChange WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'OPERATION' AS source_type FROM patopscutinfor WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'OPERATION' AS source_type FROM patusemedicine_ops WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'MICROBE' AS source_type FROM pattest WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'MICROBE' AS source_type FROM patmicrobesource_rep WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'MICROBE' AS source_type FROM patmicrobesource WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                    UNION ALL
+                    SELECT 'MICROBE' AS source_type FROM patantisource WHERE reqno = #{reqno} AND lasttime &gt; #{sinceTime}
+                ) changed
+            </otherwise>
+        </choose>
     </select>
 
     <select id="selectPatInfor" resultMap="PatInforResultMap">
@@ -225,7 +332,8 @@
     </select>
 
     <select id="selectDiagByReqno" resultMap="PatDiagInforResultMap">
-        select a.reqno,
+        select a.diag_id,
+               a.reqno,
                a.phase,
                a.diag_name,
                a.diag_time
@@ -248,6 +356,7 @@
         SELECT
             pbs.reqno,
             pbs.measuredate,
+            pbs.flag,
             MAX(CASE WHEN pbs.flag = '体温' THEN pbs.temperature END) AS temperature,
             MAX(CASE WHEN pbs.flag = '大便次数' THEN pbs.temperature END) AS stool_count,
             MAX(CASE WHEN pbs.flag = '脉搏' THEN pbs.temperature END) AS pulse,
@@ -266,15 +375,16 @@
 
     <select id="selectLongDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
         SELECT
-            reqno,
-            docadvice,
-            begtime,
+            p.docadvno,
+            p.reqno,
+            p.docadvice, --医嘱名称
+            p.begtime, --开始时间
             CASE
-                WHEN CONVERT(VARCHAR(10), endtime, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
-                ELSE CONVERT(VARCHAR(19), endtime, 120)
-            END AS endtime,
-            docadvtype,
-            memo AS remarks,
+            WHEN CONVERT(VARCHAR(10), p.endtime, 120) IN ('9999-12-31', '1900-01-01') THEN '未结束'
+            ELSE CONVERT(VARCHAR(19), p.endtime, 120)
+            END AS endtime, --结束时间
+            p.docadvtype, --医嘱类型
+            p.memo AS remarks, --备注
             d.data_name as distname
         FROM
             patdoctoradvice p
@@ -297,7 +407,8 @@
 
     <select id="selectTemporaryDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
         SELECT
-            reqno,
+            p.docadvno,
+            p.reqno,
             docadvice,
             begtime,
             CASE
@@ -328,7 +439,8 @@
 
     <select id="selectSgDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
         SELECT
-            reqno,
+            p.docadvno,
+            p.reqno,
             docadvice,
             begtime,
             CASE
@@ -411,6 +523,7 @@
         select
             pt.reqno,
             pt.samreqno,
+            pm.itemno,
             pm.itemname,
             engname,
             resultdesc,
@@ -437,6 +550,8 @@
     <select id="selectUseMedicineByReqno" resultMap="PatUseMedicineResultMap">
         SELECT
             reqno,
+            useorderno,
+            medi_id,
             medi_name,
             med_calss,
             medi_path,
@@ -478,6 +593,8 @@
         SELECT
             pd.reqno,
             pd.samreqno,
+            pd.itemno,
+            pd.docadvtime,
             CONVERT(VARCHAR, docadvtime, 120) + itemname AS names,
             pd.diagnose,
             testresult,
@@ -507,23 +624,18 @@
     <select id="selectTransferByReqno" resultMap="PatTransferResultMap">
         SELECT
             reqno,
-            a_inhos_date AS indeptdate,
-            a_data_name AS indeptname,
+            indeptdate AS indeptdate, --入科时间
+            indeptname AS indeptname, --入科科室
             CASE
-                 WHEN CONVERT(VARCHAR(10), a_outhos_date, 120) = '9999-12-31' THEN '在院'
-                 ELSE CONVERT(VARCHAR(10), a_outhos_date, 23)
-                 END AS outhodate
-        FROM pat_infor_pats_basis p
-        inner join district_dict d on p.a_distno=d.datano
+                WHEN CONVERT(VARCHAR(10), outdeptdate, 120) = '9999-12-31' THEN '在院'
+                ELSE CONVERT(VARCHAR(10), outdeptdate, 23)
+            END AS outhodate, --出科时间
+            outdeptname
+        FROM	PatDeptChange p
         WHERE reqno = #{reqno}
         <if test="lastTime != null">
             and a_inhos_date &gt; #{lastTime}
         </if>
-        and ( coalesce('0','0')='0'
-                or (coalesce('0','0')='1'
-                and (coalesce(d.depcss,'_')='本院' or coalesce('本院','_')='_'))
-
-                )
     </select>
 
     <select id="selectOpsByReqno" resultMap="PatOpsCutInforResultMap">
@@ -559,6 +671,8 @@
         select
             ops.reqno,
             ops.ops_id,
+            med.useorderno,
+            med.medi_id,
             med.medi_name,
             med.dosage + med.unit as dosage,
             med.begin_time
@@ -581,6 +695,8 @@
         select
             ops.reqno,
             ops.ops_id,
+            med.useorderno,
+            med.medi_id,
             med.medi_name,
             med.dosage + med.unit as dosage,
             med.begin_time
@@ -691,6 +807,7 @@
             a.samreqno,
             a.microbecode,
             a.micresult mic,
+            a.datano,
             a.data_name,
             a.micexplain sensitivity
         from patantisource a
@@ -710,50 +827,6 @@
 
                 )
         order by item_memo1 DESC
-    </select>
-
-    <select id="selectReqnosWithUnprocessedStructData" resultType="java.lang.String">
-        SELECT TOP (#{limit}) prd.reqno
-        FROM patient_raw_data prd
-        WHERE prd.data_json IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-            FROM patient_summary ps
-            WHERE ps.reqno = prd.reqno
-              AND ps.update_time &gt;= prd.last_time
-        )
-
-        GROUP BY prd.reqno
-        ORDER BY MIN(prd.last_time) ASC
-    </select>
-
-    <select id="selectPendingStructReqnos" resultType="java.lang.String">
-        SELECT TOP (#{limit}) prd.reqno
-        FROM patient_raw_data prd
-        WHERE prd.struct_data_json IS NULL
-          AND prd.data_json IS NOT NULL
-        GROUP BY prd.reqno
-        ORDER BY MIN(prd.id) ASC
-    </select>
-
-    <select id="selectUnprocessedStructDataByReqno" resultMap="BaseResultMap">
-        SELECT prd.id,
-               prd.reqno,
-               prd.data_date,
-               prd.data_json,
-               prd.create_time,
-               prd.last_time
-        FROM patient_raw_data prd
-        WHERE prd.reqno = #{reqno}
-          AND prd.data_json IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-            FROM patient_summary ps
-            WHERE ps.reqno = prd.reqno
-              AND ps.update_time >= prd.last_time
-        )
-
-        ORDER BY prd.last_time ASC, prd.id ASC
     </select>
 
 </mapper>

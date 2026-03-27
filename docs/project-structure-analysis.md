@@ -11,7 +11,22 @@
 2. 症候群监测链路
    对病程内容做传染病症候群分析，通过大模型输出 JSON 结果，再经过校验、记录日志，并将高风险结果写入业务表。
 
+项目当前已经完成的任务包括：
+
+1. 医疗住院数据采集
+2. 病程结构化摘要
+3. 时间线展示
+4. 传染病症候群监测的 AI 辅助分析
+
 项目当前更完整、可运行的主链路是第一条，即“患者原始数据采集 -> 结构化摘要 -> 时间线展示”。
+
+系统的数据输入模式是：
+
+- 每日定时拉取
+- 增量接入
+- 不采用全量历史重跑
+
+同时，下一阶段将进入“院感预警分析”主任务；最终审核 Agent 当前只做规划，不在当前阶段开发。
 
 ## 2. 技术栈
 
@@ -79,7 +94,7 @@ yg_ai/
 - `AbstractAgent`
   封装统一的 `ChatModel` 调用能力。
 - `FormatAgent`
-  负责原始病程文本过滤、格式化、分段处理。
+  当前主要负责面向 LLM 的格式化、规整和分段处理；原始采集阶段的规则过滤已下沉到 `PatientServiceImpl`。
 - `SummaryAgent`
   负责将某一天的病程内容提炼成结构化摘要，并追加到时间线。
 - `SurveillanceAgent`
@@ -94,8 +109,10 @@ yg_ai/
 #### `ai/orchestrator`
 
 - `InfectionPipeline`
-  当前最关键的业务编排类，串联：
-  `LoadDataTool -> PatientService -> FormatAgent -> SummaryAgent -> summary 持久化`
+  当前最关键的业务编排类，负责：
+  `patient_raw_data_collect_task` 任务消费、
+  `patient_struct_data_task` 任务消费、
+  `PatientService -> SummaryAgent -> summary 持久化`
 
 #### `ai/prompt`
 
@@ -111,7 +128,7 @@ yg_ai/
 #### `ai/tools`
 
 - `LoadDataTool`
-  使用 `@Tool` 暴露患者原始数据加载能力。
+  作为预留的 `@Tool` 适配层保留，当前不再承担主采集链路职责。
 
 #### `ai/validator`
 
@@ -202,7 +219,7 @@ yg_ai/
 这里的核心是：
 
 - `PatientServiceImpl`
-  负责从 SQL Server 查询患者数据、按天组装、写入 `patient_raw_data`、查询待处理数据、更新摘要。
+  负责从 SQL Server 查询患者数据、按天组装、写入 `patient_raw_data`、维护 `data_json/filter_data_json`、执行增量 merge、写入原始数据变更任务。
 - `PatientSummaryTimelineViewServiceImpl`
   负责把 `summaryJson` 转成前端可直接渲染的 timeline 数据。
 
@@ -211,7 +228,7 @@ yg_ai/
 定时任务层，共 4 个类：
 
 - `InfectionMonitorScheduler`
-  定时扫描患者并采集原始数据。
+  已拆分为“扫描入队”和“执行采集任务”两段。
 - `StructDataFormatScheduler`
   定时处理待结构化的病程数据。
 - `SummaryWarningScheduler`
@@ -225,19 +242,26 @@ yg_ai/
 
 入口：
 
-- `InfectionMonitorScheduler.scanPatients()`
+- `InfectionMonitorScheduler.enqueuePendingPatients()`
+- `InfectionMonitorScheduler.processPendingCollectTasks()`
 
 处理过程：
 
 1. 通过 `PatientService.listActiveReqnos()` 获取患者列表
-2. 调用 `InfectionPipeline.processPatient(reqno)`
-3. 通过 `LoadDataTool.loadPatientRawData(reqno)` 进入业务服务
-4. `PatientServiceImpl.collectAndSaveRawData(reqno)` 从 SQL Server 聚合查询患者多维数据
-5. 按天分组并写入 `patient_raw_data`
+2. 将 `reqno` 写入 `patient_raw_data_collect_task`
+3. `InfectionPipeline.processPendingRawDataTasks()` claim 原始采集任务
+4. `PatientServiceImpl.collectAndSaveRawDataResult(reqno)` 识别新患者、增量患者和 `changedTypes`
+5. 按查询类型读取业务源表并按天聚合
+6. 原始块写入 `patient_raw_data.data_json`
+7. 规则处理结果写入 `patient_raw_data.filter_data_json`
+8. 更新 `patient_raw_data.last_time`
+9. 将变更行写入 `patient_raw_data_change_task`
 
 说明：
 
-- 当前 `selectActiveReqnos` 使用的是硬编码 `reqno` 白名单，不是完全动态扫描。
+- 新患者限制为最近 30 天入院。
+- 增量患者候选识别依赖各业务表 `last_time`，且要求 `patient_raw_data` 中已存在对应 `reqno`。
+- 原始采集与下游摘要链已经完成解耦。
 
 ### 5.2 结构化摘要链路
 
@@ -247,12 +271,18 @@ yg_ai/
 
 处理过程：
 
-1. `InfectionPipeline.processPendingStructData()` 查询待处理患者
+1. `InfectionPipeline.processPendingStructData()` claim `patient_struct_data_task`
 2. 根据 `reqno` 查询 `patient_raw_data` 中未结构化记录
-3. 用 `FormatAgent.filterIllnessCourse()` 对病程文本做去重过滤
+3. 直接读取已生成的 `filter_data_json`
 4. 用 `SummaryAgent.extractDailyIllness()` 生成当天结构化结果与增量摘要
 5. 将结构化内容写回 `patient_raw_data.struct_data_json`
 6. 将汇总后的摘要写入 `patient_summary.summary_json`
+
+说明：
+
+- `pat_illnessCourse` 的过滤规则已经前移到原始采集落库阶段
+- 当前摘要链仍在使用 `patient_struct_data_task`
+- 后续建议逐步迁移为消费 `patient_raw_data_change_task`
 
 ### 5.3 时间线展示链路
 
@@ -408,7 +438,30 @@ yg_ai/
 - Prompt / Agent 输出校验测试
 - 时间线转换测试
 
-## 10. 后续文档拆分建议
+## 10. 下一阶段架构演进方向
+
+下一阶段将进入院感预警分析，建议新增并围绕以下对象设计：
+
+- `infection_event_pool`
+- `infection_llm_node_run`
+- `infection_case_snapshot`
+- `infection_alert_result`
+
+建议主流程：
+
+1. 对每日增量快照做差异识别
+2. 切分 EvidenceBlock
+3. 使用统一 LLM 事件抽取器生成标准化事件
+4. 事件规范化后写入事件池
+5. 维护病例状态快照
+6. 触发院感法官节点做局部重算
+7. 产出结果版本和医生可读解释
+
+当前阶段不进入开发实现的内容：
+
+- 最终审核 Agent
+
+## 11. 后续文档拆分建议
 
 你下一步如果要面向 Codex 或团队继续建设文档，建议从这份分析文档拆成以下几类。
 
@@ -457,7 +510,7 @@ yg_ai/
 - `docs/timeline-view-design.md`
   讲时间线视图转换规则与配置
 
-## 11. 建议作为后续文档母版的信息
+## 12. 建议作为后续文档母版的信息
 
 如果后面要让 Codex 持续参与开发，建议优先把以下信息单独沉淀出来：
 
@@ -473,6 +526,6 @@ yg_ai/
 5. 依赖收敛策略
    当前未使用的依赖是否保留，是否后续会启用。
 
-## 12. 一句话总结
+## 13. 一句话总结
 
-`yg_ai` 当前是一个以住院患者病程数据采集、AI 摘要生成和时间线展示为主链路的 Spring Boot 单体项目，同时保留了症候群监测、Redis 记忆、告警审计等扩展方向，但其中部分模块仍处于预留或半成品状态。
+`yg_ai` 当前是一个以住院患者病程增量采集、AI 摘要生成、时间线展示和症候群监测为已完成能力的 Spring Boot 单体项目，下一阶段将围绕院感预警分析展开，而最终审核 Agent 当前只作为规划项存在。

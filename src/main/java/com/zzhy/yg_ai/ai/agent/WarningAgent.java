@@ -1,18 +1,11 @@
 package com.zzhy.yg_ai.ai.agent;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-@Slf4j
+/**
+ * 预留院感预警 Agent。
+ * 当前未接入主链路，仅保留 bean 占位，避免误判为已启用能力。
+ */
 @Component
 public class WarningAgent extends AbstractAgent {
-
-    private final ObjectMapper objectMapper;
-
-    public WarningAgent(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
-
-
 }

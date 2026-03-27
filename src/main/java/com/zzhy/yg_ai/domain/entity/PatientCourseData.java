@@ -30,6 +30,9 @@ public class PatientCourseData {
      */
     @Data
     public static class PatInfor {
+        /**
+         * 数据库主键：reqno
+         */
         private String reqno;
         private String pathosid;
         private String sex;
@@ -46,8 +49,12 @@ public class PatientCourseData {
      */
     @Data
     public static class PatDiagInfor {
+        /**
+         * 数据库主键：reqno、diagId、diagTime
+         */
         private String reqno;
         private String phase;
+        private String diagId;
         private String diagName;
         private LocalDateTime diagTime;
     }
@@ -57,8 +64,12 @@ public class PatientCourseData {
      */
     @Data
     public static class PatBodySurface {
+        /**
+         * 数据库主键：reqno、measuredate、flag
+         */
         private String reqno;
         private LocalDateTime measuredate;
+        private String flag;
         private String temperature;
         private String stoolCount;
         private String pulse;
@@ -71,7 +82,11 @@ public class PatientCourseData {
      */
     @Data
     public static class PatDoctorAdvice {
+        /**
+         * 数据库主键：reqno、docadvno、begtime
+         */
         private String reqno;
+        private String docadvno;
         private String docadvice;
         private LocalDateTime begtime;
         private String endtime;
@@ -85,6 +100,9 @@ public class PatientCourseData {
      */
     @Data
     public static class PatIllnessCourse {
+        /**
+         * 数据库主键：reqno、creattime、itemname
+         */
         private String illnessCourseId;
         private String reqno;
         private String illnesscontent;
@@ -98,6 +116,9 @@ public class PatientCourseData {
      */
     @Data
     public static class PatTestSam {
+        /**
+         * 数据库主键：reqno、samreqno
+         */
         private String reqno;
         private String samreqno;
         private LocalDateTime sendtestdate;
@@ -112,8 +133,12 @@ public class PatientCourseData {
      */
     @Data
     public static class PatTestResult {
+        /**
+         * 数据库主键：reqno、samreqno、itemno
+         */
         private String reqno;
         private String samreqno;
+        private String itemno;
         private String itemname;
         private String engname;
         private String resultdesc;
@@ -128,7 +153,12 @@ public class PatientCourseData {
      */
     @Data
     public static class PatUseMedicine {
+        /**
+         * 数据库主键：reqno、useorderno、medi_id
+         */
         private String reqno;
+        private String useorderno;
+        private String mediId;
         private String mediName;
         private String medCalss;
         private String mediPath;
@@ -146,12 +176,17 @@ public class PatientCourseData {
     }
 
     /**
-     * 患者视频结果信息
+     * 患者影像结果信息
      */
     @Data
     public static class PatVideoResult {
+        /**
+         * 数据库主键：reqno、samreqno、itemno、docadvtime
+         */
         private String reqno;
         private String samreqno;
+        private String itemno;
+        private String docadvtime;
         private String names;
         private String diagnose;
         private String testresult;
@@ -163,10 +198,14 @@ public class PatientCourseData {
      */
     @Data
     public static class PatTransfer {
+        /**
+         * 数据库主键：reqno、indeptdate
+         */
         private String reqno;
         private LocalDateTime indeptdate;
         private String indeptname;
         private String outhodate;
+        private String outdeptname;
     }
 
     /**
@@ -174,6 +213,9 @@ public class PatientCourseData {
      */
     @Data
     public static class PatOpsCutInfor {
+        /**
+         * 数据库主键：reqno、opsId
+         */
         private String reqno;
         private String opsId;
         private String opsName;
@@ -190,7 +232,12 @@ public class PatientCourseData {
      */
     @Data
     public static class OpsMedicine {
+        /**
+         * 数据库主键：reqno、useorderno、mediId
+         */
         private String reqno;
+        private String useorderno;
+        private String mediId;
         private String opsId;
         private String mediName;
         private String dosage;
@@ -202,6 +249,9 @@ public class PatientCourseData {
      */
     @Data
     public static class PatTest {
+        /**
+         * 数据库主键：reqno、samreqno
+         */
         private String reqno;
         private String testobject;
         private String samreqno;
@@ -215,6 +265,9 @@ public class PatientCourseData {
      */
     @Data
     public static class MicrobeInfo {
+        /**
+         * 数据库主键：reqno、samreqno、data_code
+         */
         private String reqno;
         private String samreqno;
         private LocalDateTime sendtestdate;
@@ -233,9 +286,13 @@ public class PatientCourseData {
      */
     @Data
     public static class AntiDrugInfo {
+        /**
+         * 数据库主键：reqno、samreqno、microbecode、datano
+         */
         private String reqno;
         private String samreqno;
         private String microbecode;
+        private String datano;
         private String mic;
         private String dataName;
         private String sensitivity;

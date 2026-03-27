@@ -2,9 +2,22 @@
 
 `yg_ai` 是一个基于 `Spring Boot 3 + Java 17 + MyBatis-Plus + Spring AI` 的单体后端项目，主要用于医疗住院数据采集、病程结构化摘要、时间线展示，以及传染病症候群监测的 AI 辅助分析。
 
+当前已经完成的任务包括：
+
+- 医疗住院数据采集
+- 病程结构化摘要
+- 时间线展示
+- 传染病症候群监测的 AI 辅助分析
+
 当前最完整的主链路是：
 
 `SQL Server 原始住院数据 -> patient_raw_data -> LLM 结构化摘要 -> patient_summary -> 时间线接口 / 静态展示页`
+
+系统的数据来源模式是：
+
+- 每日定时拉取
+- 增量接入
+- 不采用每日全量重跑整个历史病例
 
 ## 技术栈
 
@@ -52,6 +65,8 @@ src/main/resources
 - 编排类：`InfectionPipeline`
 - 数据来源：SQL Server
 - 输出表：`patient_raw_data`
+- 任务表：`patient_raw_data_collect_task`
+- 运维日志表：`infection_daily_job_log`
 
 职责：
 
@@ -60,11 +75,25 @@ src/main/resources
 - 按天组装病程语义块
 - 将原始 JSON 与临床摘要落库
 
+执行方式：
+
+- 扫描阶段先生成 `patient_raw_data_collect_task`
+- 调度器再领取待处理采集任务并发执行
+- 任务结果按 `PENDING / RUNNING / SUCCESS / FAILED` 流转
+- 批次级执行情况写入 `infection_daily_job_log`
+
+模式说明：
+
+- 该链路的数据输入是按日定时增量拉取
+- 后续分析应优先识别快照差异，而不是对全历史重复重算
+
 ### 2. 病程结构化与时间线摘要
 
 - 入口任务：`StructDataFormatScheduler`
 - AI 核心：`FormatAgent`、`SummaryAgent`
 - 输出表：`patient_raw_data.struct_data_json`、`patient_summary.summary_json`
+- 任务表：`patient_struct_data_task`
+- 运维日志表：`infection_daily_job_log`
 
 职责：
 
@@ -72,6 +101,12 @@ src/main/resources
 - 生成当天结构化事实与增量摘要
 - 将摘要累积成 timeline 结构
 - 为前端时间线视图提供标准化数据源
+
+执行方式：
+
+- 原始数据采集完成后，按 `reqno` 写入 `patient_struct_data_task`
+- 定时任务优先领取待处理任务，再执行结构化和摘要更新
+- 不再依赖单纯扫描 `struct_data_json is null` 作为唯一处理驱动
 
 ### 3. 时间线展示
 
@@ -115,22 +150,42 @@ src/main/resources
 - `spring.datasource.*`
 - `spring.data.redis.*`
 - `spring.ai.openai.*`
+- `infection.monitor.*`
 
-建议本地开发时拆分为环境专用配置，不要直接在共享配置中保留真实账号口令。
+当前共享配置已经改为环境变量优先，不再直接存放真实账号口令。
+
+推荐做法：
+
+- 共享基线配置使用 `application.yaml`
+- 本地开发使用 `application-local.yaml`
+- 通过 `SPRING_PROFILES_ACTIVE=local` 启动本地覆盖配置
+- 通过环境变量注入真实连接信息
+
+常用环境变量：
+
+- `YG_AI_DB_URL`
+- `YG_AI_DB_USERNAME`
+- `YG_AI_DB_PASSWORD`
+- `YG_AI_REDIS_HOST`
+- `YG_AI_REDIS_PORT`
+- `YG_AI_OPENAI_BASE_URL`
+- `YG_AI_OPENAI_API_KEY`
+- `YG_AI_MONITOR_DEBUG_MODE`
+- `YG_AI_MONITOR_DEBUG_REQNOS`
 
 ## 本地启动
 
 ### 1. 使用 Maven Wrapper
 
 ```bash
-./mvnw spring-boot:run
+SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
 ```
 
 ### 2. 打包运行
 
 ```bash
 ./mvnw clean package
-java -jar target/yg_ai-0.0.1-SNAPSHOT.jar
+SPRING_PROFILES_ACTIVE=local java -jar target/yg_ai-0.0.1-SNAPSHOT.jar
 ```
 
 默认端口见 `application.yaml`，当前配置为 `8090`。
@@ -168,7 +223,7 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 - `InfectiousSyndromeSurveillanceTask`
   症候群监测，默认未开启自动调度
 - `SummaryWarningScheduler`
-  预留，当前未实现
+ 预留，当前不注册调度逻辑
 
 ## 当前实现状态
 
@@ -178,15 +233,68 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 - 病程按天聚合与落库
 - AI 结构化摘要生成
 - 时间线视图转换
+- 传染病症候群监测 AI 辅助分析
 - 静态演示页面
 
 仍在演进：
 
-- 告警能力
-- 审计能力
-- Redis 记忆能力
-- 症候群监测自动调度
+- 院感预警分析
+- 标准化事件入池
+- 病例状态快照
+- 事件驱动局部重算
+- 结果版本化
+- 页面联动与人工复核闭环
 - 依赖清理与测试补齐
+
+主链路边界说明：
+
+- `InfectionPipeline` 当前只负责患者采集和结构化摘要主流程
+- `WarningAgent`、`AuditAgent`、`SummaryWarningScheduler` 仍为预留模块
+- 患者扫描默认按“在院 / 近期出院”规则查询，可通过 `infection.monitor.debug-mode=true` 和 `infection.monitor.debug-reqnos` 切到调试名单
+
+规划中但当前不开发：
+
+- 最终审核 Agent
+
+## 下一阶段目标
+
+下一阶段主任务是“院感预警分析”，其核心目标不是做一次性全量分析，而是建设：
+
+> 基于每日增量数据持续更新的院感监测系统
+
+下一阶段的目标对象包括：
+
+- `infection_event_pool`
+- `infection_llm_node_run`
+- `infection_case_snapshot`
+- `infection_alert_result`
+
+推荐推进顺序：
+
+### Phase 1
+
+- 标准化事件入池
+- `infection_event_pool`
+- `infection_llm_node_run`
+
+### Phase 2
+
+- 病例状态快照
+- 事件驱动局部重算
+- 院感法官基础节点
+
+### Phase 3
+
+- 部位级评分
+- 总体预警建议
+- 结果版本化
+- 页面联动
+- 人工复核闭环
+
+### 规划项
+
+- 最终审核 Agent
+  当前只做规划，不进入开发实现
 
 ## 风险与注意事项
 
@@ -194,9 +302,12 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 - `application.yaml` 中存在强环境依赖，部署前必须重构配置管理。
 - 项目测试覆盖很弱，当前主要依赖人工联调。
 - 代码中保留了部分预留模块，阅读时应区分“已上线主链路”和“待实现扩展”。
+- 后续院感预警分析必须坚持增量模式，不能退化为每日全量重跑方案。
 
 ## 文档
 
 - 项目结构分析：[docs/project-structure-analysis.md](docs/project-structure-analysis.md)
 - 架构设计：[docs/architecture.md](docs/architecture.md)
+- 院感预警实施：[docs/infection-warning-design.md](docs/infection-warning-design.md)
+- 数据模型设计：[docs/data-model-design.md](docs/data-model-design.md)
 - Codex 协作规范：[AGENT.md](AGENT.md)
