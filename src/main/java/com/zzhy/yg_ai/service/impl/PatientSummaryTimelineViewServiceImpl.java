@@ -210,7 +210,7 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
                         Collections.singletonList(status),
                         Collections.singletonList(problemType)
                 );
-                if (matchesAny(uncertainText, statusRuleValues(ruleProperties.getImportantUnconfirmedPatterns()))
+                if (matchesAny(uncertainText, enumRuleValues(ruleProperties.getImportantUnconfirmedPatterns()))
                         && ("high".equals(priority) || "medium".equals(priority) || riskHit)) {
                     hasImportantUnconfirmed = true;
                 }
@@ -241,8 +241,8 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         appendRiskFlags(riskItems, allRiskFlags, sourceNotes, summary);
         riskItems = dedupeRiskItems(riskItems);
 
-        PatientTimelineViewData.ActionGroups actionGroups = groupActions(allActions);
-        List<String> evidenceHighlights = selectEvidenceHighlights(allEvidence);
+        List<String> actionItems = buildActionItems(allActions);
+        List<String> evidenceHighlights = limitList(dedupeStrings(allEvidence), 4);
 
         PatientTimelineViewData.TimelineItem item = new PatientTimelineViewData.TimelineItem();
         item.setDate(date);
@@ -250,7 +250,7 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         item.setPrimaryProblems(limitList(primary, 2));
         item.setSecondaryProblems(limitList(secondary, 2));
         item.setRiskItems(limitList(riskItems, 3));
-        item.setActions(actionGroups);
+        item.setActions(actionItems);
         item.setNextFocus(nextFocus);
         item.setEvidenceHighlights(limitList(evidenceHighlights, 4));
         item.setSourceNotes(sourceNotes);
@@ -277,7 +277,6 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         context.hasHighPriorityPrimary = hasHighPriorityPrimary;
         context.hasSecondaryProblem = !secondary.isEmpty();
         context.hasImportantUnconfirmed = hasImportantUnconfirmed;
-        context.hasAbnormalEvidence = evidenceHighlights.stream().anyMatch(this::looksAbnormalLabEvidence);
         return context;
     }
 
@@ -322,17 +321,8 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         for (TimelineBuildContext context : contexts) {
             LinkedHashSet<String> badges = new LinkedHashSet<>(buildSourceBadges(context, admissionDate));
 
-            if (matchesAny(joinList("", context.sourceRefs), ruleProperties.getSourceSurgeryPatterns()) || isOperationPerformed(context)) {
+            if (matchesAny(joinList("", context.sourceRefs), ruleProperties.getSourceSurgeryPatterns())) {
                 badges.add("手术日");
-            }
-            if (containsFeverSignal(context)) {
-                badges.add("发热");
-            }
-            if (containsPlannedSurgerySignal(context)) {
-                badges.add("拟手术");
-            }
-            if (containsPostOpSignal(context)) {
-                badges.add("术后");
             }
             appendPrimaryProblemBadges(context, badges);
 
@@ -395,40 +385,6 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         return badges;
     }
 
-    private boolean containsFeverSignal(TimelineBuildContext context) {
-        if (matchesAny(context.summary, ruleProperties.getFeverTextPatterns())) {
-            return true;
-        }
-        for (String problem : context.problemNames) {
-            if (matchesAny(problem, ruleProperties.getFeverTextPatterns())) {
-                return true;
-            }
-        }
-        for (String evidence : context.evidenceTexts) {
-            if (matchesAny(evidence, ruleProperties.getFeverEvidencePatterns())) {
-                return true;
-            }
-        }
-        for (String riskText : context.riskFlags) {
-            if (matchesAny(riskText, ruleProperties.getFeverRiskPatterns())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean containsPlannedSurgerySignal(TimelineBuildContext context) {
-        return matchesAny(buildTextPool(context), ruleProperties.getSurgeryPlanningPatterns());
-    }
-
-    private boolean containsPostOpSignal(TimelineBuildContext context) {
-        return matchesAny(buildTextPool(context), ruleProperties.getPostOpPatterns());
-    }
-
-    private boolean isOperationPerformed(TimelineBuildContext context) {
-        return matchesAny(buildTextPool(context), ruleProperties.getPerformedSurgeryPatterns());
-    }
-
     private void appendPrimaryProblemBadges(TimelineBuildContext context, LinkedHashSet<String> badges) {
         int added = 0;
         for (PatientTimelineViewData.ProblemItem problem : context.item.getPrimaryProblems()) {
@@ -454,14 +410,12 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
     private String resolveSeverityByRules(TimelineBuildContext context, Set<String> badges) {
         boolean highByBadge = badges.stream().anyMatch(b -> containsInList(b, ruleProperties.getHighBadges()))
                 || badges.stream().anyMatch(b -> startsWithAny(b, ruleProperties.getHighPostOpBadgePrefixes()));
-        boolean hasCriticalRisk = matchesAny(joinList("", context.riskFlags), ruleProperties.getCriticalRiskPatterns());
-        if (highByBadge || context.hasHighPriorityPrimary || hasCriticalRisk) {
+        if (highByBadge || context.hasHighPriorityPrimary) {
             return "high";
         }
         if (context.hasSecondaryProblem
                 || badges.stream().anyMatch(b -> containsInList(b, ruleProperties.getMediumBadges()))
-                || context.hasImportantUnconfirmed
-                || context.hasAbnormalEvidence) {
+                || context.hasImportantUnconfirmed) {
             return "medium";
         }
         return "low";
@@ -474,16 +428,16 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
                 return true;
             }
         }
-        return "high".equals(severity) || matchesAny(context.summary, ruleProperties.getFeverTextPatterns());
+        return "high".equals(severity);
     }
 
     private boolean isPrimaryProblem(String name, String priority, String certainty, String status, String problemType) {
         boolean statusMatch = containsInList(status, ruleProperties.getPrimaryStatuses());
-        boolean strict = "high".equals(priority) && "confirmed".equals(certainty) && statusMatch;
-        boolean surgeryCore = ("high".equals(priority) || "complication".equals(problemType))
-                && (statusMatch || !StringUtils.hasText(status))
-                && containsAny(name, "手术", "置换", "术后", "并发症", "感染", "发热");
-        return strict || surgeryCore;
+        return "high".equals(priority)
+                && "confirmed".equals(certainty)
+                && statusMatch
+                && !"risk_state".equals(problemType)
+                && !"differential".equals(problemType);
     }
 
     private boolean isSecondaryProblem(String name, String priority, String problemType, String status) {
@@ -493,20 +447,11 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         if ("complication".equals(problemType)) {
             return true;
         }
-        return "chronic".equals(problemType) && !containsAny(name, "待排", "风险") && !"unclear".equals(status);
+        return "chronic".equals(problemType) && !"unclear".equals(status);
     }
 
     private boolean isRiskProblem(String name, String certainty, String problemType, String status) {
-        if ("risk_state".equals(problemType)) {
-            return true;
-        }
-        if ("suspected".equals(certainty) || "possible".equals(certainty)) {
-            return true;
-        }
-        if ("possible".equals(status) || "monitoring".equals(status) || "unclear".equals(status)) {
-            return true;
-        }
-        return containsAny(name, "风险", "待排");
+        return "risk_state".equals(problemType) || "risk_only".equals(certainty);
     }
 
     private boolean shouldHideProblem(String name,
@@ -515,21 +460,10 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
                                       String problemType,
                                       List<String> evidence,
                                       List<String> actions) {
-        if (containsAny(problemType, statusRuleValues(ruleProperties.getHideProblemTypePatterns()))) {
+        if (containsAny(problemType, enumRuleValues(ruleProperties.getHideProblemTypePatterns()))) {
             return true;
         }
-        if (containsAny(name, ruleProperties.getHideProblemNamePatterns())) {
-            return true;
-        }
-        boolean weakPending = name.contains("待排")
-                && "low".equals(priority)
-                && !"risk_state".equals(problemType)
-                && (evidence == null || evidence.isEmpty())
-                && (actions == null || actions.isEmpty());
-        boolean weakSuspected = ("suspected".equals(certainty) || "possible".equals(certainty))
-                && "low".equals(priority)
-                && (evidence == null || evidence.isEmpty());
-        return weakPending || weakSuspected;
+        return containsAny(name, ruleProperties.getHideProblemNamePatterns());
     }
 
     private PatientTimelineViewData.RiskItem buildRiskItemFromProblem(PatientTimelineViewData.ProblemItem item) {
@@ -556,101 +490,8 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         }
     }
 
-    private PatientTimelineViewData.ActionGroups groupActions(List<String> actions) {
-        PatientTimelineViewData.ActionGroups groups = new PatientTimelineViewData.ActionGroups();
-        for (String action : dedupeStrings(actions)) {
-            if (!StringUtils.hasText(action)) {
-                continue;
-            }
-            ActionCategory category = classifyAction(action);
-            if (category == ActionCategory.TESTS) {
-                groups.getTests().add(action);
-            } else if (category == ActionCategory.MONITORING) {
-                groups.getMonitoring().add(action);
-            } else if (category == ActionCategory.TREATMENT) {
-                groups.getTreatment().add(action);
-            } else {
-                groups.getOther().add(action);
-            }
-        }
-        return groups;
-    }
-
-    private ActionCategory classifyAction(String action) {
-        String text = normalizeLower(action);
-        int treatmentScore = patternScore(text, ruleProperties.getTreatmentPatterns());
-        int testsScore = patternScore(text, ruleProperties.getTestPatterns());
-        int monitoringScore = patternScore(text, ruleProperties.getMonitoringPatterns());
-
-        if (containsAny(text, ruleProperties.getTestBoostKeywords())) {
-            testsScore += 2;
-        }
-        if (containsAny(text, ruleProperties.getMonitoringBoostKeywords())) {
-            monitoringScore += 2;
-        }
-        if (containsAny(text, ruleProperties.getTreatmentBoostKeywords())) {
-            treatmentScore += 2;
-        }
-
-        int max = Math.max(treatmentScore, Math.max(testsScore, monitoringScore));
-        if (max <= 0) {
-            return ActionCategory.OTHER;
-        }
-        if (testsScore == max && testsScore >= monitoringScore) {
-            return ActionCategory.TESTS;
-        }
-        if (monitoringScore == max && monitoringScore > treatmentScore) {
-            return ActionCategory.MONITORING;
-        }
-        return ActionCategory.TREATMENT;
-    }
-
-    private int patternScore(String text, List<String> patterns) {
-        int score = 0;
-        for (String pattern : patterns) {
-            if (matchesAny(text, Collections.singletonList(pattern))) {
-                score++;
-            }
-        }
-        return score;
-    }
-
-    private List<String> selectEvidenceHighlights(List<String> allEvidence) {
-        List<String> deduped = dedupeStrings(allEvidence);
-        deduped.sort(Comparator.comparingInt(this::scoreEvidence).reversed());
-        return deduped;
-    }
-
-    private int scoreEvidence(String evidence) {
-        if (!StringUtils.hasText(evidence)) {
-            return 0;
-        }
-        int score = 10;
-        if (looksAbnormalLabEvidence(evidence)) {
-            score += 80;
-        }
-        if (containsAny(evidence, "彩超", "影像", "x线", "ct", "mri", "探查", "片")) {
-            score += 60;
-        }
-        if (containsAny(evidence, "压痛", "活动受限", "变形", "阳性", "疼痛", "血运")) {
-            score += 40;
-        }
-        if (containsAny(evidence, "术后", "引流", "切口", "体温")) {
-            score += 20;
-        }
-        return score;
-    }
-
-    private boolean looksAbnormalLabEvidence(String evidence) {
-        if (!StringUtils.hasText(evidence)) {
-            return false;
-        }
-        String text = evidence.trim();
-        if (matchesAny(text, ruleProperties.getAbnormalHintPatterns())
-                || matchesAny(text, ruleProperties.getFeverEvidencePatterns())) {
-            return true;
-        }
-        return containsAny(text, ruleProperties.getAbnormalLabTokens()) && text.matches(".*\\d+.*");
+    private List<String> buildActionItems(List<String> actions) {
+        return limitList(dedupeStrings(actions), 8);
     }
 
     private List<PatientTimelineViewData.SourceNote> parseSourceNotes(List<String> refs) {
@@ -706,10 +547,6 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
             }
         }
         return dedupeStrings(names);
-    }
-
-    private String buildTextPool(TimelineBuildContext context) {
-        return joinList(context.summary, context.problemNames, context.riskFlags, context.evidenceTexts, context.actionTexts);
     }
 
     private String joinList(String first, List<String>... lists) {
@@ -873,14 +710,14 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         return list.contains(value);
     }
 
-    private List<String> statusRuleValues(List<TimelineViewRuleProperties.StatusLabelRule> rules) {
+    private List<String> enumRuleValues(List<TimelineViewRuleProperties.EnumLabelRule> rules) {
         if (rules == null || rules.isEmpty()) {
             return Collections.emptyList();
         }
         List<String> values = new ArrayList<>();
-        for (TimelineViewRuleProperties.StatusLabelRule rule : rules) {
-            if (rule != null && StringUtils.hasText(rule.getStatus())) {
-                values.add(rule.getStatus().trim());
+        for (TimelineViewRuleProperties.EnumLabelRule rule : rules) {
+            if (rule != null && StringUtils.hasText(rule.getValue())) {
+                values.add(rule.getValue().trim());
             }
         }
         return values;
@@ -1013,13 +850,6 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         return new ArrayList<>(list.subList(0, limit));
     }
 
-    private enum ActionCategory {
-        TREATMENT,
-        TESTS,
-        MONITORING,
-        OTHER
-    }
-
     private static class TimelineBuildContext {
         private PatientTimelineViewData.TimelineItem item;
         private LocalDate date;
@@ -1032,6 +862,5 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         private boolean hasHighPriorityPrimary;
         private boolean hasSecondaryProblem;
         private boolean hasImportantUnconfirmed;
-        private boolean hasAbnormalEvidence;
     }
 }

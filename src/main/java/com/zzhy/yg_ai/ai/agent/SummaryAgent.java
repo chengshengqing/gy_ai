@@ -40,7 +40,7 @@ import org.springframework.util.StringUtils;
 @Component
 public class SummaryAgent extends AbstractAgent {
 
-    private static final int MODEL_TIMELINE_MAX_LENGTH = 6000;
+    private static final int MODEL_TIMELINE_MAX_LENGTH = 8000;
     private static final DateTimeFormatter ILLNESS_TIME_FORMATTER = DateTimeUtils.DATE_TIME_FORMATTER;
     private static final Set<String> ALLOWED_STATUS = Set.of(
             "active", "acute_exacerbation", "worsening", "improving", "chronic", "stable", "clarified", "unclear"
@@ -52,45 +52,18 @@ public class SummaryAgent extends AbstractAgent {
     private static final Set<String> ALLOWED_PROBLEM_TYPE = Set.of(
             "disease", "complication", "chronic", "risk_state", "differential"
     );
+    private static final Set<String> ALLOWED_BASELINE_CERTAINTY = Set.of("confirmed", "suspected", "workup_needed");
+    private static final Set<String> ALLOWED_BASELINE_TIME_STATUS = Set.of("active", "acute_exacerbation", "chronic", "unclear");
+    private static final Set<String> ALLOWED_SEVERITY = Set.of("mild", "moderate", "severe", "critical", "unclear");
+    private static final Set<String> ALLOWED_DIFFERENTIAL_CERTAINTY = Set.of("suspected", "workup_needed");
+    private static final Set<String> ALLOWED_RISK_ALERT_CERTAINTY = Set.of("risk_only", "suspected");
+    private static final Set<String> ALLOWED_CONSULT_CERTAINTY = Set.of("confirmed", "suspected", "workup_needed", "risk_only");
 
     private final ObjectMapper objectMapper;
 
     public SummaryAgent(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
-
-
-    public String extractDailyEvents(PatientRawDataEntity rawDataEntity, PatientSummaryEntity latestSummary) {
-        String input = StringUtils.hasText(rawDataEntity.getDataJson()) ? rawDataEntity.getDataJson() : "{}";
-        Map<String, String> splitInput = AgentUtils.splitInput(input);
-
-        return null;
-    }
-
-    private String normalizeJson(String output) {
-        if (!StringUtils.hasText(output)) {
-            return "{}";
-        }
-        String trimmed = output.trim();
-        try {
-            objectMapper.readTree(trimmed);
-            return trimmed;
-        } catch (Exception ignored) {
-            int start = trimmed.indexOf('{');
-            int end = trimmed.lastIndexOf('}');
-            if (start >= 0 && end > start) {
-                String candidate = trimmed.substring(start, end + 1);
-                try {
-                    objectMapper.readTree(candidate);
-                    return candidate;
-                } catch (Exception e) {
-                    log.warn("SummaryAgent返回非JSON，保留原文");
-                }
-            }
-            return trimmed;
-        }
-    }
-
 
     public DailyIllnessResult extractDailyIllness(PatientSummaryEntity latestSummary, PatientRawDataEntity rawData) {
         if (rawData == null) {
@@ -111,7 +84,7 @@ public class SummaryAgent extends AbstractAgent {
                 });
 
         List<Map<String, Object>> noteStructuredList = new ArrayList<>();
-        Set<String> sourceRefs = new LinkedHashSet<>();
+        List<Map<String, Object>> noteValidationList = new ArrayList<>();
 
         for (PatientCourseData.PatIllnessCourse illnessCourse : illnessCourseList) {
             String itemname = illnessCourse.getItemname();
@@ -119,49 +92,57 @@ public class SummaryAgent extends AbstractAgent {
             if (!StringUtils.hasText(illnesscontent)) {
                 continue;
             }
-            String promptTemplate = selectPromptByItemName(itemname);
+            PromptDefinition promptDefinition = selectPromptByItemName(itemname);
+            String noteTime = resolveIllnessTime(illnessCourse, rawData);
 
             Map<String, Object> currentIllness = new LinkedHashMap<>();
             currentIllness.put("itemname", itemname);
-            currentIllness.put("time", resolveIllnessTime(illnessCourse, rawData));
+            currentIllness.put("time", noteTime);
             currentIllness.put("illnesscontent", illnesscontent);
-            String llmResult = callWithPrompt(promptTemplate, AgentUtils.toJson(currentIllness));
-            JsonNode normalizedResultNode = toJsonNodeOrText(llmResult);
-            String noteTime = resolveIllnessTime(illnessCourse, rawData);
+            ValidatedLlmResult llmResult = callWithValidation(promptDefinition, AgentUtils.toJson(currentIllness));
+            JsonNode normalizedResultNode = llmResult.success() ? llmResult.outputNode() : objectMapper.createObjectNode();
 
             Map<String, Object> noteStructured = new LinkedHashMap<>();
             noteStructured.put("note_type", itemname);
             noteStructured.put("timestamp", noteTime);
             noteStructured.put("structured", normalizedResultNode);
+            noteStructured.put("validation", llmResult.toReport());
             noteStructuredList.add(noteStructured);
-            sourceRefs.add(itemname + "@" + noteTime);
+            noteValidationList.add(Map.of(
+                    "note_type", defaultIfBlank(itemname, ""),
+                    "timestamp", defaultIfBlank(noteTime, ""),
+                    "validation", llmResult.toReport()
+            ));
         }
 
         noteStructuredList.sort(Comparator.comparingInt(item -> noteTypePriority(String.valueOf(item.get("note_type")))));
         Map<String, Object> dayContext = buildStandardizedDayFacts(root, noteStructuredList);
 
-        JsonNode boundedDailyFusionNode = objectMapper.createObjectNode();
+        JsonNode validatedDailyFusionNode = objectMapper.createObjectNode();
+        Map<String, Object> dailyFusionValidation = failureReport("daily_fusion skipped");
         if (canGenerateDailyFusion(dayContext)) {
             Map<String, Object> fusionReadyFactsInput = buildFusionReadyFacts(dayContext, rawData);
             JsonNode fusionReadyFactsNode = objectMapper.valueToTree(fusionReadyFactsInput);
             String userInput = AgentUtils.toJson(Map.of("fusion_ready_facts", fusionReadyFactsNode));
             dayContext.put("llm_input", userInput);
-            String dailyFusionRaw = callWithPrompt(
-                    FormatAgentPrompt.DAILY_FUSION_SYSTEM_PROMPT,
-                    FormatAgentPrompt.DAILY_FUSION_USER_PROMPT,
-                    userInput
-            );
-            JsonNode dailyFusionNode = toJsonNodeOrText(dailyFusionRaw);
-            boundedDailyFusionNode = applyClinicalBoundaryRules(dailyFusionNode, root, fusionReadyFactsNode, noteStructuredList);
+            ValidatedLlmResult dailyFusionResult = callWithValidation(dailyFusionPromptDefinition(), userInput);
+            dailyFusionValidation = dailyFusionResult.toReport();
+            if (dailyFusionResult.success()) {
+                validatedDailyFusionNode = dailyFusionResult.outputNode();
+            }
         }
 
         Map<String, Object> structData = new LinkedHashMap<>();
         structData.put("day_context", dayContext);
-        structData.put("daily_fusion", boundedDailyFusionNode);
+        structData.put("daily_fusion", validatedDailyFusionNode);
+        structData.put("validation", Map.of(
+                "notes", noteValidationList,
+                "daily_fusion", dailyFusionValidation
+        ));
 
         String structDataJson = AgentUtils.toJson(structData);
-        List<Map<String, Object>> timelineAppendEntries = boundedDailyFusionNode.isObject() && boundedDailyFusionNode.size() > 0
-                ? buildDailyFusionTimelineEntries(rawData, boundedDailyFusionNode, sourceRefs)
+        List<Map<String, Object>> timelineAppendEntries = validatedDailyFusionNode.isObject() && validatedDailyFusionNode.size() > 0
+                ? buildDailyFusionTimelineEntries(rawData, validatedDailyFusionNode)
                 : Collections.emptyList();
         String updatedSummaryJson = appendTimelineEntries(baseSummaryJson, timelineAppendEntries, rawData.getReqno());
         return new DailyIllnessResult(structDataJson, updatedSummaryJson);
@@ -257,60 +238,23 @@ public class SummaryAgent extends AbstractAgent {
 
     private Map<String, Object> summarizeDoctorOrders(JsonNode orderNode) {
         Map<String, Object> result = new LinkedHashMap<>();
-        Map<String, Set<String>> buckets = new LinkedHashMap<>();
-        buckets.put("抗感染", new LinkedHashSet<>());
-        buckets.put("利尿", new LinkedHashSet<>());
-        buckets.put("吸氧", new LinkedHashSet<>());
-        buckets.put("退热", new LinkedHashSet<>());
-        buckets.put("会诊", new LinkedHashSet<>());
-        buckets.put("手术准备", new LinkedHashSet<>());
-        buckets.put("补液", new LinkedHashSet<>());
-
+        List<String> longTermOrders = new ArrayList<>();
+        List<String> temporaryOrders = new ArrayList<>();
+        List<String> sgOrders = new ArrayList<>();
         List<String> allOrders = new ArrayList<>();
         if (orderNode != null && orderNode.isObject()) {
-            collectArrayText(orderNode.get("long_term"), allOrders);
-            collectArrayText(orderNode.get("temporary"), allOrders);
-            collectArrayText(orderNode.get("sg"), allOrders);
+            collectArrayText(orderNode.get("long_term"), longTermOrders);
+            collectArrayText(orderNode.get("temporary"), temporaryOrders);
+            collectArrayText(orderNode.get("sg"), sgOrders);
         }
-        for (String order : allOrders) {
-            String val = order == null ? "" : order.trim();
-            if (!StringUtils.hasText(val)) {
-                continue;
-            }
-            if (containsAny(val, "抗", "头孢", "青霉素", "哌拉", "美罗", "感染")) {
-                buckets.get("抗感染").add(val);
-            }
-            if (containsAny(val, "利尿", "呋塞米", "托拉塞米", "螺内酯")) {
-                buckets.get("利尿").add(val);
-            }
-            if (containsAny(val, "吸氧", "氧疗", "鼻导管", "高流量", "呼吸机")) {
-                buckets.get("吸氧").add(val);
-            }
-            if (containsAny(val, "退热", "物理降温", "冰敷", "布洛芬", "对乙酰氨基酚")) {
-                buckets.get("退热").add(val);
-            }
-            if (containsAny(val, "会诊", "请", "协助诊治")) {
-                buckets.get("会诊").add(val);
-            }
-            if (containsAny(val, "术前", "备皮", "禁食", "麻醉", "手术")) {
-                buckets.get("手术准备").add(val);
-            }
-            if (containsAny(val, "补液", "输液", "补盐", "补钾")) {
-                buckets.get("补液").add(val);
-            }
-        }
-
-        List<Map<String, Object>> actionCategories = new ArrayList<>();
-        for (Map.Entry<String, Set<String>> entry : buckets.entrySet()) {
-            if (entry.getValue().isEmpty()) {
-                continue;
-            }
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("category", entry.getKey());
-            item.put("actions", new ArrayList<>(entry.getValue()));
-            actionCategories.add(item);
-        }
-        result.put("action_categories", actionCategories);
+        allOrders.addAll(longTermOrders);
+        allOrders.addAll(temporaryOrders);
+        allOrders.addAll(sgOrders);
+        result.put("has_data", !allOrders.isEmpty());
+        result.put("long_term", deduplicateKeepOrder(longTermOrders, 20));
+        result.put("temporary", deduplicateKeepOrder(temporaryOrders, 20));
+        result.put("sg", deduplicateKeepOrder(sgOrders, 20));
+        result.put("all_orders", deduplicateKeepOrder(allOrders, 40));
         return result;
     }
 
@@ -374,8 +318,6 @@ public class SummaryAgent extends AbstractAgent {
             }
             Map<String, Object> fact = new LinkedHashMap<>();
             fact.put("name", diagnosis);
-            fact.put("certainty", inferDiagnosisCertainty(diagnosis));
-            fact.put("time_status", inferDiagnosisTimeStatus(diagnosis, noteStructuredList));
             fact.put("source", "diagnosis");
             diagnosisFacts.add(fact);
         }
@@ -530,9 +472,7 @@ public class SummaryAgent extends AbstractAgent {
         clinicalReasoningLayer.put("differential_candidates", buildDifferentialCandidates(standardizedDayFacts));
         clinicalReasoningLayer.put("etiology_candidates", buildEtiologyCandidates(standardizedDayFacts));
         clinicalReasoningLayer.put("risk_candidates", buildDetailedRiskCandidates(standardizedDayFacts));
-        clinicalReasoningLayer.put("diagnostic_pending", buildDiagnosticPending(standardizedDayFacts));
-        clinicalReasoningLayer.put("recheck_pending", buildRecheckPending(standardizedDayFacts));
-        clinicalReasoningLayer.put("process_pending", buildProcessPending(standardizedDayFacts));
+        clinicalReasoningLayer.put("pending_facts", buildPendingFacts(standardizedDayFacts));
         fusionFacts.put("clinical_reasoning_layer", clinicalReasoningLayer);
 
         Map<String, Object> objectiveFactLayer = new LinkedHashMap<>();
@@ -543,39 +483,11 @@ public class SummaryAgent extends AbstractAgent {
         objectiveFactLayer.put("orders_summary", standardizedDayFacts.getOrDefault("orders_summary", Map.of()));
         objectiveFactLayer.put("objective_events", standardizedDayFacts.getOrDefault("objective_events", List.of()));
         objectiveFactLayer.put("objective_evidence", buildObjectiveEvidence(standardizedDayFacts));
-        objectiveFactLayer.put("treatment_actions", buildTreatmentActions(standardizedDayFacts));
-        objectiveFactLayer.put("diagnostic_actions", buildDiagnosticActions(standardizedDayFacts));
-        objectiveFactLayer.put("monitoring_actions", buildMonitoringActions(standardizedDayFacts));
-        objectiveFactLayer.put("process_actions", buildProcessActions(standardizedDayFacts));
+        objectiveFactLayer.put("action_facts", buildActionFacts(standardizedDayFacts));
         fusionFacts.put("objective_fact_layer", objectiveFactLayer);
 
-        Map<String, Object> fusionControlLayer = new LinkedHashMap<>();
-        fusionControlLayer.put("fusion_hints", buildFusionHints());
-        fusionFacts.put("fusion_control_layer", fusionControlLayer);
+        fusionFacts.put("fusion_control_layer", Map.of());
         return fusionFacts;
-    }
-
-    private JsonNode normalizeFusionReadyFacts(JsonNode modelNode, Map<String, Object> fallbackFacts) {
-        ObjectNode normalized = objectMapper.createObjectNode();
-        JsonNode source = modelNode != null && modelNode.isObject() ? modelNode : objectMapper.valueToTree(fallbackFacts);
-        normalized.set("problem_candidates", ensureArrayNode(source.get("problem_candidates")));
-        normalized.set("evidence_candidates", ensureArrayNode(source.get("evidence_candidates")));
-        normalized.set("action_candidates", ensureArrayNode(source.get("action_candidates")));
-        normalized.set("risk_candidates", ensureArrayNode(source.get("risk_candidates")));
-        normalized.set("pending_candidates", ensureArrayNode(source.get("pending_candidates")));
-        return normalized;
-    }
-
-    private Map<String, Object> buildUnifiedIntermediate(String noteType, String timestamp, JsonNode summaryNode) {
-        Map<String, Object> unified = new LinkedHashMap<>();
-        unified.put("note_type", noteType);
-        unified.put("timestamp", timestamp);
-        unified.put("importance", noteTypePriority(noteType) <= 2 ? "high" : "medium");
-        unified.put("problems", extractProblemTexts(summaryNode));
-        unified.put("findings", extractFindingTexts(summaryNode));
-        unified.put("plans", extractPlanTexts(summaryNode));
-        unified.put("risks", extractRiskTexts(summaryNode));
-        return unified;
     }
 
     private boolean hasNonEmptyNode(JsonNode node) {
@@ -600,51 +512,12 @@ public class SummaryAgent extends AbstractAgent {
                 || hasNonEmptyNode(orderNode.path("sg"));
     }
 
-    private String inferDiagnosisCertainty(String diagnosis) {
-        if (!StringUtils.hasText(diagnosis)) {
-            return "confirmed";
-        }
-        if (containsAny(diagnosis, "待排", "待查", "进一步检查")) {
-            return "workup_needed";
-        }
-        if (containsAny(diagnosis, "疑似", "可能", "考虑")) {
-            return "suspected";
-        }
-        if (containsAny(diagnosis, "风险", "高危")) {
-            return "risk_only";
-        }
-        return "confirmed";
-    }
-
     private String valueAsString(Object value) {
         return value == null ? "" : String.valueOf(value);
     }
 
     private String defaultIfBlank(String value, String defaultValue) {
         return StringUtils.hasText(value) ? value : defaultValue;
-    }
-
-    private String inferDiagnosisTimeStatus(String diagnosis, List<Map<String, Object>> noteStructuredList) {
-        StringBuilder contextBuilder = new StringBuilder(diagnosis == null ? "" : diagnosis);
-        if (noteStructuredList != null) {
-            for (Map<String, Object> note : noteStructuredList) {
-                Object structured = note.get("structured");
-                if (structured != null) {
-                    contextBuilder.append(' ').append(structured);
-                }
-            }
-        }
-        String merged = contextBuilder.toString();
-        if (containsAny(merged, "急性加重", "加重", "恶化", "再发")) {
-            return "acute_exacerbation";
-        }
-        if (containsAny(merged, "既往", "慢性", "长期", "病史", "多年", "反复", "高血压", "糖尿病", "COPD", "房颤", "心衰")) {
-            return "chronic";
-        }
-        if (containsAny(merged, "首次发现", "新发", "新出现")) {
-            return "newly_identified";
-        }
-        return "clarified";
     }
 
     private String buildLabResultDisplay(JsonNode result) {
@@ -804,10 +677,6 @@ public class SummaryAgent extends AbstractAgent {
                 }
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("problem", name);
-                candidate.put("problem_key", toProblemKey(name));
-                candidate.put("problem_type", inferProblemType(name));
-                candidate.put("certainty", mapFusionCertainty(defaultIfBlank(valueAsString(source.get("certainty")), "confirmed")));
-                candidate.put("status", mapFusionStatus(defaultIfBlank(valueAsString(source.get("time_status")), "clarified")));
                 candidate.put("source_types", List.of(defaultIfBlank(valueAsString(source.get("source")), "diagnosis")));
                 candidate.put("source_note_refs", List.of());
                 mergeProblemCandidate(candidates, candidate);
@@ -835,151 +704,6 @@ public class SummaryAgent extends AbstractAgent {
             }
         }
         return new ArrayList<>(candidates.values()).subList(0, Math.min(candidates.size(), 10));
-    }
-
-    private List<String> buildEvidenceCandidates(Map<String, Object> standardizedDayFacts) {
-        LinkedHashSet<String> evidence = new LinkedHashSet<>();
-        Object vitals = standardizedDayFacts.get("vitals_summary");
-        if (vitals instanceof Map<?, ?> vitalsMap) {
-            addAllStrings(evidence, vitalsMap.get("min_max"));
-            addAllStrings(evidence, vitalsMap.get("most_abnormal"));
-        }
-        Object labs = standardizedDayFacts.get("lab_summary");
-        if (labs instanceof Map<?, ?> labMap) {
-            addAllStrings(evidence, labMap.get("abnormal_items"));
-            addAllStrings(evidence, labMap.get("pathogen_findings"));
-            addAllStrings(evidence, labMap.get("alert_flags"));
-        }
-        Object imaging = standardizedDayFacts.get("imaging_summary");
-        if (imaging instanceof List<?> imagingList) {
-            for (Object item : imagingList) {
-                if (!(item instanceof Map<?, ?> imageMap)) {
-                    continue;
-                }
-                String examType = valueAsString(imageMap.get("exam_type")).trim();
-                List<String> findings = new ArrayList<>();
-                addAllStrings(findings, imageMap.get("key_findings"));
-                if (!findings.isEmpty()) {
-                    evidence.add((StringUtils.hasText(examType) ? examType + "：" : "") + findings.get(0));
-                }
-                /*if (evidence.size() >= 10) {
-                    break;
-                }*/
-            }
-        }
-        return new ArrayList<>(evidence).subList(0, Math.min(evidence.size(), 10));
-    }
-
-    private List<String> buildActionCandidates(Map<String, Object> standardizedDayFacts) {
-        LinkedHashSet<String> actions = new LinkedHashSet<>();
-        Object orders = standardizedDayFacts.get("orders_summary");
-        if (orders instanceof Map<?, ?> orderMap) {
-            Object categories = orderMap.get("action_categories");
-            if (categories instanceof List<?> categoryList) {
-                for (Object category : categoryList) {
-                    if (!(category instanceof Map<?, ?> categoryMap)) {
-                        continue;
-                    }
-                    String categoryName = valueAsString(categoryMap.get("category")).trim();
-                    List<String> groupedActions = new ArrayList<>();
-                    addAllStrings(groupedActions, categoryMap.get("actions"));
-                    if (groupedActions.isEmpty()) {
-                        continue;
-                    }
-                    actions.add((StringUtils.hasText(categoryName) ? categoryName + "：" : "") + groupedActions.get(0));
-                    if (actions.size() >= 10) {
-                        break;
-                    }
-                }
-            }
-        }
-        Object structured = standardizedDayFacts.get("structured");
-        if (structured instanceof List<?> notes) {
-            for (Object note : notes) {
-                if (!(note instanceof Map<?, ?> noteMap)) {
-                    continue;
-                }
-                Object structuredNode = noteMap.get("structured");
-                JsonNode jsonNode = structuredNode instanceof JsonNode node
-                        ? node
-                        : objectMapper.valueToTree(structuredNode);
-                collectFieldText(jsonNode, actions, "treatment_adjustments", "urgent_actions",
-                        "immediate_postop_orders", "major_actions");
-                JsonNode initialPlan = jsonNode.path("initial_plan");
-                if (initialPlan.isObject()) {
-                    collectFieldText(initialPlan, actions, "tests", "treatment", "monitoring", "consults", "procedures");
-                }
-                if (actions.size() >= 10) {
-                    break;
-                }
-            }
-        }
-        return new ArrayList<>(actions);
-    }
-
-    private List<String> buildRiskCandidates(Map<String, Object> standardizedDayFacts) {
-        LinkedHashSet<String> risks = new LinkedHashSet<>();
-        Object vitals = standardizedDayFacts.get("vitals_summary");
-        if (vitals instanceof Map<?, ?> vitalsMap && Boolean.TRUE.equals(vitalsMap.get("need_alert"))) {
-            addAllStrings(risks, vitalsMap.get("most_abnormal"));
-        }
-        Object labs = standardizedDayFacts.get("lab_summary");
-        if (labs instanceof Map<?, ?> labMap) {
-            addAllStrings(risks, labMap.get("alert_flags"));
-        }
-        Object structured = standardizedDayFacts.get("structured");
-        if (structured instanceof List<?> notes) {
-            for (Object note : notes) {
-                if (!(note instanceof Map<?, ?> noteMap)) {
-                    continue;
-                }
-                Object structuredNode = noteMap.get("structured");
-                JsonNode jsonNode = structuredNode instanceof JsonNode node
-                        ? node
-                        : objectMapper.valueToTree(structuredNode);
-                collectRiskTexts(jsonNode, risks);
-                if (risks.size() >= 8) {
-                    break;
-                }
-            }
-        }
-        return new ArrayList<>(risks).subList(0, Math.min(risks.size(), 8));
-    }
-
-    private List<String> buildPendingCandidates(Map<String, Object> standardizedDayFacts) {
-        LinkedHashSet<String> pending = new LinkedHashSet<>();
-        Object diagnosisFacts = standardizedDayFacts.get("diagnosis_facts");
-        if (diagnosisFacts instanceof List<?> items) {
-            for (Object item : items) {
-                if (!(item instanceof Map<?, ?> diagnosisMap)) {
-                    continue;
-                }
-                String certainty = valueAsString(diagnosisMap.get("certainty"));
-                String name = valueAsString(diagnosisMap.get("name"));
-                if (containsAny(certainty, "suspected", "workup_needed") && StringUtils.hasText(name)) {
-                    pending.add(name);
-                }
-            }
-        }
-        Object structured = standardizedDayFacts.get("structured");
-        if (structured instanceof List<?> notes) {
-            for (Object note : notes) {
-                if (!(note instanceof Map<?, ?> noteMap)) {
-                    continue;
-                }
-                Object structuredNode = noteMap.get("structured");
-                if (structuredNode instanceof JsonNode jsonNode) {
-                    collectPendingTexts(jsonNode, pending);
-                } else if (structuredNode != null) {
-                    JsonNode jsonNode = objectMapper.valueToTree(structuredNode);
-                    collectPendingTexts(jsonNode, pending);
-                }
-                if (pending.size() >= 8) {
-                    break;
-                }
-            }
-        }
-        return new ArrayList<>(pending);
     }
 
     private Map<String, Object> buildFusionMeta(Map<String, Object> standardizedDayFacts) {
@@ -1014,7 +738,7 @@ public class SummaryAgent extends AbstractAgent {
                 }
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("diagnosis", diagnosis);
-                candidate.put("certainty", mapFusionCertainty(defaultIfBlank(item.path("certainty").asText(""), "workup_needed")));
+                candidate.put("certainty", item.path("certainty").asText(""));
                 candidate.put("reason", item.path("reason").asText(""));
                 candidate.put("source_types", List.of(noteType));
                 candidate.put("source_note_refs", List.of(noteRef));
@@ -1025,55 +749,104 @@ public class SummaryAgent extends AbstractAgent {
     }
 
     private List<Map<String, Object>> buildEtiologyCandidates(Map<String, Object> standardizedDayFacts) {
+        return List.of();
+    }
+
+    private List<Map<String, Object>> buildObjectiveEvidence(Map<String, Object> standardizedDayFacts) {
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
             String noteType = valueAsString(note.get("note_type"));
             String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
             JsonNode node = toStructuredNode(note.get("structured"));
-            JsonNode differential = node.path("differential_diagnosis");
-            if (!differential.isArray()) {
-                continue;
+            LinkedHashSet<String> values = new LinkedHashSet<>();
+            collectFieldText(node, values, "new_findings", "worsening_points", "improving_points",
+                    "key_exam_changes", "key_supporting_evidence", "critical_exam_or_pathology");
+            JsonNode keyFindings = node.path("key_findings");
+            if (keyFindings.isObject()) {
+                flattenText(keyFindings.path("vitals"), values);
+                flattenText(keyFindings.path("exam"), values);
+                flattenText(keyFindings.path("labs"), values);
+                flattenText(keyFindings.path("imaging"), values);
             }
-            for (JsonNode item : differential) {
-                String diagnosis = item.path("diagnosis").asText("").trim();
-                if (!containsAny(diagnosis, "冠心病", "瓣膜病", "病因")) {
+            for (String value : values) {
+                if (!StringUtils.hasText(value)) {
                     continue;
                 }
-                Map<String, Object> etiology = new LinkedHashMap<>();
-                etiology.put("etiology", diagnosis);
-                etiology.put("target_problem_key", inferEtiologyTargetProblemKey(diagnosis));
-                etiology.put("certainty", "possible");
-                etiology.put("source_types", List.of(noteType));
-                etiology.put("source_note_refs", List.of(noteRef));
-                result.add(etiology);
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("fact", value);
+                item.put("source_types", List.of(noteType));
+                item.put("source_note_refs", List.of(noteRef));
+                result.add(item);
             }
         }
-        return deduplicateMapList(result, "etiology", 8);
+        return deduplicateMapList(result, "fact", 24);
     }
 
-    private Map<String, Object> buildObjectiveEvidence(Map<String, Object> standardizedDayFacts) {
-        Map<String, Object> evidence = new LinkedHashMap<>();
-        evidence.put("symptoms_signs", buildEvidenceBucket(standardizedDayFacts, EvidenceBucket.SYMPTOMS_SIGNS));
-        evidence.put("labs", buildEvidenceBucket(standardizedDayFacts, EvidenceBucket.LABS));
-        evidence.put("imaging", buildEvidenceBucket(standardizedDayFacts, EvidenceBucket.IMAGING));
-        evidence.put("other_tests", buildEvidenceBucket(standardizedDayFacts, EvidenceBucket.OTHER_TESTS));
-        return evidence;
+    private List<Map<String, Object>> buildActionFacts(Map<String, Object> standardizedDayFacts) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
+            String noteType = valueAsString(note.get("note_type"));
+            String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
+            JsonNode node = toStructuredNode(note.get("structured"));
+            LinkedHashSet<String> actions = new LinkedHashSet<>();
+            JsonNode plan = node.path("initial_plan");
+            if (plan.isObject()) {
+                flattenText(plan.path("treatment"), actions);
+            }
+            collectFieldText(node, actions, "treatment_adjustments", "urgent_actions", "major_actions", "immediate_postop_orders");
+            for (String action : actions) {
+                if (!StringUtils.hasText(action)) {
+                    continue;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("action", action);
+                item.put("source_types", List.of(noteType));
+                item.put("source_note_refs", List.of(noteRef));
+                result.add(item);
+            }
+        }
+        return deduplicateMapList(result, "action", 16);
     }
 
-    private List<Map<String, Object>> buildTreatmentActions(Map<String, Object> standardizedDayFacts) {
-        return buildDetailedActions(standardizedDayFacts, ActionBucket.TREATMENT);
-    }
-
-    private List<Map<String, Object>> buildDiagnosticActions(Map<String, Object> standardizedDayFacts) {
-        return buildDetailedActions(standardizedDayFacts, ActionBucket.DIAGNOSTIC);
-    }
-
-    private List<Map<String, Object>> buildMonitoringActions(Map<String, Object> standardizedDayFacts) {
-        return buildDetailedActions(standardizedDayFacts, ActionBucket.MONITORING);
-    }
-
-    private List<Map<String, Object>> buildProcessActions(Map<String, Object> standardizedDayFacts) {
-        return buildDetailedActions(standardizedDayFacts, ActionBucket.PROCESS);
+    private List<Map<String, Object>> buildPendingFacts(Map<String, Object> standardizedDayFacts) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
+            String noteType = valueAsString(note.get("note_type"));
+            String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
+            JsonNode node = toStructuredNode(note.get("structured"));
+            LinkedHashSet<String> items = new LinkedHashSet<>();
+            JsonNode plan = node.path("initial_plan");
+            if (plan.isObject()) {
+                flattenText(plan.path("tests"), items);
+                flattenText(plan.path("monitoring"), items);
+                flattenText(plan.path("consults"), items);
+                flattenText(plan.path("procedures"), items);
+                flattenText(plan.path("education"), items);
+            }
+            collectFieldText(node, items, "next_focus_24h", "short_term_plan_24h");
+            JsonNode differential = node.path("differential_diagnosis");
+            if (differential.isArray()) {
+                for (JsonNode item : differential) {
+                    String diagnosis = item.path("diagnosis").asText("").trim();
+                    String reason = item.path("reason").asText("").trim();
+                    if (!StringUtils.hasText(diagnosis)) {
+                        continue;
+                    }
+                    items.add(StringUtils.hasText(reason) ? diagnosis + "：" + reason : diagnosis);
+                }
+            }
+            for (String itemText : items) {
+                if (!StringUtils.hasText(itemText)) {
+                    continue;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("item", itemText);
+                item.put("source_types", List.of(noteType));
+                item.put("source_note_refs", List.of(noteRef));
+                result.add(item);
+            }
+        }
+        return deduplicateMapList(result, "item", 16);
     }
 
     private List<Map<String, Object>> buildDetailedRiskCandidates(Map<String, Object> standardizedDayFacts) {
@@ -1091,7 +864,6 @@ public class SummaryAgent extends AbstractAgent {
                     }
                     Map<String, Object> riskItem = new LinkedHashMap<>();
                     riskItem.put("risk", risk);
-                    riskItem.put("related_problem_keys", inferProblemKeysFromText(risk + " " + item.path("basis").asText("")));
                     riskItem.put("source_types", List.of(noteType));
                     riskItem.put("source_note_refs", List.of(noteRef));
                     result.add(riskItem);
@@ -1109,7 +881,6 @@ public class SummaryAgent extends AbstractAgent {
                             }
                             Map<String, Object> riskItem = new LinkedHashMap<>();
                             riskItem.put("risk", riskText);
-                            riskItem.put("related_problem_keys", inferProblemKeysFromText(item.path("problem").asText("")));
                             riskItem.put("source_types", List.of(noteType));
                             riskItem.put("source_note_refs", List.of(noteRef));
                             result.add(riskItem);
@@ -1119,60 +890,6 @@ public class SummaryAgent extends AbstractAgent {
             }
         }
         return deduplicateMapList(result, "risk", 12);
-    }
-
-    private List<Map<String, Object>> buildDiagnosticPending(Map<String, Object> standardizedDayFacts) {
-        return buildPendingItems(standardizedDayFacts, PendingBucket.DIAGNOSTIC);
-    }
-
-    private List<Map<String, Object>> buildRecheckPending(Map<String, Object> standardizedDayFacts) {
-        return buildPendingItems(standardizedDayFacts, PendingBucket.RECHECK);
-    }
-
-    private List<Map<String, Object>> buildProcessPending(Map<String, Object> standardizedDayFacts) {
-        return buildPendingItems(standardizedDayFacts, PendingBucket.PROCESS);
-    }
-
-    private Map<String, Object> buildFusionHints() {
-        Map<String, Object> control = new LinkedHashMap<>();
-
-        control.put("source_priority", Map.of(
-                "baseline", List.of("首次病程记录", "入院记录", "手术记录"),
-                "update", List.of("日常病程记录", "会诊记录", "术后记录")
-        ));
-
-        control.put("data_priority", Map.of(
-                "highest", List.of("objective_events", "lab_summary", "vitals_summary"),
-                "medium", List.of("orders_summary", "objective_evidence"),
-                "lowest", List.of("diagnosis_facts")
-        ));
-
-        control.put("problem_selection_rules", Map.of(
-                "max_problems", 4,
-                "min_problems", 2,
-                "exclude_types", List.of("differential", "etiology_only")
-        ));
-
-        control.put("deduplication_rules", Map.of(
-                "merge_similar_problems", true,
-                "merge_similar_actions", true
-        ));
-
-        control.put("risk_control_rules", Map.of(
-                "max_risks", 5,
-                "forbid_risk_to_diagnosis", true
-        ));
-
-        control.put("output_constraints", Map.of(
-                "strict_json", true,
-                "max_key_evidence", 6,
-                "max_actions", 6
-        ));
-
-        control.put("display_strategy", Map.of(
-                "focus_order", List.of("problem", "evidence", "action", "risk", "next_step")
-        ));
-        return control;
     }
 
     private void mergeProblemCandidate(Map<String, Map<String, Object>> collector, Map<String, Object> candidate) {
@@ -1185,16 +902,20 @@ public class SummaryAgent extends AbstractAgent {
             collector.put(key, candidate);
             return;
         }
-        String certainty = preferCertainty(valueAsString(existing.get("certainty")), valueAsString(candidate.get("certainty")));
-        String status = preferStatus(valueAsString(existing.get("status")), valueAsString(candidate.get("status")));
+        String certainty = preferNonBlank(valueAsString(existing.get("certainty")), valueAsString(candidate.get("certainty")));
+        String status = preferNonBlank(valueAsString(existing.get("status")), valueAsString(candidate.get("status")));
         LinkedHashSet<String> mergedSources = new LinkedHashSet<>();
         addAllStrings(mergedSources, existing.get("source_types"));
         addAllStrings(mergedSources, candidate.get("source_types"));
         LinkedHashSet<String> mergedSourceRefs = new LinkedHashSet<>();
         addAllStrings(mergedSourceRefs, existing.get("source_note_refs"));
         addAllStrings(mergedSourceRefs, candidate.get("source_note_refs"));
-        existing.put("certainty", certainty);
-        existing.put("status", status);
+        if (StringUtils.hasText(certainty)) {
+            existing.put("certainty", certainty);
+        }
+        if (StringUtils.hasText(status)) {
+            existing.put("status", status);
+        }
         existing.put("source_types", new ArrayList<>(mergedSources));
         existing.put("source_note_refs", new ArrayList<>(mergedSourceRefs));
     }
@@ -1211,10 +932,8 @@ public class SummaryAgent extends AbstractAgent {
             for (JsonNode item : coreProblems) {
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("problem", item.path("problem").asText(""));
-                candidate.put("problem_key", toProblemKey(item.path("problem").asText("")));
-                candidate.put("problem_type", inferProblemType(item.path("problem").asText("")));
-                candidate.put("certainty", mapFusionCertainty(defaultIfBlank(item.path("certainty").asText(""), "confirmed")));
-                candidate.put("status", mapFusionStatus(defaultIfBlank(item.path("time_status").asText(""), "clarified")));
+                candidate.put("certainty", item.path("certainty").asText(""));
+                candidate.put("status", item.path("time_status").asText(""));
                 candidate.put("source_types", List.of(noteType));
                 candidate.put("source_note_refs", List.of(noteRef));
                 mergeProblemCandidate(collector, candidate);
@@ -1225,10 +944,7 @@ public class SummaryAgent extends AbstractAgent {
             for (JsonNode item : consultCoreJudgment) {
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("problem", item.path("judgment").asText(""));
-                candidate.put("problem_key", toProblemKey(item.path("judgment").asText("")));
-                candidate.put("problem_type", inferProblemType(item.path("judgment").asText("")));
-                candidate.put("certainty", mapFusionCertainty(defaultIfBlank(item.path("certainty").asText(""), "workup_needed")));
-                candidate.put("status", "active");
+                candidate.put("certainty", item.path("certainty").asText(""));
                 candidate.put("source_types", List.of(noteType));
                 candidate.put("source_note_refs", List.of(noteRef));
                 mergeProblemCandidate(collector, candidate);
@@ -1239,10 +955,7 @@ public class SummaryAgent extends AbstractAgent {
             for (JsonNode item : differential) {
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("problem", item.path("diagnosis").asText(""));
-                candidate.put("problem_key", toProblemKey(item.path("diagnosis").asText("")));
-                candidate.put("problem_type", "differential");
-                candidate.put("certainty", mapFusionCertainty(defaultIfBlank(item.path("certainty").asText(""), "workup_needed")));
-                candidate.put("status", "active");
+                candidate.put("certainty", item.path("certainty").asText(""));
                 candidate.put("source_types", List.of(noteType));
                 candidate.put("source_note_refs", List.of(noteRef));
                 mergeProblemCandidate(collector, candidate);
@@ -1253,10 +966,6 @@ public class SummaryAgent extends AbstractAgent {
             for (JsonNode item : newProblemList) {
                 Map<String, Object> candidate = new LinkedHashMap<>();
                 candidate.put("problem", item.asText(""));
-                candidate.put("problem_key", toProblemKey(item.asText("")));
-                candidate.put("problem_type", inferProblemType(item.asText("")));
-                candidate.put("certainty", "confirmed");
-                candidate.put("status", "active");
                 candidate.put("source_types", List.of(noteType));
                 candidate.put("source_note_refs", List.of(noteRef));
                 mergeProblemCandidate(collector, candidate);
@@ -1264,71 +973,14 @@ public class SummaryAgent extends AbstractAgent {
         }
     }
 
-    private void collectRiskTexts(JsonNode node, Set<String> collector) {
-        collectFieldText(node, collector, "risk_flags", "postop_risk_alerts");
-        JsonNode riskAlerts = node.path("risk_alerts");
-        if (riskAlerts.isArray()) {
-            for (JsonNode item : riskAlerts) {
-                String risk = item.path("risk").asText("");
-                if (StringUtils.hasText(risk)) {
-                    collector.add(risk.trim());
-                }
-            }
+    private String preferNonBlank(String left, String right) {
+        if (StringUtils.hasText(left)) {
+            return left.trim();
         }
-        JsonNode coreProblems = node.path("core_problems");
-        if (coreProblems.isArray()) {
-            for (JsonNode item : coreProblems) {
-                flattenText(item.path("risk"), collector);
-            }
+        if (StringUtils.hasText(right)) {
+            return right.trim();
         }
-    }
-
-    private String preferCertainty(String left, String right) {
-        List<String> order = List.of("confirmed", "suspected", "possible", "workup_needed", "risk_only");
-        int leftIndex = order.indexOf(defaultIfBlank(normalizeCertaintyValue(left), "risk_only"));
-        int rightIndex = order.indexOf(defaultIfBlank(normalizeCertaintyValue(right), "risk_only"));
-        if (leftIndex == -1) {
-            return right;
-        }
-        if (rightIndex == -1) {
-            return left;
-        }
-        return leftIndex <= rightIndex ? left : right;
-    }
-
-    private String preferStatus(String left, String right) {
-        List<String> order = List.of("acute_exacerbation", "worsening", "active", "chronic", "clarified", "stable", "improving", "unclear");
-        int leftIndex = order.indexOf(defaultIfBlank(normalizeStatusValue(left), "clarified"));
-        int rightIndex = order.indexOf(defaultIfBlank(normalizeStatusValue(right), "clarified"));
-        if (leftIndex == -1) {
-            return right;
-        }
-        if (rightIndex == -1) {
-            return left;
-        }
-        return leftIndex <= rightIndex ? left : right;
-    }
-
-    private void collectPendingTexts(JsonNode node, Set<String> collector) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return;
-        }
-        if (node.isTextual()) {
-            String text = node.asText("").trim();
-            if (StringUtils.hasText(text) && containsAny(text, "待排", "待查", "复查", "完善", "进一步")) {
-                collector.add(text);
-            }
-            return;
-        }
-        if (node.isArray()) {
-            for (JsonNode item : node) {
-                collectPendingTexts(item, collector);
-            }
-            return;
-        }
-        if (node.isObject()) {
-            node.fields().forEachRemaining(entry -> collectPendingTexts(entry.getValue(), collector));
-        }
+        return "";
     }
 
     private List<Map<String, Object>> readStructuredNotes(Map<String, Object> standardizedDayFacts) {
@@ -1357,273 +1009,6 @@ public class SummaryAgent extends AbstractAgent {
         return StringUtils.hasText(time) ? type + "@" + time : type;
     }
 
-    private String toProblemKey(String problem) {
-        if (!StringUtils.hasText(problem)) {
-            return "";
-        }
-        if (containsAny(problem, "心衰", "心力衰竭")) {
-            return "heart_failure";
-        }
-        if (containsAny(problem, "房颤", "心房颤动")) {
-            return "atrial_fibrillation";
-        }
-        if (containsAny(problem, "感染", "肺炎")) {
-            return "pulmonary_infection";
-        }
-        if (containsAny(problem, "贫血")) {
-            return "anemia";
-        }
-        if (containsAny(problem, "血小板")) {
-            return "thrombocytopenia";
-        }
-        if (containsAny(problem, "乳酸")) {
-            return "hyperlactatemia";
-        }
-        if (containsAny(problem, "冠脉", "冠心病", "ACS")) {
-            return "acs";
-        }
-        return problem.replaceAll("[^A-Za-z0-9\\u4e00-\\u9fa5]+", "_").toLowerCase();
-    }
-
-    private String inferProblemType(String problem) {
-        if (containsAny(problem, "风险")) {
-            return "risk_state";
-        }
-        if (containsAny(problem, "高血压", "COPD", "前列腺增生", "慢性")) {
-            return "chronic";
-        }
-        if (containsAny(problem, "贫血", "血小板", "高乳酸", "胸腔积液")) {
-            return "complication";
-        }
-        return "disease";
-    }
-
-    private String mapFusionCertainty(String certainty) {
-        return defaultIfBlank(normalizeCertaintyValue(certainty), "confirmed");
-    }
-
-    private String mapFusionStatus(String status) {
-        return defaultIfBlank(normalizeStatusValue(status), "active");
-    }
-
-    private String normalizeCertaintyValue(String certainty) {
-        String normalized = defaultIfBlank(certainty, "").trim().toLowerCase();
-        if (!StringUtils.hasText(normalized)) {
-            return "";
-        }
-        return switch (normalized) {
-            case "confirmed", "suspected", "possible", "workup_needed", "risk_only" -> normalized;
-            case "differential" -> "workup_needed";
-            default -> "";
-        };
-    }
-
-    private String normalizeStatusValue(String status) {
-        String normalized = defaultIfBlank(status, "").trim().toLowerCase();
-        if (!StringUtils.hasText(normalized)) {
-            return "";
-        }
-        return switch (normalized) {
-            case "newly_identified" -> "active";
-            case "worsened" -> "worsening";
-            case "improved" -> "improving";
-            case "active", "acute_exacerbation", "worsening", "improving", "chronic", "stable", "clarified", "unclear" -> normalized;
-            default -> "";
-        };
-    }
-
-    private String inferEtiologyTargetProblemKey(String diagnosis) {
-        if (containsAny(diagnosis, "冠心病", "瓣膜")) {
-            return "heart_failure";
-        }
-        return "";
-    }
-
-    private List<Map<String, Object>> buildEvidenceBucket(Map<String, Object> standardizedDayFacts, EvidenceBucket bucket) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
-            String noteType = valueAsString(note.get("note_type"));
-            String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
-            JsonNode node = toStructuredNode(note.get("structured"));
-            List<String> values = extractEvidenceByBucket(node, bucket);
-            for (String value : values) {
-                if (!StringUtils.hasText(value)) {
-                    continue;
-                }
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("fact", value);
-                item.put("related_problem_keys", inferProblemKeysFromText(value));
-                item.put("source_types", List.of(noteType));
-                item.put("source_note_refs", List.of(noteRef));
-                result.add(item);
-            }
-        }
-        return deduplicateMapList(result, "fact", 16);
-    }
-
-    private List<String> extractEvidenceByBucket(JsonNode node, EvidenceBucket bucket) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        switch (bucket) {
-            case SYMPTOMS_SIGNS -> {
-                collectFieldText(node, values, "new_findings", "worsening_points", "improving_points");
-                JsonNode keyFindings = node.path("key_findings");
-                if (keyFindings.isObject()) {
-                    flattenText(keyFindings.path("vitals"), values);
-                    flattenText(keyFindings.path("exam"), values);
-                }
-            }
-            case LABS -> {
-                collectFieldText(node, values, "new_findings", "key_exam_changes");
-                JsonNode keyFindings = node.path("key_findings");
-                if (keyFindings.isObject()) {
-                    flattenText(keyFindings.path("labs"), values);
-                }
-                values.removeIf(value -> !containsAny(value, "Hb", "血", "CRP", "D-二聚体", "乳酸", "尿素", "肌钙蛋白", "NT-proBNP", "GGT", "葡萄糖", "甲功"));
-            }
-            case IMAGING -> {
-                JsonNode keyFindings = node.path("key_findings");
-                if (keyFindings.isObject()) {
-                    flattenText(keyFindings.path("imaging"), values);
-                }
-                values.removeIf(value -> !containsAny(value, "CT", "彩超", "胸片", "积液", "炎症", "肺气肿", "结节"));
-            }
-            case OTHER_TESTS -> {
-                JsonNode keyFindings = node.path("key_findings");
-                if (keyFindings.isObject()) {
-                    flattenText(keyFindings.path("imaging"), values);
-                }
-                collectFieldText(node, values, "key_exam_changes");
-                values.removeIf(value -> !containsAny(value, "心电图", "房颤", "ST", "右束支", "血气", "pO2", "EF"));
-            }
-        }
-        return new ArrayList<>(values).subList(0, Math.min(values.size(), 8));
-    }
-
-    private List<Map<String, Object>> buildDetailedActions(Map<String, Object> standardizedDayFacts, ActionBucket bucket) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
-            String noteType = valueAsString(note.get("note_type"));
-            String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
-            JsonNode node = toStructuredNode(note.get("structured"));
-            List<String> actions = extractActionsByBucket(node, bucket);
-            for (String action : actions) {
-                if (!StringUtils.hasText(action)) {
-                    continue;
-                }
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("action", action);
-                item.put("related_problem_keys", inferProblemKeysFromText(action));
-                item.put("source_types", List.of(noteType));
-                item.put("source_note_refs", List.of(noteRef));
-                result.add(item);
-            }
-        }
-        return deduplicateMapList(result, "action", 16);
-    }
-
-    private List<String> extractActionsByBucket(JsonNode node, ActionBucket bucket) {
-        LinkedHashSet<String> actions = new LinkedHashSet<>();
-        if (node.path("initial_plan").isObject()) {
-            JsonNode plan = node.path("initial_plan");
-            switch (bucket) {
-                case TREATMENT -> flattenText(plan.path("treatment"), actions);
-                case DIAGNOSTIC -> flattenText(plan.path("tests"), actions);
-                case MONITORING -> flattenText(plan.path("monitoring"), actions);
-                case PROCESS -> {
-                    flattenText(plan.path("education"), actions);
-                    flattenText(plan.path("consults"), actions);
-                    flattenText(plan.path("procedures"), actions);
-                }
-            }
-        }
-        switch (bucket) {
-            case TREATMENT -> collectFieldText(node, actions, "treatment_adjustments", "urgent_actions", "major_actions", "immediate_postop_orders");
-            case DIAGNOSTIC -> collectFieldText(node, actions, "next_focus_24h");
-            case MONITORING -> collectFieldText(node, actions, "next_focus_24h");
-            case PROCESS -> collectFieldText(node, actions, "treatment_adjustments", "next_focus_24h");
-        }
-        actions.removeIf(action -> switch (bucket) {
-            case TREATMENT -> isDiagnosticPlan(action) || containsAny(action, "监护", "监测", "尿量", "同意书", "签署", "复查", "追踪");
-            case DIAGNOSTIC -> !isDiagnosticLike(action);
-            case MONITORING -> !containsAny(action, "监护", "监测", "尿量", "观察", "动态");
-            case PROCESS -> !containsAny(action, "同意书", "签署", "饮食", "卧床", "休息", "宣教", "流程");
-        });
-        return new ArrayList<>(actions).subList(0, Math.min(actions.size(), 8));
-    }
-
-    private List<Map<String, Object>> buildPendingItems(Map<String, Object> standardizedDayFacts, PendingBucket bucket) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> note : readStructuredNotes(standardizedDayFacts)) {
-            String noteType = valueAsString(note.get("note_type"));
-            String noteRef = buildNoteRef(noteType, valueAsString(note.get("timestamp")));
-            JsonNode node = toStructuredNode(note.get("structured"));
-            List<String> items = extractPendingItems(node, bucket);
-            for (String itemText : items) {
-                if (!StringUtils.hasText(itemText)) {
-                    continue;
-                }
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("item", itemText);
-                item.put("related_problem_keys", inferProblemKeysFromText(itemText));
-                item.put("source_types", List.of(noteType));
-                item.put("source_note_refs", List.of(noteRef));
-                result.add(item);
-            }
-        }
-        return deduplicateMapList(result, "item", 16);
-    }
-
-    private List<String> extractPendingItems(JsonNode node, PendingBucket bucket) {
-        LinkedHashSet<String> items = new LinkedHashSet<>();
-        collectFieldText(node, items, "next_focus_24h");
-        JsonNode differential = node.path("differential_diagnosis");
-        if (differential.isArray() && bucket == PendingBucket.DIAGNOSTIC) {
-            for (JsonNode item : differential) {
-                String diagnosis = item.path("diagnosis").asText("");
-                String reason = item.path("reason").asText("");
-                if (StringUtils.hasText(diagnosis)) {
-                    items.add(diagnosis + (StringUtils.hasText(reason) ? "：" + reason : ""));
-                }
-            }
-        }
-        items.removeIf(item -> switch (bucket) {
-            case DIAGNOSTIC -> !(containsAny(item, "待排", "待查", "明确", "鉴别", "完善", "原因"));
-            case RECHECK -> !(containsAny(item, "复查", "动态", "追踪", "等待"));
-            case PROCESS -> !(containsAny(item, "同意书", "流程", "签署"));
-        });
-        return new ArrayList<>(items).subList(0, Math.min(items.size(), 8));
-    }
-
-    private boolean isDiagnosticLike(String action) {
-        return containsAny(action, "查", "复查", "完善", "动态复查", "追踪", "等待", "结果");
-    }
-
-    private List<String> inferProblemKeysFromText(String text) {
-        LinkedHashSet<String> keys = new LinkedHashSet<>();
-        if (containsAny(text, "心衰", "心力衰竭", "NT-proBNP", "脑利钠肽", "胸腔积液", "水肿")) {
-            keys.add("heart_failure");
-        }
-        if (containsAny(text, "房颤", "心房颤动", "心率绝对不齐", "脉搏短绌", "利伐沙班")) {
-            keys.add("atrial_fibrillation");
-        }
-        if (containsAny(text, "感染", "肺炎", "咳嗽", "咳痰", "CRP", "白细胞", "头孢")) {
-            keys.add("pulmonary_infection");
-        }
-        if (containsAny(text, "贫血", "Hb", "血红蛋白", "Hct", "贫血貌")) {
-            keys.add("anemia");
-        }
-        if (containsAny(text, "血小板", "Plt")) {
-            keys.add("thrombocytopenia");
-        }
-        if (containsAny(text, "乳酸", "Lac")) {
-            keys.add("hyperlactatemia");
-        }
-        if (containsAny(text, "肌钙蛋白", "ACS", "冠脉", "ST改变")) {
-            keys.add("acs");
-        }
-        return new ArrayList<>(keys);
-    }
-
     private List<Map<String, Object>> deduplicateMapList(List<Map<String, Object>> values, String keyField, int maxSize) {
         LinkedHashMap<String, Map<String, Object>> deduplicated = new LinkedHashMap<>();
         for (Map<String, Object> value : values) {
@@ -1639,25 +1024,6 @@ public class SummaryAgent extends AbstractAgent {
         return new ArrayList<>(deduplicated.values());
     }
 
-    private enum EvidenceBucket {
-        SYMPTOMS_SIGNS, LABS, IMAGING, OTHER_TESTS
-    }
-
-    private enum ActionBucket {
-        TREATMENT, DIAGNOSTIC, MONITORING, PROCESS
-    }
-
-    private enum PendingBucket {
-        DIAGNOSTIC, RECHECK, PROCESS
-    }
-
-    private ArrayNode ensureArrayNode(JsonNode node) {
-        if (node != null && node.isArray()) {
-            return (ArrayNode) node;
-        }
-        return objectMapper.createArrayNode();
-    }
-
     private void addAllStrings(Collection<String> collector, Object source) {
         if (source instanceof Collection<?> values) {
             for (Object value : values) {
@@ -1670,56 +1036,6 @@ public class SummaryAgent extends AbstractAgent {
                 }
             }
         }
-    }
-
-    private List<String> extractProblemTexts(JsonNode node) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        collectFieldText(node, values, "change_summary", "consult_reason", "consult_core_judgment",
-                "new_problem_list", "surgery_goal_and_indication", "day_summary");
-        JsonNode coreProblems = node.path("core_problems");
-        if (coreProblems.isArray()) {
-            for (JsonNode item : coreProblems) {
-                String problem = item.path("problem").asText();
-                if (StringUtils.hasText(problem)) {
-                    values.add(problem.trim());
-                }
-            }
-        }
-        return new ArrayList<>(values);
-    }
-
-    private List<String> extractFindingTexts(JsonNode node) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        collectFieldText(node, values, "key_exam_changes", "key_supporting_evidence", "intraoperative_key_findings",
-                "critical_exam_or_pathology", "key_evidence");
-        JsonNode keyFindings = node.path("key_findings");
-        if (keyFindings.isObject()) {
-            keyFindings.fields().forEachRemaining(entry -> flattenText(entry.getValue(), values));
-        }
-        return new ArrayList<>(values);
-    }
-
-    private List<String> extractPlanTexts(JsonNode node) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        collectFieldText(node, values, "treatment_adjustments", "urgent_actions", "short_term_plan_24h",
-                "immediate_postop_orders", "next_focus_24h", "major_actions");
-        JsonNode initialPlan = node.path("initial_plan");
-        if (initialPlan.isObject()) {
-            initialPlan.fields().forEachRemaining(entry -> flattenText(entry.getValue(), values));
-        }
-        return new ArrayList<>(values);
-    }
-
-    private List<String> extractRiskTexts(JsonNode node) {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        collectFieldText(node, values, "risk_alerts", "postop_risk_alerts", "risk_flags");
-        JsonNode coreProblems = node.path("core_problems");
-        if (coreProblems.isArray()) {
-            for (JsonNode item : coreProblems) {
-                flattenText(item.path("risk"), values);
-            }
-        }
-        return new ArrayList<>(values);
     }
 
     private void collectFieldText(JsonNode node, Set<String> collector, String... fieldNames) {
@@ -1751,15 +1067,13 @@ public class SummaryAgent extends AbstractAgent {
     }
 
     private List<Map<String, Object>> buildDailyFusionTimelineEntries(PatientRawDataEntity rawData,
-                                                                       JsonNode dailyFusionNode,
-                                                                       Set<String> sourceRefs) {
+                                                                       JsonNode dailyFusionNode) {
         List<Map<String, Object>> entries = new ArrayList<>();
         Map<String, Object> timelineEntry = new LinkedHashMap<>();
         timelineEntry.put("time", rawData.getDataDate() == null ? "" : rawData.getDataDate().toString());
         timelineEntry.put("record_type", "daily_fusion");
         timelineEntry.put("day_summary", dailyFusionNode.path("day_summary").asText(""));
         timelineEntry.put("daily_fusion", dailyFusionNode);
-        timelineEntry.put("source_note_refs", new ArrayList<>(sourceRefs));
         entries.add(timelineEntry);
         return entries;
     }
@@ -1860,634 +1174,37 @@ public class SummaryAgent extends AbstractAgent {
         return false;
     }
 
-    private JsonNode applyClinicalBoundaryRules(JsonNode fusionNode,
-                                                JsonNode rawRoot,
-                                                JsonNode fusionReadyFacts,
-                                                List<Map<String, Object>> noteStructuredList) {
-        if (fusionNode == null || !fusionNode.isObject()) {
-            return fusionNode;
-        }
-        ObjectNode root = (ObjectNode) fusionNode.deepCopy();
-        String rawText = rawRoot == null ? "" : rawRoot.toString();
-        boolean hasConfirmedPulmonaryEmbolism = containsAny(rawText, "确诊肺栓塞", "肺栓塞确诊", "CTPA提示肺栓塞");
-
-        JsonNode problemListNode = root.get("problem_list");
-        if (problemListNode != null && problemListNode.isArray()) {
-            ArrayNode normalizedProblems = objectMapper.createArrayNode();
-            for (JsonNode node : problemListNode) {
-                if (!node.isObject()) {
-                    continue;
-                }
-                ObjectNode problem = (ObjectNode) node.deepCopy();
-                normalizeProblemBoundary(problem, hasConfirmedPulmonaryEmbolism);
-                normalizeProblemType(problem);
-                normalizeStatus(problem, rawText);
-                normalizeCertainty(problem);
-                normalizePriority(problem);
-                normalizeEvidence(problem);
-                normalizeMajorActions(problem);
-                normalizeRiskFlags(problem, hasConfirmedPulmonaryEmbolism);
-                backfillProblemEvidence(problem, fusionReadyFacts, noteStructuredList);
-                backfillProblemActions(problem, fusionReadyFacts);
-                backfillProblemSourceRefs(problem, noteStructuredList);
-                refineProblemCertainty(problem, rawText);
-                if (!shouldKeepProblem(problem)) {
-                    continue;
-                }
-                normalizedProblems.add(problem);
-            }
-            root.set("problem_list", normalizedProblems);
-        }
-        backfillTopLevelEvidence(root, fusionReadyFacts);
-        backfillTopLevelActions(root, fusionReadyFacts);
-        backfillTopLevelRisks(root);
-        backfillTopLevelSourceRefs(root, noteStructuredList);
-        return root;
-    }
-
-    private void normalizeProblemBoundary(ObjectNode problemNode, boolean hasConfirmedPulmonaryEmbolism) {
-        String problem = problemNode.path("problem").asText("");
-        if (!StringUtils.hasText(problem)) {
-            return;
-        }
-        if (!hasConfirmedPulmonaryEmbolism && containsAny(problem, "疑似肺栓塞", "肺栓塞")) {
-            String normalized = problem.replace("及疑似肺栓塞", "")
-                    .replace("疑似肺栓塞", "")
-                    .replace("肺栓塞", "血栓风险待排")
-                    .trim();
-            if (!StringUtils.hasText(normalized)) {
-                normalized = "血栓风险待排";
-            }
-            problemNode.put("problem", normalized);
-        }
-    }
-
-    private void normalizeStatus(ObjectNode problemNode, String rawText) {
-        String currentStatus = normalizeStatusValue(problemNode.path("status").asText(""));
-        String problem = problemNode.path("problem").asText("");
-        String inferred = inferStatus(problem, rawText);
-        if (!ALLOWED_STATUS.contains(currentStatus)) {
-            problemNode.put("status", inferred);
-            return;
-        }
-        if ("newly_identified".equals(currentStatus) && "chronic".equals(inferred)) {
-            problemNode.put("status", "clarified");
-            return;
-        }
-        if ("worsened".equals(currentStatus) && !"acute_exacerbation".equals(inferred)) {
-            problemNode.put("status", inferred);
-        }
-    }
-
-    private void normalizeProblemType(ObjectNode problemNode) {
-        String currentType = defaultIfBlank(problemNode.path("problem_type").asText(""), "").trim().toLowerCase();
-        if (ALLOWED_PROBLEM_TYPE.contains(currentType)) {
-            problemNode.put("problem_type", currentType);
-            return;
-        }
-        problemNode.put("problem_type", inferProblemType(problemNode.path("problem").asText("")));
-    }
-
-    private String inferStatus(String problem, String rawText) {
-        String text = (problem + " " + rawText);
-        if (containsAny(problem, "感染", "肺炎") && !containsAny(problem, "慢阻肺", "COPD", "急性加重")) {
-            return "clarified";
-        }
-        if (containsAny(text, "急性加重", "再发加重", "加重")) {
-            return "acute_exacerbation";
-        }
-        if (containsAny(text, "3+年", "8+年", "7+月", "慢性", "长期", "既往", "病史", "COPD", "高血压", "房颤", "心衰")) {
-            return "chronic";
-        }
-        if (containsAny(text, "新发", "补充诊断", "首次发现")) {
-            return "active";
-        }
-        return "clarified";
-    }
-
-    private void normalizeCertainty(ObjectNode problemNode) {
-        String current = normalizeCertaintyValue(problemNode.path("certainty").asText(""));
-        if (ALLOWED_CERTAINTY.contains(current)) {
-            problemNode.put("certainty", current);
-            return;
-        }
-        String problem = problemNode.path("problem").asText("");
-        List<String> evidence = readTextArray(problemNode.get("key_evidence"));
-        String merged = problem + " " + String.join(" ", evidence);
-        String certainty;
-        if (containsAny(merged, "疑似", "可能", "考虑")) {
-            certainty = "suspected";
-        } else if (containsAny(merged, "风险", "高危", "待排")) {
-            certainty = "risk_only";
-        } else if (containsAny(merged, "排查", "完善", "复查", "待查")) {
-            certainty = "workup_needed";
-        } else {
-            certainty = "confirmed";
-        }
-        problemNode.put("certainty", certainty);
-    }
-
-    private void normalizePriority(ObjectNode problemNode) {
-        String current = defaultIfBlank(problemNode.path("priority").asText(""), "").trim().toLowerCase();
-        if (ALLOWED_PRIORITY.contains(current)) {
-            problemNode.put("priority", current);
-            return;
-        }
-        problemNode.put("priority", "");
-    }
-
-    private void normalizeEvidence(ObjectNode problemNode) {
-        List<String> values = readTextArray(problemNode.get("key_evidence"));
-        ArrayNode normalized = objectMapper.createArrayNode();
-        for (String value : values) {
-            String text = value.replace("确诊", "提示").trim();
-            if (StringUtils.hasText(text)) {
-                normalized.add(text);
-            }
-        }
-        problemNode.set("key_evidence", normalized);
-    }
-
-    private void normalizeMajorActions(ObjectNode problemNode) {
-        List<String> values = readTextArray(problemNode.get("major_actions"));
-        ArrayNode normalized = objectMapper.createArrayNode();
-        for (String value : values) {
-            if (containsAny(value, "可能", "考虑", "解释", "评估", "降低", "改善", "警惕") || isDiagnosticPlan(value)) {
-                continue;
-            }
-            String cleaned = value.replaceFirst("^(利尿|抗感染|抗凝|抗心衰|退热|吸氧|补液|会诊|营养心肌|止咳化痰)[:：]", "").trim();
-            if (StringUtils.hasText(cleaned)) {
-                normalized.add(cleaned);
-            }
-        }
-        problemNode.set("major_actions", normalized);
-    }
-
-    private void normalizeRiskFlags(ObjectNode problemNode, boolean hasConfirmedPulmonaryEmbolism) {
-        List<String> values = readTextArray(problemNode.get("risk_flags"));
-        LinkedHashSet<String> normalizedValues = new LinkedHashSet<>();
-        for (String value : values) {
-            if (!hasConfirmedPulmonaryEmbolism && "肺栓塞".equals(value)) {
-                normalizedValues.add("肺栓塞风险待排");
-                continue;
-            }
-            if (containsAny(value, "脓毒症风险", "恶性心律失常风险", "急性呼吸衰竭风险", "组织缺氧风险", "肾功能受损风险")
-                    && !containsAny(value, "原文明确", "已提示")) {
-                continue;
-            }
-            normalizedValues.add(value);
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        normalizedValues.forEach(normalized::add);
-        problemNode.set("risk_flags", normalized);
-    }
-
-    private void backfillProblemEvidence(ObjectNode problemNode,
-                                         JsonNode fusionReadyFacts,
-                                         List<Map<String, Object>> noteStructuredList) {
-        if (problemNode.path("key_evidence").isArray() && problemNode.path("key_evidence").size() > 0) {
-            return;
-        }
-        LinkedHashSet<String> evidence = new LinkedHashSet<>();
-        String problem = problemNode.path("problem").asText("");
-        addMatchingEvidence(evidence, flattenObjectiveEvidence(fusionReadyFacts), problem, 3);
-        if (evidence.isEmpty()) {
-            addMatchingStructuredFindings(evidence, noteStructuredList, problem, 3);
-        }
-        ArrayNode node = objectMapper.createArrayNode();
-        evidence.forEach(node::add);
-        problemNode.set("key_evidence", node);
-    }
-
-    private void backfillProblemActions(ObjectNode problemNode, JsonNode fusionReadyFacts) {
-        ArrayNode current = ensureArrayNode(problemNode.get("major_actions"));
-        ArrayNode normalized = objectMapper.createArrayNode();
-        for (JsonNode item : current) {
-            String text = item.asText("").trim();
-            if (StringUtils.hasText(text) && !isDiagnosticPlan(text)) {
-                normalized.add(text);
-            }
-        }
-        if (normalized.isEmpty()) {
-            LinkedHashSet<String> actions = new LinkedHashSet<>();
-            addMatchingTexts(actions, flattenActionCandidates(fusionReadyFacts),
-                    problemNode.path("problem").asText(""), 3);
-            actions.stream().filter(text -> !isDiagnosticPlan(text)).forEach(normalized::add);
-        }
-        problemNode.set("major_actions", normalized);
-    }
-
-    private void backfillProblemSourceRefs(ObjectNode problemNode, List<Map<String, Object>> noteStructuredList) {
-        ArrayNode current = ensureArrayNode(problemNode.get("source_note_refs"));
-        if (current.size() > 1) {
-            return;
-        }
-        LinkedHashSet<String> refs = inferSourceRefsByProblem(problemNode.path("problem").asText(""), noteStructuredList);
-        if (refs.isEmpty() && current.size() > 0) {
-            return;
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        refs.forEach(normalized::add);
-        problemNode.set("source_note_refs", normalized);
-    }
-
-    private void backfillTopLevelEvidence(ObjectNode root, JsonNode fusionReadyFacts) {
-        ArrayNode current = ensureArrayNode(root.get("key_evidence"));
-        if (current.size() > 0) {
-            return;
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        LinkedHashSet<String> evidence = new LinkedHashSet<>();
-        JsonNode candidates = flattenObjectiveEvidence(fusionReadyFacts);
-        if (candidates != null && candidates.isArray()) {
-            for (JsonNode item : candidates) {
-                String text = item.asText("").trim();
-                if (StringUtils.hasText(text)) {
-                    evidence.add(text);
-                }
-                if (evidence.size() >= 6) {
-                    break;
-                }
-            }
-        }
-        evidence.forEach(normalized::add);
-        root.set("key_evidence", normalized);
-    }
-
-    private void backfillTopLevelActions(ObjectNode root, JsonNode fusionReadyFacts) {
-        LinkedHashSet<String> actions = new LinkedHashSet<>();
-        JsonNode problemList = root.get("problem_list");
-        if (problemList != null && problemList.isArray()) {
-            for (JsonNode item : problemList) {
-                addAllStrings(actions, readTextArray(item.get("major_actions")));
-            }
-        }
-        JsonNode candidates = flattenActionCandidates(fusionReadyFacts);
-        if (candidates != null && candidates.isArray()) {
-            List<String> prioritized = new ArrayList<>();
-            List<String> secondary = new ArrayList<>();
-            for (JsonNode item : candidates) {
-                String text = item.asText("").trim();
-                if (!StringUtils.hasText(text) || isDiagnosticPlan(text)) {
-                    continue;
-                }
-                if (containsAny(text, "呋塞米", "螺内酯", "恩格列净", "利伐沙班", "头孢", "吸氧", "监护")) {
-                    prioritized.add(text);
-                } else {
-                    secondary.add(text);
-                }
-            }
-            prioritized.forEach(actions::add);
-            secondary.forEach(actions::add);
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        int count = 0;
-        for (String action : actions) {
-            if (!StringUtils.hasText(action)) {
-                continue;
-            }
-            normalized.add(action);
-            count++;
-            if (count >= 6) {
-                break;
-            }
-        }
-        root.set("major_actions", normalized);
-    }
-
-    private void backfillTopLevelRisks(ObjectNode root) {
-        LinkedHashSet<String> risks = new LinkedHashSet<>();
-        JsonNode problemList = root.get("problem_list");
-        if (problemList != null && problemList.isArray()) {
-            for (JsonNode item : problemList) {
-                addAllStrings(risks, readTextArray(item.get("risk_flags")));
-            }
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        int count = 0;
-        for (String risk : risks) {
-            if (!StringUtils.hasText(risk)) {
-                continue;
-            }
-            normalized.add(risk);
-            count++;
-            if (count >= 6) {
-                break;
-            }
-        }
-        root.set("risk_flags", normalized);
-    }
-
-    private void backfillTopLevelSourceRefs(ObjectNode root, List<Map<String, Object>> noteStructuredList) {
-        LinkedHashSet<String> refs = new LinkedHashSet<>();
-        JsonNode problemList = root.get("problem_list");
-        if (problemList != null && problemList.isArray()) {
-            for (JsonNode item : problemList) {
-                addAllStrings(refs, readTextArray(item.get("source_note_refs")));
-            }
-        }
-        if (refs.isEmpty()) {
-            for (Map<String, Object> note : noteStructuredList) {
-                String noteType = valueAsString(note.get("note_type")).trim();
-                if (StringUtils.hasText(noteType)) {
-                    refs.add(noteType);
-                }
-            }
-        }
-        ArrayNode normalized = objectMapper.createArrayNode();
-        refs.forEach(normalized::add);
-        root.set("source_note_refs", normalized);
-    }
-
-    private void addMatchingTexts(Set<String> collector, JsonNode candidates, String problem, int limit) {
-        if (candidates == null || !candidates.isArray()) {
-            return;
-        }
-        List<String> keywords = inferProblemKeywords(problem);
-        for (JsonNode item : candidates) {
-            String text = item.asText("").trim();
-            if (!StringUtils.hasText(text)) {
-                continue;
-            }
-            if (matchesProblem(text, keywords)) {
-                collector.add(text);
-            }
-            if (collector.size() >= limit) {
-                break;
-            }
-        }
-    }
-
-    private void addMatchingStructuredFindings(Set<String> collector,
-                                               List<Map<String, Object>> noteStructuredList,
-                                               String problem,
-                                               int limit) {
-        List<String> keywords = inferProblemKeywords(problem);
-        for (Map<String, Object> note : noteStructuredList) {
-            Object structuredNode = note.get("structured");
-            JsonNode node = structuredNode instanceof JsonNode jsonNode
-                    ? jsonNode
-                    : objectMapper.valueToTree(structuredNode);
-            for (String finding : extractFindingTexts(node)) {
-                if (matchesProblem(finding, keywords)) {
-                    collector.add(finding);
-                }
-                if (collector.size() >= limit) {
-                    return;
-                }
-            }
-        }
-    }
-
-    private LinkedHashSet<String> inferSourceRefsByProblem(String problem, List<Map<String, Object>> noteStructuredList) {
-        LinkedHashSet<String> refs = new LinkedHashSet<>();
-        List<String> keywords = inferProblemKeywords(problem);
-        for (Map<String, Object> note : noteStructuredList) {
-            String noteType = valueAsString(note.get("note_type")).trim();
-            Object structuredNode = note.get("structured");
-            JsonNode node = structuredNode instanceof JsonNode jsonNode
-                    ? jsonNode
-                    : objectMapper.valueToTree(structuredNode);
-            String merged = node.toString();
-            if (matchesProblem(merged, keywords)) {
-                refs.add(noteType);
-            }
-        }
-        return refs;
-    }
-
-    private List<String> inferProblemKeywords(String problem) {
-        List<String> keywords = new ArrayList<>();
-        if (containsAny(problem, "心衰", "心力衰竭")) {
-            keywords.addAll(List.of("心衰", "心力衰竭", "NT-proBNP", "脑利钠肽", "呋塞米", "螺内酯", "恩格列净", "胸腔积液"));
-        }
-        if (containsAny(problem, "房颤", "心房颤动")) {
-            keywords.addAll(List.of("房颤", "心房颤动", "心率绝对不齐", "脉搏短绌", "利伐沙班", "CHA2DS2", "心电图"));
-        }
-        if (containsAny(problem, "感染", "肺炎")) {
-            keywords.addAll(List.of("感染", "肺炎", "CRP", "C反应蛋白", "白细胞", "中性粒", "头孢", "炎症"));
-        }
-        if (containsAny(problem, "贫血")) {
-            keywords.addAll(List.of("贫血", "血红蛋白", "Hct", "红细胞压积", "贫血貌"));
-        }
-        if (containsAny(problem, "血小板")) {
-            keywords.addAll(List.of("血小板", "PLT"));
-        }
-        if (containsAny(problem, "高乳酸")) {
-            keywords.addAll(List.of("乳酸", "Lac"));
-        }
-        if (keywords.isEmpty() && StringUtils.hasText(problem)) {
-            keywords.add(problem);
-        }
-        return keywords;
-    }
-
-    private boolean matchesProblem(String text, List<String> keywords) {
-        if (!StringUtils.hasText(text) || keywords == null || keywords.isEmpty()) {
-            return false;
-        }
-        for (String keyword : keywords) {
-            if (StringUtils.hasText(keyword) && text.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void refineProblemCertainty(ObjectNode problemNode, String rawText) {
-        String problem = problemNode.path("problem").asText("");
-        String current = problemNode.path("certainty").asText("");
-        List<String> evidence = readTextArray(problemNode.get("key_evidence"));
-        String mergedEvidence = String.join(" ", evidence);
-        if (containsAny(problem, "心衰", "心力衰竭")) {
-            if (containsAny(rawText, "充血性心力衰竭", "心功能Ⅳ级", "NT-BNP", "NT-proBNP")
-                    || containsAny(mergedEvidence, "NT-proBNP", "脑利钠肽", "胸腔积液", "下肢水肿")) {
-                problemNode.put("certainty", "confirmed");
-                return;
-            }
-        }
-        if (containsAny(problem, "房颤", "心房颤动")) {
-            if (containsAny(rawText, "心房颤动", "心率绝对不齐", "脉搏短绌") || containsAny(mergedEvidence, "心电图", "心房颤动")) {
-                problemNode.put("certainty", "confirmed");
-                return;
-            }
-        }
-        if (containsAny(problem, "感染", "肺炎") && containsAny(problem, "待排")) {
-            problemNode.put("certainty", "suspected");
-            return;
-        }
-        if (!StringUtils.hasText(current)) {
-            normalizeCertainty(problemNode);
-        }
-    }
-
-    private boolean shouldKeepProblem(ObjectNode problemNode) {
-        String certainty = problemNode.path("certainty").asText("");
-        int evidenceCount = ensureArrayNode(problemNode.get("key_evidence")).size();
-        int actionCount = ensureArrayNode(problemNode.get("major_actions")).size();
-        int riskCount = ensureArrayNode(problemNode.get("risk_flags")).size();
-        if (containsAny(certainty, "workup_needed", "risk_only") && evidenceCount == 0 && actionCount == 0 && riskCount == 0) {
-            return false;
-        }
-        return StringUtils.hasText(problemNode.path("problem").asText(""));
-    }
-
-    private void addMatchingEvidence(Set<String> collector, JsonNode candidates, String problem, int limit) {
-        if (candidates == null || !candidates.isArray()) {
-            return;
-        }
-        ProblemProfile profile = buildProblemProfile(problem);
-        for (JsonNode item : candidates) {
-            String text = item.asText("").trim();
-            if (!StringUtils.hasText(text)) {
-                continue;
-            }
-            if (matchesEvidence(text, profile)) {
-                collector.add(text);
-            }
-            if (collector.size() >= limit) {
-                break;
-            }
-        }
-    }
-
-    private boolean matchesEvidence(String text, ProblemProfile profile) {
-        if (!StringUtils.hasText(text) || profile == null) {
-            return false;
-        }
-        boolean include = profile.includeKeywords.isEmpty();
-        for (String keyword : profile.includeKeywords) {
-            if (text.contains(keyword)) {
-                include = true;
-                break;
-            }
-        }
-        if (!include) {
-            return false;
-        }
-        for (String keyword : profile.excludeKeywords) {
-            if (text.contains(keyword)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private ProblemProfile buildProblemProfile(String problem) {
-        ProblemProfile profile = new ProblemProfile();
-        if (containsAny(problem, "心衰", "心力衰竭")) {
-            profile.includeKeywords.addAll(List.of("NT-proBNP", "脑利钠肽", "下肢水肿", "胸腔积液", "气促", "心脏增大"));
-            profile.excludeKeywords.addAll(List.of("CRP", "白细胞", "中性粒", "D-二聚体", "肺炎"));
-            return profile;
-        }
-        if (containsAny(problem, "房颤", "心房颤动")) {
-            profile.includeKeywords.addAll(List.of("心电图", "心房颤动", "心率绝对不齐", "脉搏短绌"));
-            profile.excludeKeywords.addAll(List.of("CRP", "白细胞", "胸部CT"));
-            return profile;
-        }
-        if (containsAny(problem, "感染", "肺炎", "肺部")) {
-            profile.includeKeywords.addAll(List.of("胸部CT", "炎症", "CRP", "白细胞", "中性粒", "咳嗽", "咳痰"));
-            profile.excludeKeywords.addAll(List.of("NT-proBNP", "脑利钠肽", "心房颤动", "D-二聚体"));
-            return profile;
-        }
-        if (containsAny(problem, "冠脉", "ACS", "冠心病")) {
-            profile.includeKeywords.addAll(List.of("胸痛", "肌钙蛋白", "TNT", "ST改变", "排查ACS"));
-            profile.excludeKeywords.addAll(List.of("CRP", "白细胞", "NT-proBNP"));
-            return profile;
-        }
-        if (containsAny(problem, "贫血")) {
-            profile.includeKeywords.addAll(List.of("血红蛋白", "Hct", "红细胞压积", "贫血貌"));
-            return profile;
-        }
-        return profile;
-    }
-
-    private static class ProblemProfile {
-        private final List<String> includeKeywords = new ArrayList<>();
-        private final List<String> excludeKeywords = new ArrayList<>();
-    }
-
-    private boolean isDiagnosticPlan(String text) {
-        if (!StringUtils.hasText(text)) {
-            return false;
-        }
-        return (text.startsWith("查") || text.startsWith("复查") || text.startsWith("完善") || text.startsWith("择期复查")
-                || text.startsWith("动态复查") || text.startsWith("追踪"))
-                && !containsAny(text, "监护", "监测", "吸氧", "输液", "iv", "po", "st");
-    }
-
-    private JsonNode flattenObjectiveEvidence(JsonNode fusionReadyFacts) {
-        ArrayNode flattened = objectMapper.createArrayNode();
-        if (fusionReadyFacts == null || !fusionReadyFacts.isObject()) {
-            return flattened;
-        }
-        JsonNode objectiveLayer = fusionReadyFacts.get("objective_fact_layer");
-        if (objectiveLayer == null || !objectiveLayer.isObject()) {
-            return flattened;
-        }
-        JsonNode objective = objectiveLayer.get("objective_evidence");
-        if (objective == null || !objective.isObject()) {
-            return flattened;
-        }
-        for (String field : List.of("symptoms_signs", "labs", "imaging", "other_tests")) {
-            JsonNode items = objective.get(field);
-            if (items == null || !items.isArray()) {
-                continue;
-            }
-            for (JsonNode item : items) {
-                String fact = item.path("fact").asText("").trim();
-                if (StringUtils.hasText(fact)) {
-                    flattened.add(fact);
-                }
-            }
-        }
-        return flattened;
-    }
-
-    private JsonNode flattenActionCandidates(JsonNode fusionReadyFacts) {
-        ArrayNode flattened = objectMapper.createArrayNode();
-        if (fusionReadyFacts == null || !fusionReadyFacts.isObject()) {
-            return flattened;
-        }
-        JsonNode objectiveLayer = fusionReadyFacts.get("objective_fact_layer");
-        if (objectiveLayer == null || !objectiveLayer.isObject()) {
-            return flattened;
-        }
-        for (String field : List.of("treatment_actions", "monitoring_actions", "process_actions")) {
-            JsonNode items = objectiveLayer.get(field);
-            if (items == null || !items.isArray()) {
-                continue;
-            }
-            for (JsonNode item : items) {
-                String action = item.path("action").asText("").trim();
-                if (StringUtils.hasText(action)) {
-                    flattened.add(action);
-                }
-            }
-        }
-        return flattened;
-    }
-
-    private List<String> readTextArray(JsonNode node) {
-        List<String> values = new ArrayList<>();
-        if (node == null || !node.isArray()) {
-            return values;
-        }
-        for (JsonNode item : node) {
-            if (item != null && item.isTextual() && StringUtils.hasText(item.asText())) {
-                values.add(item.asText().trim());
-            }
-        }
-        return values;
-    }
-
-    private String selectPromptByItemName(String itemname) {
+    private PromptDefinition selectPromptByItemName(String itemname) {
         return switch (IllnessRecordType.resolve(itemname)) {
-            case FIRST_COURSE, ADMISSION -> FormatAgentPrompt.FIRST_ILLNESS_COURSE_PROMPT_NEW;
-            case CONSULTATION -> FormatAgentPrompt.CONSULTATION_ILLNESS_COURSE_PROMPT_NEW;
-            case SURGERY -> FormatAgentPrompt.SURGERY_ILLNESS_COURSE_PROMPT_NEW;
-            case DAILY -> FormatAgentPrompt.ILLNESS_COURSE_PROMPT_NEW;
+            case FIRST_COURSE, ADMISSION -> new PromptDefinition(
+                    PromptType.FIRST_ILLNESS_COURSE_NEW,
+                    FormatAgentPrompt.FIRST_ILLNESS_COURSE_PROMPT_NEW,
+                    ""
+            );
+            case CONSULTATION -> new PromptDefinition(
+                    PromptType.CONSULTATION_ILLNESS_COURSE_NEW,
+                    FormatAgentPrompt.CONSULTATION_ILLNESS_COURSE_PROMPT_NEW,
+                    ""
+            );
+            case SURGERY -> new PromptDefinition(
+                    PromptType.SURGERY_ILLNESS_COURSE_NEW,
+                    FormatAgentPrompt.SURGERY_ILLNESS_COURSE_PROMPT_NEW,
+                    ""
+            );
+            case DAILY -> new PromptDefinition(
+                    PromptType.ILLNESS_COURSE_NEW,
+                    FormatAgentPrompt.ILLNESS_COURSE_PROMPT_NEW,
+                    ""
+            );
         };
+    }
+
+    private PromptDefinition dailyFusionPromptDefinition() {
+        return new PromptDefinition(
+                PromptType.DAILY_FUSION,
+                FormatAgentPrompt.DAILY_FUSION_SYSTEM_PROMPT,
+                FormatAgentPrompt.DAILY_FUSION_USER_PROMPT
+        );
     }
 
     private String trimTimelineForModelInput(String summaryJson, PatientRawDataEntity rawData) {
@@ -2579,12 +1296,153 @@ public class SummaryAgent extends AbstractAgent {
         return toJsonQuietly(container);
     }
 
-    private JsonNode toJsonNodeOrText(String text) {
-        JsonNode node = parseJsonQuietly(text);
-        if (node != null) {
-            return node;
+    private ValidatedLlmResult callWithValidation(PromptDefinition promptDefinition, String inputJson) {
+        List<AttemptReport> attempts = new ArrayList<>();
+        List<ValidationIssue> issues = Collections.emptyList();
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            String rawOutput = callPrompt(promptDefinition, inputJson, issues);
+            ValidationResult validationResult = validatePromptOutput(promptDefinition, rawOutput);
+            attempts.add(new AttemptReport(attempt, validationResult.valid(), validationResult.issues()));
+            if (validationResult.valid()) {
+                return new ValidatedLlmResult(true, validationResult.parsedNode(), attempts, "");
+            }
+            issues = validationResult.issues();
         }
-        return objectMapper.valueToTree(text);
+        String failureReason = issues.isEmpty() ? "LLM output validation failed" : issues.get(0).reason();
+        log.warn("Prompt validation failed after retries, promptType={}, reason={}", promptDefinition.type(), failureReason);
+        return new ValidatedLlmResult(false, objectMapper.createObjectNode(), attempts, failureReason);
+    }
+
+    private String callPrompt(PromptDefinition promptDefinition, String inputJson, List<ValidationIssue> issues) {
+        if (!promptDefinition.hasUserPrompt()) {
+            String userInput = issues == null || issues.isEmpty()
+                    ? inputJson
+                    : buildRetryUserInput(inputJson, issues);
+            return callWithPrompt(promptDefinition.systemPrompt(), userInput);
+        }
+        String userPrompt = promptDefinition.userPrompt();
+        if (issues != null && !issues.isEmpty()) {
+            userPrompt = userPrompt + "\n\n" + buildRetryInstruction(issues);
+        }
+        return callWithPrompt(promptDefinition.systemPrompt(), userPrompt, inputJson);
+    }
+
+    private ValidationResult validatePromptOutput(PromptDefinition promptDefinition, String rawOutput) {
+        JsonNode parsedNode = parseJsonQuietly(rawOutput);
+        if (parsedNode == null) {
+            return new ValidationResult(
+                    false,
+                    null,
+                    List.of(new ValidationIssue(
+                            "$",
+                            buildShortExcerpt(defaultIfBlank(rawOutput, ""), 200),
+                            List.of(),
+                            "输出不是合法JSON"
+                    ))
+            );
+        }
+        List<ValidationIssue> issues = new ArrayList<>();
+        for (EnumFieldRule rule : promptDefinition.validationSpec().rules()) {
+            validateEnumRule(rule, parsedNode, issues);
+        }
+        return new ValidationResult(issues.isEmpty(), parsedNode, issues);
+    }
+
+    private void validateEnumRule(EnumFieldRule rule, JsonNode root, List<ValidationIssue> issues) {
+        String[] segments = rule.jsonPath().split("\\.");
+        validateEnumRuleSegments(rule, root, segments, 0, "$", issues);
+    }
+
+    private void validateEnumRuleSegments(EnumFieldRule rule,
+                                          JsonNode currentNode,
+                                          String[] segments,
+                                          int index,
+                                          String currentPath,
+                                          List<ValidationIssue> issues) {
+        if (index >= segments.length) {
+            validateLeafValue(rule, currentNode, currentPath, issues);
+            return;
+        }
+        String segment = segments[index];
+        boolean arraySegment = segment.endsWith("[]");
+        String fieldName = arraySegment ? segment.substring(0, segment.length() - 2) : segment;
+        String nextPath = currentPath + "." + fieldName;
+        JsonNode nextNode = currentNode == null ? null : currentNode.get(fieldName);
+        if (nextNode == null || nextNode.isMissingNode() || nextNode.isNull()) {
+            if (rule.required()) {
+                issues.add(new ValidationIssue(nextPath, "", new ArrayList<>(rule.allowedValues()), "字段缺失"));
+            }
+            return;
+        }
+        if (arraySegment) {
+            if (!nextNode.isArray()) {
+                issues.add(new ValidationIssue(nextPath, buildShortExcerpt(nextNode.toString(), 80),
+                        new ArrayList<>(rule.allowedValues()), "字段不是数组"));
+                return;
+            }
+            for (int i = 0; i < nextNode.size(); i++) {
+                validateEnumRuleSegments(rule, nextNode.get(i), segments, index + 1, nextPath + "[" + i + "]", issues);
+            }
+            return;
+        }
+        validateEnumRuleSegments(rule, nextNode, segments, index + 1, nextPath, issues);
+    }
+
+    private void validateLeafValue(EnumFieldRule rule, JsonNode valueNode, String jsonPath, List<ValidationIssue> issues) {
+        if (valueNode == null || valueNode.isMissingNode() || valueNode.isNull()) {
+            if (rule.required()) {
+                issues.add(new ValidationIssue(jsonPath, "", new ArrayList<>(rule.allowedValues()), "字段缺失"));
+            }
+            return;
+        }
+        if (!valueNode.isTextual()) {
+            issues.add(new ValidationIssue(
+                    jsonPath,
+                    buildShortExcerpt(valueNode.toString(), 80),
+                    new ArrayList<>(rule.allowedValues()),
+                    "字段必须是字符串枚举"
+            ));
+            return;
+        }
+        String value = valueNode.asText("").trim();
+        if (!StringUtils.hasText(value) && rule.required()) {
+            issues.add(new ValidationIssue(jsonPath, value, new ArrayList<>(rule.allowedValues()), "字段为空"));
+            return;
+        }
+        if (StringUtils.hasText(value) && !rule.allowedValues().contains(value)) {
+            issues.add(new ValidationIssue(jsonPath, value, new ArrayList<>(rule.allowedValues()), "字段值不在允许枚举中"));
+        }
+    }
+
+    private String buildRetryUserInput(String inputJson, List<ValidationIssue> issues) {
+        return buildRetryInstruction(issues) + "\n【输入数据】\n" + inputJson;
+    }
+
+    private String buildRetryInstruction(List<ValidationIssue> issues) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("上一次输出未通过校验，请仅修正以下问题，并重新输出完整JSON：\n");
+        for (int i = 0; i < issues.size(); i++) {
+            ValidationIssue issue = issues.get(i);
+            builder.append(i + 1).append(". 路径 ").append(issue.jsonPath());
+            if (StringUtils.hasText(issue.invalidValue())) {
+                builder.append(" 的值为 ").append(issue.invalidValue());
+            }
+            if (!issue.allowedValues().isEmpty()) {
+                builder.append("，允许值仅为 ").append(String.join("|", issue.allowedValues()));
+            }
+            builder.append("。原因：").append(issue.reason()).append('\n');
+        }
+        builder.append("不要输出解释，只输出修正后的完整JSON。");
+        return builder.toString();
+    }
+
+    private Map<String, Object> failureReport(String reason) {
+        return Map.of(
+                "success", false,
+                "attempt_count", 0,
+                "failure_reason", reason,
+                "attempts", List.of()
+        );
     }
 
     private JsonNode parseJsonQuietly(String text) {
@@ -2722,6 +1580,102 @@ public class SummaryAgent extends AbstractAgent {
         ));
         ChatResponse response = super.callModelByPrompt(prompt);
         return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
+    }
+
+    private static PromptValidationSpec validationSpecFor(PromptType promptType) {
+        return switch (promptType) {
+            case FIRST_ILLNESS_COURSE_NEW -> new PromptValidationSpec(List.of(
+                    new EnumFieldRule("core_problems[].certainty", ALLOWED_BASELINE_CERTAINTY, true),
+                    new EnumFieldRule("core_problems[].time_status", ALLOWED_BASELINE_TIME_STATUS, true),
+                    new EnumFieldRule("core_problems[].severity", ALLOWED_SEVERITY, true),
+                    new EnumFieldRule("differential_diagnosis[].certainty", ALLOWED_DIFFERENTIAL_CERTAINTY, true)
+            ));
+            case ILLNESS_COURSE_NEW -> new PromptValidationSpec(List.of(
+                    new EnumFieldRule("risk_alerts[].certainty", ALLOWED_RISK_ALERT_CERTAINTY, true)
+            ));
+            case CONSULTATION_ILLNESS_COURSE_NEW -> new PromptValidationSpec(List.of(
+                    new EnumFieldRule("consult_core_judgment[].certainty", ALLOWED_CONSULT_CERTAINTY, true),
+                    new EnumFieldRule("risk_alerts[].certainty", ALLOWED_RISK_ALERT_CERTAINTY, true)
+            ));
+            case SURGERY_ILLNESS_COURSE_NEW -> new PromptValidationSpec(List.of());
+            case DAILY_FUSION -> new PromptValidationSpec(List.of(
+                    new EnumFieldRule("daily_fusion.problem_list[].problem_type", ALLOWED_PROBLEM_TYPE, true),
+                    new EnumFieldRule("daily_fusion.problem_list[].priority", ALLOWED_PRIORITY, true),
+                    new EnumFieldRule("daily_fusion.problem_list[].status", ALLOWED_STATUS, true),
+                    new EnumFieldRule("daily_fusion.problem_list[].certainty", ALLOWED_CERTAINTY, true)
+            ));
+        };
+    }
+
+    private enum PromptType {
+        FIRST_ILLNESS_COURSE_NEW,
+        ILLNESS_COURSE_NEW,
+        CONSULTATION_ILLNESS_COURSE_NEW,
+        SURGERY_ILLNESS_COURSE_NEW,
+        DAILY_FUSION
+    }
+
+    private record PromptDefinition(PromptType type, String systemPrompt, String userPrompt) {
+
+        private boolean hasUserPrompt() {
+            return StringUtils.hasText(userPrompt);
+        }
+
+        private PromptValidationSpec validationSpec() {
+            return validationSpecFor(type);
+        }
+    }
+
+    private record PromptValidationSpec(List<EnumFieldRule> rules) {
+    }
+
+    private record EnumFieldRule(String jsonPath, Set<String> allowedValues, boolean required) {
+    }
+
+    private record ValidationIssue(String jsonPath, String invalidValue, List<String> allowedValues, String reason) {
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("json_path", jsonPath);
+            result.put("invalid_value", invalidValue);
+            result.put("allowed_values", allowedValues);
+            result.put("reason", reason);
+            return result;
+        }
+    }
+
+    private record ValidationResult(boolean valid, JsonNode parsedNode, List<ValidationIssue> issues) {
+    }
+
+    private record AttemptReport(int attempt, boolean valid, List<ValidationIssue> issues) {
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("attempt", attempt);
+            result.put("valid", valid);
+            List<Map<String, Object>> issueMaps = new ArrayList<>();
+            for (ValidationIssue issue : issues) {
+                issueMaps.add(issue.toMap());
+            }
+            result.put("issues", issueMaps);
+            return result;
+        }
+    }
+
+    private record ValidatedLlmResult(boolean success, JsonNode outputNode, List<AttemptReport> attempts, String failureReason) {
+
+        private Map<String, Object> toReport() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("success", success);
+            result.put("attempt_count", attempts.size());
+            result.put("failure_reason", StringUtils.hasText(failureReason) ? failureReason : "");
+            List<Map<String, Object>> attemptMaps = new ArrayList<>();
+            for (AttemptReport attempt : attempts) {
+                attemptMaps.add(attempt.toMap());
+            }
+            result.put("attempts", attemptMaps);
+            return result;
+        }
     }
 
     public record DailyIllnessResult(String structDataJson, String updatedSummaryJson) {

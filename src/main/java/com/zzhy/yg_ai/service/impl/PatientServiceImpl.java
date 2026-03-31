@@ -78,7 +78,8 @@ public class PatientServiceImpl implements PatientService {
         List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
 
         activeReqnos = activeReqnos.stream()
-                .filter(reqno -> "260300011".equals(reqno))
+//                .filter(reqno -> "260300011".equals(reqno))
+                .filter(reqno -> "260300124".equals(reqno))
                 .collect(Collectors.toList());
 
         if (!debugReqnos.isEmpty()) {

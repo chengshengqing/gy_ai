@@ -58,7 +58,7 @@
 LLM 默认背景：
 
 - 模型：`Qwen3.5-27B-FP8`
-- 上下文长度：`16000`
+- 上下文长度：`12000`
 - 超时 / 重试策略：默认按 3 次重试思路设计
 
 ## 代码结构认知
@@ -269,13 +269,3 @@ LLM 默认背景：
 - 空泛描述
 - 只讲概念不落到类和文件
 - 未确认现有结构就直接重构
-
-## 输出规则
-
-所有代码定位必须输出为：
-<module_path>/<file_path>:<line_number>
-
-- 正确示例：
-/Users/chengshengqing/IdeaProjects/yg_ai/src/main/java/com/zzhy/yg_ai/task/InfectionMonitorScheduler.java:29
-- 错误示例：
-/Users/chengshengqing/IdeaProjects/yg_ai/src/main/java/com/zzhy/yg_ai/service/impl/LlmEventExtractorServiceImpl.java#L52

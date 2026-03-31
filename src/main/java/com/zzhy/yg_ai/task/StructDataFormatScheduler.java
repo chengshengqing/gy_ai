@@ -21,7 +21,7 @@ public class StructDataFormatScheduler {
         this.infectionDailyJobLogService = infectionDailyJobLogService;
     }
 
-    @Scheduled(fixedDelayString = "${infection.format.fixed-delay:30000}")
+//    @Scheduled(fixedDelayString = "${infection.format.fixed-delay:30000}")
     public void formatPendingStructData() {
         try {
             int formattedCount = infectionPipeline.processPendingStructData();

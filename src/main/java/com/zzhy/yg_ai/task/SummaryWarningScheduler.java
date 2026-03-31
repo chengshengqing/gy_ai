@@ -21,7 +21,7 @@ public class SummaryWarningScheduler {
         this.infectionDailyJobLogService = infectionDailyJobLogService;
     }
 
-    @Scheduled(fixedDelayString = "${infection.warning.fixed-delay:60000}")
+//    @Scheduled(fixedDelayString = "${infection.warning.fixed-delay:60000}")
     public void processPendingEventTasks() {
         try {
             int extractedCount = infectionPipeline.processPendingEventData();

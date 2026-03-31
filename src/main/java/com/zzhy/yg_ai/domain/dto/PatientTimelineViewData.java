@@ -30,7 +30,7 @@ public class PatientTimelineViewData {
         private List<ProblemItem> secondaryProblems = new ArrayList<>();
         @JsonProperty("risk_items")
         private List<RiskItem> riskItems = new ArrayList<>();
-        private ActionGroups actions = new ActionGroups();
+        private List<String> actions = new ArrayList<>();
         @JsonProperty("next_focus")
         private List<String> nextFocus = new ArrayList<>();
         @JsonProperty("evidence_highlights")
@@ -67,14 +67,6 @@ public class PatientTimelineViewData {
         private String name = "";
         private String basis = "";
         private List<SourceNote> sources = new ArrayList<>();
-    }
-
-    @Data
-    public static class ActionGroups {
-        private List<String> treatment = new ArrayList<>();
-        private List<String> tests = new ArrayList<>();
-        private List<String> monitoring = new ArrayList<>();
-        private List<String> other = new ArrayList<>();
     }
 
     @Data

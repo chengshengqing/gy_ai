@@ -523,12 +523,7 @@
                 risk_items: [
                     { name: '血栓风险（长期活动受限）', basis: '术后状态', sources: [{ name: '术后首次病程记录', time: '2026-01-26 15:33:58' }] }
                 ],
-                actions: {
-                    treatment: ['氯诺昔康抗炎止痛', '头孢呋辛抗感染', '冰敷患肢消肿'],
-                    tests: ['复查血常规及凝血功能', '完善风湿因子及血沉'],
-                    monitoring: ['监测生命体征及体温变化', '观察切口渗血及引流液'],
-                    other: ['持续吸氧']
-                },
+                actions: ['氯诺昔康抗炎止痛', '头孢呋辛抗感染', '冰敷患肢消肿', '复查血常规及凝血功能', '完善风湿因子及血沉', '监测生命体征及体温变化', '观察切口渗血及引流液', '持续吸氧'],
                 next_focus: ['复查血常规及凝血功能', '观察切口渗血及引流液性质'],
                 evidence_highlights: ['体温最高 37.5℃', '双膝关节研磨试验阳性', '血压 148/84mmHg'],
                 source_notes: [{ name: '术后首次病程记录', time: '2026-01-26 15:33:58' }, { name: '手术记录', time: '2026-01-26 10:57:25' }],
@@ -572,12 +567,7 @@
                         sources: [{ name: '术后首次副主任查房记录', time: '2026-01-27 15:14:00' }]
                     }
                 ],
-                actions: {
-                    treatment: ['复方氨林巴比妥/柴胡注射液退热', '曲马多镇痛', '依诺肝素抗凝', '补液支持'],
-                    tests: ['复查血常规', '复查CRP及血沉', '复查凝血功能及D-二聚体'],
-                    monitoring: ['动态监测体温', '观察引流液与伤口', '评估镇痛效果'],
-                    other: ['气压治疗', 'CPM治疗']
-                },
+                actions: ['复方氨林巴比妥/柴胡注射液退热', '曲马多镇痛', '依诺肝素抗凝', '补液支持', '复查血常规', '复查CRP及血沉', '复查凝血功能及D-二聚体', '动态监测体温', '观察引流液与伤口', '评估镇痛效果', '气压治疗', 'CPM治疗'],
                 next_focus: ['监测退热效果', '跟踪炎症指标', '评估感染与血栓风险'],
                 evidence_highlights: ['体温最高38.5℃', '脉搏最高102次/分', '引流液70mL'],
                 source_notes: [{ name: '术后首次副主任查房记录', time: '2026-01-27 15:14:00' }, { name: '术后日常病程记录', time: '2026-01-27 16:45:54' }],
@@ -604,12 +594,7 @@
                     }
                 ],
                 risk_items: [{ name: '出院后血栓风险', basis: '房颤风险持续', sources: [{ name: '术后日常病程记录', time: '2026-02-03 13:46:17' }] }],
-                actions: {
-                    treatment: ['利伐沙班片口服', '风湿骨痛胶囊口服', '塞来昔布胶囊口服', '生血宝合剂口服'],
-                    tests: [],
-                    monitoring: ['监测贫血改善情况', '随访关节功能恢复'],
-                    other: ['指导出院后康复训练及助步器使用']
-                },
+                actions: ['利伐沙班片口服', '风湿骨痛胶囊口服', '塞来昔布胶囊口服', '生血宝合剂口服', '监测贫血改善情况', '随访关节功能恢复', '指导出院后康复训练及助步器使用'],
                 next_focus: ['办理出院手续', '指导出院后康复训练', '随访关节功能恢复'],
                 evidence_highlights: ['术区伤口愈合良好，无渗湿', '病理结果：右膝关节慢性滑膜炎'],
                 source_notes: [{ name: '术后日常病程记录', time: '2026-02-03 13:46:17' }],
@@ -770,15 +755,6 @@
         const secondary = (item.secondary_problems || []).map(buildProblemCard).join('');
         const risks = (item.risk_items || []).map(buildRiskItemCard).join('');
 
-        const actionCols = [
-            { title: '治疗', list: item.actions ? item.actions.treatment : [] },
-            { title: '检查', list: item.actions ? item.actions.tests : [] },
-            { title: '监测', list: item.actions ? item.actions.monitoring : [] },
-            { title: '其他', list: item.actions ? item.actions.other : [] }
-        ].map(function (g) {
-            return '<div class="action-col"><div class="action-title">' + g.title + '</div>' + listHtml(g.list || [], 'mini-list') + '</div>';
-        }).join('');
-
         const sourceNotes = (item.source_notes || []).map(function (s) {
             const label = s.time ? (s.name + ' @ ' + s.time) : s.name;
             return '<button type="button" class="source-link" data-name="' + escapeHtml(s.name || '') + '" data-time="' + escapeHtml(s.time || '') + '">' + escapeHtml(label || '来源') + '</button>';
@@ -806,7 +782,7 @@
         const actionSection = buildSection(
             'actions',
             '关键处理',
-            '<div class="action-grid">' + actionCols + '</div>'
+            listHtml(item.actions || [], 'mini-list')
         );
 
         const riskFocusSection = buildSection(
