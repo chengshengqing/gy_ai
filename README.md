@@ -158,8 +158,17 @@ src/main/resources
 
 - 共享基线配置使用 `application.yaml`
 - 本地开发使用 `application-local.yaml`
+- 测试环境使用 `application-test.yaml`
+- 生产环境使用 `application-prod.yaml`
+- 默认 profile 为 `local`
 - 通过 `SPRING_PROFILES_ACTIVE=local` 启动本地覆盖配置
 - 通过环境变量注入真实连接信息
+
+Profile 切换示例：
+
+- 本地：`SPRING_PROFILES_ACTIVE=local`
+- 测试：`SPRING_PROFILES_ACTIVE=test`
+- 生产：`SPRING_PROFILES_ACTIVE=prod`
 
 常用环境变量：
 
@@ -178,17 +187,17 @@ src/main/resources
 ### 1. 使用 Maven Wrapper
 
 ```bash
-SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+./mvnw spring-boot:run
 ```
 
 ### 2. 打包运行
 
 ```bash
 ./mvnw clean package
-SPRING_PROFILES_ACTIVE=local java -jar target/yg_ai-0.0.1-SNAPSHOT.jar
+java -jar target/yg_ai-0.0.1-SNAPSHOT.jar
 ```
 
-默认端口见 `application.yaml`，当前配置为 `8090`。
+默认端口见 `application.yaml`，当前配置为 `8090`。如果不显式指定 `SPRING_PROFILES_ACTIVE`，默认使用 `local`。
 
 ## 主要接口
 

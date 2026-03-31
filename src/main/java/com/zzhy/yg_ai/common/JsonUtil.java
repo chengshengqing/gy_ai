@@ -18,7 +18,7 @@ import java.util.Set;
  */
 public class JsonUtil {
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = DateTimeUtils.createObjectMapper();
 
     /**
      * 创建JSON对象

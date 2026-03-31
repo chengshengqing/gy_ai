@@ -4,11 +4,13 @@ server:
 spring:
   application:
     name: ${YG_AI_APP_NAME:yg_ai}
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
   datasource:
     driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
     url: ${YG_AI_DB_URL:jdbc:sqlserver://127.0.0.1:1433;databaseName=yg_ai;encrypt=true;trustServerCertificate=true;}
     username: ${YG_AI_DB_USERNAME:sa}
-    password: ${YG_AI_DB_PASSWORD:changeit}
+    password: ${YG_AI_DB_PASSWORD:Abcd@1234}
     hikari:
       connection-test-query: SELECT 1
       connection-timeout: 30000
@@ -29,20 +31,17 @@ spring:
       host: ${YG_AI_REDIS_HOST:127.0.0.1}
       port: ${YG_AI_REDIS_PORT:6379}
       database: ${YG_AI_REDIS_DB:0}
-      password: ${YG_AI_REDIS_PASSWORD:}
+#      password: ${YG_AI_REDIS_PASSWORD:}
   ai:
     openai:
       api-key: ${YG_AI_OPENAI_API_KEY:EMPTY}
-      base-url: ${YG_AI_OPENAI_BASE_URL:http://127.0.0.1:6001}
+      base-url: ${YG_AI_OPENAI_BASE_URL:http://192.168.0.205:6001}
       client:
         connect-timeout: ${YG_AI_OPENAI_CONNECT_TIMEOUT:60s}
         read-timeout: ${YG_AI_OPENAI_READ_TIMEOUT:60s}
       chat:
         options:
           model: ${YG_AI_OPENAI_MODEL:Qwen3.5-27B-FP8}
-          extra-body:
-            chat_template_kwargs:
-              enable_thinking: ${YG_AI_OPENAI_ENABLE_THINKING:false}
     memory:
       redis:
         host: ${YG_AI_MEMORY_REDIS_HOST:${YG_AI_REDIS_HOST:127.0.0.1}}

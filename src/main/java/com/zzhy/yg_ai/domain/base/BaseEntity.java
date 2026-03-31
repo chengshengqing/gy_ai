@@ -2,6 +2,7 @@ package com.zzhy.yg_ai.domain.base;
 
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
@@ -55,14 +56,15 @@ public abstract class BaseEntity implements Serializable {
      * 初始化创建时间和更新时间
      */
     public void init() {
-        this.createTime = LocalDateTime.now();
-        this.updateTime = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
+        this.createTime = now;
+        this.updateTime = now;
     }
 
     /**
      * 更新更新时间
      */
     public void update() {
-        this.updateTime = LocalDateTime.now();
+        this.updateTime = DateTimeUtils.now();
     }
 }

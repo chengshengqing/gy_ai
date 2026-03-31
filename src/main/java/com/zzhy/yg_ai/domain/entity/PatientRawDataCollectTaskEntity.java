@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.domain.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 import lombok.Data;
@@ -29,7 +30,7 @@ public class PatientRawDataCollectTaskEntity implements Serializable {
     private LocalDateTime updateTime;
 
     public void initForCreate(int maxAttempts) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         this.status = "PENDING";
         this.attemptCount = 0;
         this.maxAttempts = maxAttempts;

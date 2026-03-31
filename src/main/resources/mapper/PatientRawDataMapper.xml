@@ -9,13 +9,14 @@
         <result column="clinical_notes" property="clinicalNotes"/>
         <result column="data_json" property="dataJson"/>
         <result column="struct_data_json" property="structDataJson"/>
+        <result column="event_json" property="eventJson"/>
         <result column="filter_data_json" property="filterDataJson"/>
         <result column="create_time" property="createTime"/>
         <result column="last_time" property="lastTime"/>
     </resultMap>
 
     <sql id="Base_Column_List">
-        id, reqno,data_date, clinical_notes, data_json, filter_data_json, struct_data_json, create_time, last_time
+        id, reqno,data_date, clinical_notes, data_json, filter_data_json, struct_data_json, event_json, create_time, last_time
     </sql>
 
     <resultMap id="PatInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatInfor">
@@ -253,7 +254,8 @@
             FROM candidate_reqnos
             GROUP BY reqno
         ) final_candidates
-        ORDER BY latest_time DESC, reqno DESC
+        where reqno = '260300011'
+        ORDER BY latest_time ASC
         OFFSET 0 ROWS FETCH NEXT #{limit} ROWS ONLY
     </select>
 
@@ -342,7 +344,7 @@
         inner join district_dict d on p.currentdist = d.datano
         where a.reqno = #{reqno}
         <if test="lastTime != null">
-            and a.diag_time &gt; #{lastTime}
+            and a.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -367,10 +369,10 @@
         FROM PatBodySurface pbs
         where reqno = #{reqno}
         <if test="lastTime != null">
-            and pbs.measuredate &gt; #{lastTime}
+            and pbs.lasttime &gt; #{lastTime}
         </if>
         GROUP BY
-            pbs.reqno, pbs.measuredate
+            pbs.reqno, pbs.measuredate, pbs.flag
     </select>
 
     <select id="selectLongDoctorAdviceByReqno" resultMap="PatDoctorAdviceResultMap">
@@ -394,7 +396,7 @@
             AND reqno = #{reqno}
             AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
         <if test="lastTime != null">
-            and begtime &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -426,7 +428,7 @@
             AND reqno = #{reqno}
             AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
         <if test="lastTime != null">
-            and begtime &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -459,7 +461,7 @@
             AND (COALESCE('_', '_') = '_' OR docadvice LIKE '%' + '_' + '%')
             AND sg_flag IS NOT NULL
         <if test="lastTime != null">
-            and begtime &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -487,7 +489,7 @@
             AND i.reqno = #{reqno}
             and(COALESCE(NULLIF('', '_'), '') = '' OR i.id = '')
         <if test="lastTime != null">
-            and i.creattime &gt; #{lastTime}
+            and i.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -508,7 +510,7 @@
         inner join district_dict d on  pt.distno=d.datano
         where reqno=#{reqno}
         <if test="lastTime != null">
-            and pt.sendtestdate &gt; #{lastTime}
+            and pt.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -538,7 +540,7 @@
         and pt.reqno=#{reqno}
         and pt.samreqno=#{samreqno}
         <if test="lastTime != null">
-            and pt.sendtestdate &gt; #{lastTime}
+            and pt.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -577,7 +579,7 @@
             AND docadvtype = '长期'
             AND reqno = #{reqno}
         <if test="lastTime != null">
-            and begin_time &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -609,7 +611,7 @@
           and(COALESCE(NULLIF('', '_'), '') = '' OR CONVERT(VARCHAR, reporttime, 112) = '')
           and(COALESCE(NULLIF('', '_'), '') = '' OR pd.samreqno = '')
         <if test="lastTime != null">
-            and reporttime &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
           and ( coalesce('0','0')='0'
                     or (coalesce('0','0')='1'
@@ -634,7 +636,7 @@
         FROM	PatDeptChange p
         WHERE reqno = #{reqno}
         <if test="lastTime != null">
-            and a_inhos_date &gt; #{lastTime}
+            and lasttime &gt; #{lastTime}
         </if>
     </select>
 
@@ -658,7 +660,7 @@
             AND ops.pathosid IN (SELECT pathosid FROM pat_infor WHERE reqno = #{reqno})
             AND DATEDIFF(DAY, ops.beg_time, CURRENT_TIMESTAMP) &lt;= 365
         <if test="lastTime != null">
-            and ops.beg_time &gt; #{lastTime}
+            and ops.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -682,7 +684,7 @@
         where ops.reqno=#{reqno}
          and ops.ops_id= #{opsId}
         <if test="lastTime != null">
-            and med.begin_time &gt; #{lastTime}
+            and med.lasttime &gt; #{lastTime}
         </if>
          and ( coalesce('0','0')='0'
                     or (coalesce('0','0')='1'
@@ -706,7 +708,7 @@
         where ops.reqno=#{reqno}
         and ops.ops_id= #{opsId}
         <if test="lastTime != null">
-            and med.begin_time &gt; #{lastTime}
+            and med.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -729,7 +731,7 @@
         where 1=1
         and pte.reqno=#{reqno}
         <if test="lastTime != null">
-            and pte.sampletime &gt; #{lastTime}
+            and pte.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'
@@ -789,7 +791,7 @@
                     (COALESCE(NULLIF(#{samreqno}, '_'), '') != '' AND pm.samreqno = #{samreqno})
                 )
             <if test="lastTime != null">
-                and pm.exedate &gt; #{lastTime}
+                and pm.lasttime &gt; #{lastTime}
             </if>
                 and ( coalesce('0','0')='0'
                         or (coalesce('0','0')='1'
@@ -819,7 +821,7 @@
         and(COALESCE(NULLIF(#{samreqno}, '_'), '') = '' OR  a.samreqno = #{samreqno})
         and(COALESCE(NULLIF(#{dataCode}, '_'), '') = '' OR  a.microbecode = #{dataCode})
         <if test="lastTime != null">
-            and a.exedate &gt; #{lastTime}
+            and a.lasttime &gt; #{lastTime}
         </if>
         and ( coalesce('0','0')='0'
                 or (coalesce('0','0')='1'

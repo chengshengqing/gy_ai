@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.agent.AgentUtils;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.common.FilterTextUtils;
 import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
@@ -37,6 +38,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -73,6 +76,11 @@ public class PatientServiceImpl implements PatientService {
                 ? 200 : infectionMonitorProperties.getScanLimit();
         LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
         List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
+
+        activeReqnos = activeReqnos.stream()
+                .filter(reqno -> "260300011".equals(reqno))
+                .collect(Collectors.toList());
+
         if (!debugReqnos.isEmpty()) {
             log.info("已配置 debugReqnos，但 debugMode=false，当前仍按正式扫描策略执行");
         }
@@ -108,13 +116,11 @@ public class PatientServiceImpl implements PatientService {
         boolean isNewPatient = !hasPatientRawData(reqno);
         LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
         EnumSet<PatientCourseDataType> changedTypes = detectChangedDataTypes(reqno, latestLoadSuccessTime, isNewPatient);
-        result.setStoredLastTime(null);
-        result.setSourceLastTime(latestLoadSuccessTime);
         result.setChangeTypes(PatientCourseDataType.toCsv(changedTypes));
 
         int savedCount = 0;
         List<PatientRawDataChangeTaskEntity> changedTasks = new ArrayList<>();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         if (!isNewPatient) {
             if (latestLoadSuccessTime == null) {
                 result.setStatus("no_data");
@@ -149,7 +155,7 @@ public class PatientServiceImpl implements PatientService {
         if (isNewPatient) {
             if (queriedDayDataMap.isEmpty()) {
                 LocalDate fallbackDate = queriedCourseData.getPatInfor().getInhosday() == null
-                        ? LocalDate.now()
+                        ? DateTimeUtils.today()
                         : queriedCourseData.getPatInfor().getInhosday().toLocalDate();
                 DailyPatientRawData fallbackData = new DailyPatientRawData();
                 fallbackData.setReqno(reqno);
@@ -202,6 +208,14 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
+    public PatientRawDataEntity getRawDataById(Long id) {
+        if (id == null) {
+            return null;
+        }
+        return patientRawDataMapper.selectById(id);
+    }
+
+    @Override
     public List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate) {
         if (!StringUtils.hasText(reqno)) {
             return Collections.emptyList();
@@ -209,6 +223,23 @@ public class PatientServiceImpl implements PatientService {
         QueryWrapper<PatientRawDataEntity> queryWrapper = new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .isNull("struct_data_json")
+                .isNotNull("data_json")
+                .orderByAsc("data_date", "id");
+        if (replayFromDate != null) {
+            queryWrapper.ge("data_date", replayFromDate);
+        }
+        return patientRawDataMapper.selectList(queryWrapper);
+    }
+
+    @Override
+    public List<PatientRawDataEntity> listPendingEventRawData(String reqno, LocalDate replayFromDate) {
+        if (!StringUtils.hasText(reqno)) {
+            return Collections.emptyList();
+        }
+        QueryWrapper<PatientRawDataEntity> queryWrapper = new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno)
+                .isNotNull("struct_data_json")
+                .isNull("event_json")
                 .isNotNull("data_json")
                 .orderByAsc("data_date", "id");
         if (replayFromDate != null) {
@@ -230,6 +261,17 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
+    public void saveEventJson(Long id, String eventJson) {
+        if (id == null) {
+            return;
+        }
+        PatientRawDataEntity update = new PatientRawDataEntity();
+        update.setId(id);
+        update.setEventJson(eventJson);
+        patientRawDataMapper.updateById(update);
+    }
+
+    @Override
     public void saveFilterJson(Long id, String filterJson) {
         if (id == null) {
             return;
@@ -246,7 +288,7 @@ public class PatientServiceImpl implements PatientService {
             return;
         }
         if (summary.getUpdateTime() == null) {
-            summary.setUpdateTime(LocalDateTime.now());
+            summary.setUpdateTime(DateTimeUtils.now());
         }
         PatientSummaryEntity latest = getLatestSummary(summary.getReqno());
         if (latest == null) {
@@ -379,7 +421,7 @@ public class PatientServiceImpl implements PatientService {
         data.setPatTestList(patTestList);
 
         PatientCourseData.OtherInfo otherInfo = new PatientCourseData.OtherInfo();
-        otherInfo.setQueryTime(LocalDateTime.now());
+        otherInfo.setQueryTime(DateTimeUtils.now());
         otherInfo.setSourceLastTime(sourceLastTime);
         otherInfo.setDataStartTime(lastTime);
         data.setOtherInfo(otherInfo);
@@ -422,6 +464,7 @@ public class PatientServiceImpl implements PatientService {
         PatientRawDataEntity existing = patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .eq("data_date", dailyData.getDataDate())
+                .orderByAsc("data_date")
                 .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
         if (existing == null) {
             return insertPatientRawData(reqno, dailyData, now, firstCourse);
@@ -445,8 +488,9 @@ public class PatientServiceImpl implements PatientService {
         PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
         task.setPatientRawDataId(rawDataEntity.getId());
         task.setReqno(rawDataEntity.getReqno());
+        task.setDataDate(rawDataEntity.getDataDate());
         task.setRawDataLastTime(rawDataEntity.getLastTime());
-        task.setCreateTime(LocalDateTime.now());
+        task.setCreateTime(DateTimeUtils.now());
         return task;
     }
 
@@ -465,6 +509,7 @@ public class PatientServiceImpl implements PatientService {
         return patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .eq("data_date", dataDate)
+                .orderByAsc("data_date")
                 .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
     }
 
@@ -759,24 +804,24 @@ public class PatientServiceImpl implements PatientService {
     private String diagKey(PatientCourseData.PatDiagInfor item) {
         return joinKey(item == null ? null : item.getReqno(),
                 item == null ? null : item.getDiagId(),
-                formatDateTime(item == null ? null : item.getDiagTime(), "yyyy-MM-dd HH:mm:ss"));
+                formatDateTime(item == null ? null : item.getDiagTime(), DateTimeUtils.DATE_TIME_PATTERN));
     }
 
     private String bodySurfaceKey(PatientCourseData.PatBodySurface item) {
         return joinKey(item == null ? null : item.getReqno(),
-                formatDateTime(item == null ? null : item.getMeasuredate(), "yyyy-MM-dd HH:mm:ss"),
+                formatDateTime(item == null ? null : item.getMeasuredate(), DateTimeUtils.DATE_TIME_PATTERN),
                 item == null ? null : item.getFlag());
     }
 
     private String doctorAdviceKey(PatientCourseData.PatDoctorAdvice item) {
         return joinKey(item == null ? null : item.getReqno(),
                 item == null ? null : item.getDocadvno(),
-                formatDateTime(item == null ? null : item.getBegtime(), "yyyy-MM-dd HH:mm:ss"));
+                formatDateTime(item == null ? null : item.getBegtime(), DateTimeUtils.DATE_TIME_PATTERN));
     }
 
     private String illnessCourseKey(PatientCourseData.PatIllnessCourse item) {
         return joinKey(item == null ? null : item.getReqno(),
-                formatDateTime(item == null ? null : item.getCreattime(), "yyyy-MM-dd HH:mm:ss"),
+                formatDateTime(item == null ? null : item.getCreattime(), DateTimeUtils.DATE_TIME_PATTERN),
                 item == null ? null : item.getItemname());
     }
 
@@ -805,7 +850,7 @@ public class PatientServiceImpl implements PatientService {
 
     private String transferKey(PatientCourseData.PatTransfer item) {
         return joinKey(item == null ? null : item.getReqno(),
-                formatDateTime(item == null ? null : item.getIndeptdate(), "yyyy-MM-dd HH:mm:ss"));
+                formatDateTime(item == null ? null : item.getIndeptdate(), DateTimeUtils.DATE_TIME_PATTERN));
     }
 
     private String opsKey(PatientCourseData.PatOpsCutInfor item) {
@@ -845,14 +890,17 @@ public class PatientServiceImpl implements PatientService {
         return parts.isEmpty() ? null : String.join("|", parts);
     }
 
-    private void resetDerivedData(String reqno, LocalDate changedFromDate) {
+    @Override
+    public void resetDerivedData(String reqno, LocalDate changedFromDate) {
+        if (!StringUtils.hasText(reqno) || changedFromDate == null) {
+            return;
+        }
         UpdateWrapper<PatientRawDataEntity> rawDataUpdateWrapper = new UpdateWrapper<>();
         rawDataUpdateWrapper.eq("reqno", reqno)
                 .ge("data_date", changedFromDate)
-                .set("filter_data_json", null)
                 .set("struct_data_json", null)
                 .set("event_json", null);
-//        patientRawDataMapper.update(null, rawDataUpdateWrapper);
+        patientRawDataMapper.update(null, rawDataUpdateWrapper);
         truncateSummaryFromDate(reqno, changedFromDate);
     }
 
@@ -881,7 +929,7 @@ public class PatientServiceImpl implements PatientService {
                 return;
             }
             latest.setTokenCount(latest.getSummaryJson() == null ? 0 : latest.getSummaryJson().length());
-            latest.setUpdateTime(LocalDateTime.now());
+            latest.setUpdateTime(DateTimeUtils.now());
             patientSummaryMapper.updateById(latest);
         } catch (Exception e) {
             log.warn("截断摘要时间轴失败，reqno={}, changedFromDate={}", reqno, changedFromDate, e);
@@ -988,7 +1036,7 @@ public class PatientServiceImpl implements PatientService {
                                             String reqno,
                                             PatientCourseData source,
                                             LocalDateTime time) {
-        LocalDate date = (time == null ? LocalDate.now() : time.toLocalDate());
+        LocalDate date = (time == null ? DateTimeUtils.today() : time.toLocalDate());
         return dayDataMap.computeIfAbsent(date, key -> {
             DailyPatientRawData dayData = new DailyPatientRawData();
             dayData.setReqno(reqno);
@@ -1216,29 +1264,59 @@ public class PatientServiceImpl implements PatientService {
     private List<Map<String, Object>> buildVitalSigns(List<PatientCourseData.PatBodySurface> bodySurfaceList) {
         List<Map<String, Object>> vitalSigns = new ArrayList<>();
         for (PatientCourseData.PatBodySurface bodySurface : nonNullList(bodySurfaceList)) {
-            if (!hasAnyAbnormalVitalSign(bodySurface)) {
-                continue;
+            Map<String, Object> item = buildCompactVitalSignItem(bodySurface);
+            if (!item.isEmpty()) {
+                vitalSigns.add(item);
             }
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("time", formatDateTime(bodySurface.getMeasuredate(), "HH:mm"));
-            if (StringUtils.hasText(bodySurface.getTemperature())) {
-                item.put("temperature", bodySurface.getTemperature());
-            }
-            if (StringUtils.hasText(bodySurface.getStoolCount())) {
-                item.put("stool_count", bodySurface.getStoolCount());
-            }
-            if (StringUtils.hasText(bodySurface.getPulse())) {
-                item.put("pulse", bodySurface.getPulse());
-            }
-            if (StringUtils.hasText(bodySurface.getBreath())) {
-                item.put("respiration", bodySurface.getBreath());
-            }
-            if (StringUtils.hasText(bodySurface.getBloodPressure())) {
-                item.put("blood_pressure", bodySurface.getBloodPressure());
-            }
-            vitalSigns.add(item);
         }
         return vitalSigns;
+    }
+
+    private Map<String, Object> buildCompactVitalSignItem(PatientCourseData.PatBodySurface bodySurface) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (bodySurface == null) {
+            return item;
+        }
+        List<String> abnormalFields = new ArrayList<>();
+        String time = formatDateTime(bodySurface.getMeasuredate(), "HH:mm");
+        if (StringUtils.hasText(time)) {
+            item.put("time", time);
+        }
+        if (StringUtils.hasText(bodySurface.getTemperature())) {
+            item.put("temp", bodySurface.getTemperature());
+            if (isAbnormalTemperature(bodySurface.getTemperature())) {
+                abnormalFields.add("temp");
+            }
+        }
+        if (StringUtils.hasText(bodySurface.getStoolCount())) {
+            item.put("stool", bodySurface.getStoolCount());
+            if (isAbnormalStoolCount(bodySurface.getStoolCount())) {
+                abnormalFields.add("stool");
+            }
+        }
+        if (StringUtils.hasText(bodySurface.getPulse())) {
+            item.put("pulse", bodySurface.getPulse());
+            if (isAbnormalPulse(bodySurface.getPulse())) {
+                abnormalFields.add("pulse");
+            }
+        }
+        if (StringUtils.hasText(bodySurface.getBreath())) {
+            item.put("resp", bodySurface.getBreath());
+            if (isAbnormalRespiration(bodySurface.getBreath())) {
+                abnormalFields.add("resp");
+            }
+        }
+        if (StringUtils.hasText(bodySurface.getBloodPressure())) {
+            item.put("bp", bodySurface.getBloodPressure());
+            if (isAbnormalBloodPressure(bodySurface.getBloodPressure())) {
+                abnormalFields.add("bp");
+            }
+        }
+        if (item.isEmpty()) {
+            return item;
+        }
+        item.put("abn", abnormalFields);
+        return item;
     }
 
     private Map<String, Object> buildLabResults(List<PatientCourseData.PatTestSam> testSamList,
@@ -1247,34 +1325,30 @@ public class PatientServiceImpl implements PatientService {
         List<Map<String, Object>> testPanels = new ArrayList<>();
         for (PatientCourseData.PatTestSam sam : nonNullList(testSamList)) {
             List<Map<String, Object>> results = new ArrayList<>();
-            boolean hasAbnormal = false;
+            int abnormalCount = 0;
 
             for (PatientCourseData.PatTestResult result : nonNullList(sam.getResultList())) {
-                String abnormalFlag = result.getAllJyFlag();
-                // 只有当 abnormal_flag 为“异常”时，才添加到 results 列表
-                if ("异常".equals(abnormalFlag)) {
-                    Map<String, Object> resultItem = new LinkedHashMap<>();
-                    resultItem.put("item_name", result.getItemname());
-                    resultItem.put("eng_name", result.getEngname());
-                    resultItem.put("result", result.getResultdesc());
-                    resultItem.put("state", result.getState());
-                    resultItem.put("unit_or_range", result.getUnit());
-                    resultItem.put("ref_desc", result.getRefdesc());
-                    resultItem.put("abnormal_flag", abnormalFlag);
-                    resultItem.put("display", buildLabResultValue(result));
+                Map<String, Object> resultItem = buildCompactLabResultItem(result);
+                if (!resultItem.isEmpty()) {
                     results.add(resultItem);
-                    hasAbnormal = true;
+                    if (Boolean.TRUE.equals(resultItem.get("is_abnormal"))) {
+                        abnormalCount++;
+                    }
                 }
             }
 
-            // 只有当 results 中至少有一个“异常”记录时，才将该 panel 添加到 testPanels
-            if (hasAbnormal) {
+            if (!results.isEmpty()) {
                 Map<String, Object> panel = new LinkedHashMap<>();
-                panel.put("samreqno", sam.getSamreqno());
-                panel.put("test_aim", sam.getTestaim());
-                panel.put("sample_type", sam.getDataName());
-                panel.put("send_test_time", formatDateTime(sam.getSendtestdate(), "yyyy-MM-dd HH:mm"));
+                String panelName = firstNonBlank(sam.getTestaim(), sam.getDataName());
+                if (StringUtils.hasText(panelName)) {
+                    panel.put("panel_name", panelName);
+                }
+                if (StringUtils.hasText(sam.getDataName()) && !sam.getDataName().equals(panelName)) {
+                    panel.put("sample_type", sam.getDataName());
+                }
                 panel.put("test_time", formatDateTime(sam.getTestdate(), "yyyy-MM-dd HH:mm"));
+                panel.put("abnormal_count", abnormalCount);
+                panel.put("normal_count", Math.max(results.size() - abnormalCount, 0));
                 panel.put("results", results);
                 testPanels.add(panel);
             }
@@ -1283,65 +1357,172 @@ public class PatientServiceImpl implements PatientService {
 
         List<Map<String, Object>> microbePanels = new ArrayList<>();
         for (PatientCourseData.PatTest patTest : nonNullList(patTestList)) {
-            List<Map<String, Object>> microbeItems = new ArrayList<>();
+            List<Map<String, Object>> microbeResults = new ArrayList<>();
+            int abnormalCount = 0;
             for (PatientCourseData.MicrobeInfo microbeInfo : nonNullList(patTest.getMicrobeList())) {
-                List<String> drugSensitivityList = new ArrayList<>();
-                boolean hasSensitiveDrug = false;
-
-                for (PatientCourseData.AntiDrugInfo antiDrug : nonNullList(microbeInfo.getAntiDrugList())) {
-                    String sensitivity = antiDrug.getSensitivity();
-                    // 只有当 sensitivity 为"耐药"或"中介"时才处理
-                    if ("耐药".equals(sensitivity) || "中介".equals(sensitivity)) {
-                        hasSensitiveDrug = true;
-                        StringBuilder sb = new StringBuilder();
-                        if (StringUtils.hasText(antiDrug.getDataName())) {
-                            sb.append(antiDrug.getDataName());
-                        }
-                        if (StringUtils.hasText(sensitivity)) {
-                            if (sb.length() > 0) {
-                                sb.append(" ");
-                            }
-                            sb.append(sensitivity);
-                        }
-                        if (StringUtils.hasText(antiDrug.getMic())) {
-                            if (sb.length() > 0) {
-                                sb.append(" ");
-                            }
-                            sb.append(antiDrug.getMic());
-                        }
-                        if (sb.length() > 0) {
-                            drugSensitivityList.add(sb.toString());
-                        }
+                Map<String, Object> microbeItem = buildCompactMicrobeResultItem(microbeInfo);
+                if (!microbeItem.isEmpty()) {
+                    microbeResults.add(microbeItem);
+                    if (Boolean.TRUE.equals(microbeItem.get("is_abnormal"))) {
+                        abnormalCount++;
                     }
-                }
-
-                // 只有当存在"耐药"或"中介"的药物时，才添加该微生物项
-                if (hasSensitiveDrug) {
-                    Map<String, Object> microbeItem = new LinkedHashMap<>();
-                    microbeItem.put("data_code", microbeInfo.getDataCode());
-                    microbeItem.put("result", microbeInfo.getResult());
-                    microbeItem.put("result1", microbeInfo.getResult1());
-                    microbeItem.put("result2", microbeInfo.getResult2());
-                    microbeItem.put("execute_time", formatDateTime(microbeInfo.getExedate(), "yyyy-MM-dd HH:mm"));
-                    microbeItem.put("drug_sensitivity", drugSensitivityList);
-                    microbeItems.add(microbeItem);
                 }
             }
 
-            // 只有当存在包含"耐药"或"中介"药物的微生物项时，才添加该面板
-            if (!microbeItems.isEmpty()) {
+            if (!microbeResults.isEmpty()) {
                 Map<String, Object> microbePanel = new LinkedHashMap<>();
-                microbePanel.put("samreqno", patTest.getSamreqno());
-                microbePanel.put("test_object", patTest.getTestobject());
-                microbePanel.put("sample_type", patTest.getDataName());
+                String panelName = firstNonBlank(patTest.getTestobject(), patTest.getDataName());
+                if (StringUtils.hasText(panelName)) {
+                    microbePanel.put("panel_name", panelName);
+                }
+                if (StringUtils.hasText(patTest.getDataName()) && !patTest.getDataName().equals(panelName)) {
+                    microbePanel.put("sample_type", patTest.getDataName());
+                }
                 microbePanel.put("sample_time", formatDateTime(patTest.getSampletime(), "yyyy-MM-dd HH:mm"));
-                microbePanel.put("microbe_items", microbeItems);
+                microbePanel.put("abnormal_count", abnormalCount);
+                microbePanel.put("normal_count", Math.max(microbeResults.size() - abnormalCount, 0));
+                microbePanel.put("results", microbeResults);
                 microbePanels.add(microbePanel);
             }
         }
         labResults.put("microbe_panels", microbePanels);
 
         return labResults;
+    }
+
+    private Map<String, Object> buildCompactLabResultItem(PatientCourseData.PatTestResult result) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (result == null) {
+            return item;
+        }
+        String name = firstNonBlank(result.getItemname(), result.getEngname());
+        String value = result.getResultdesc();
+        String flag = firstNonBlank(result.getState(), result.getAllJyFlag());
+        String ref = result.getRefdesc();
+        if (!StringUtils.hasText(name)
+                && !StringUtils.hasText(value)
+                && !StringUtils.hasText(flag)
+                && !StringUtils.hasText(ref)) {
+            return item;
+        }
+        if (StringUtils.hasText(name)) {
+            item.put("name", name);
+        }
+        if (StringUtils.hasText(value)) {
+            item.put("value", value);
+        }
+        if (StringUtils.hasText(result.getUnit())) {
+            item.put("unit", result.getUnit());
+        }
+        if (StringUtils.hasText(flag)) {
+            item.put("flag", flag);
+        }
+        if (StringUtils.hasText(ref)) {
+            item.put("ref", ref);
+        }
+        item.put("is_abnormal", isAbnormalFlag(flag));
+        return item;
+    }
+
+    private Map<String, Object> buildCompactMicrobeResultItem(PatientCourseData.MicrobeInfo microbeInfo) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        if (microbeInfo == null) {
+            return item;
+        }
+        String organism = microbeInfo.getDataCode();
+        String result = joinNonBlankDistinct(" / ",
+                microbeInfo.getResult(),
+                microbeInfo.getResult1(),
+                microbeInfo.getResult2());
+        List<String> drugSensitivityList = buildDrugSensitivityList(microbeInfo.getAntiDrugList());
+        boolean abnormal = isMicrobeResultAbnormal(result, drugSensitivityList);
+        if (!StringUtils.hasText(organism) && !StringUtils.hasText(result) && drugSensitivityList.isEmpty()) {
+            return item;
+        }
+        if (StringUtils.hasText(organism)) {
+            item.put("organism", organism);
+        }
+        if (StringUtils.hasText(result)) {
+            item.put("result", result);
+        }
+        if (!drugSensitivityList.isEmpty()) {
+            item.put("drug_sensitivity", drugSensitivityList);
+        }
+        item.put("is_abnormal", abnormal);
+        if (abnormal) {
+            item.put("flag", "异常");
+        } else if (StringUtils.hasText(result)) {
+            item.put("flag", "正常");
+        }
+        return item;
+    }
+
+    private List<String> buildDrugSensitivityList(List<PatientCourseData.AntiDrugInfo> antiDrugList) {
+        List<String> drugSensitivityList = new ArrayList<>();
+        for (PatientCourseData.AntiDrugInfo antiDrug : nonNullList(antiDrugList)) {
+            String sensitivity = antiDrug.getSensitivity();
+            if (!StringUtils.hasText(antiDrug.getDataName()) && !StringUtils.hasText(sensitivity)
+                    && !StringUtils.hasText(antiDrug.getMic())) {
+                continue;
+            }
+            StringBuilder sb = new StringBuilder();
+            if (StringUtils.hasText(antiDrug.getDataName())) {
+                sb.append(antiDrug.getDataName());
+            }
+            if (StringUtils.hasText(sensitivity)) {
+                if (sb.length() > 0) {
+                    sb.append(" ");
+                }
+                sb.append(sensitivity);
+            }
+            if (StringUtils.hasText(antiDrug.getMic())) {
+                if (sb.length() > 0) {
+                    sb.append(" ");
+                }
+                sb.append(antiDrug.getMic());
+            }
+            if (sb.length() > 0) {
+                drugSensitivityList.add(sb.toString());
+            }
+        }
+        return drugSensitivityList;
+    }
+
+    private String joinNonBlankDistinct(String delimiter, String... values) {
+        LinkedHashSet<String> distinctValues = new LinkedHashSet<>();
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                distinctValues.add(value.trim());
+            }
+        }
+        return String.join(delimiter, distinctValues);
+    }
+
+    private boolean isAbnormalFlag(String flag) {
+        if (!StringUtils.hasText(flag)) {
+            return false;
+        }
+        return flag.contains("高")
+                || flag.contains("低")
+                || flag.contains("↑")
+                || flag.contains("↓")
+                || flag.contains("阳性")
+                || flag.contains("异常")
+                || flag.contains("危急")
+                || flag.contains("耐药")
+                || flag.contains("中介");
+    }
+
+    private boolean isMicrobeResultAbnormal(String result, List<String> drugSensitivityList) {
+        if (isAbnormalFlag(result)) {
+            return true;
+        }
+        for (String drugSensitivity : nonNullList(drugSensitivityList)) {
+            if (isAbnormalFlag(drugSensitivity)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<Map<String, Object>> buildImaging(List<PatientCourseData.PatVideoResult> videoResultList) {
@@ -1395,7 +1576,7 @@ public class PatientServiceImpl implements PatientService {
         if (time == null) {
             return null;
         }
-        return time.format(DateTimeFormatter.ofPattern(pattern));
+        return DateTimeUtils.truncateToMillis(time).format(DateTimeFormatter.ofPattern(pattern));
     }
 
     private boolean isAbnormalTemperature(String tempText) {

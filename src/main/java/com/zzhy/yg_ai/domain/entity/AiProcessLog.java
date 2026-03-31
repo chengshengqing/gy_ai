@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.domain.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -80,12 +81,12 @@ public class AiProcessLog implements Serializable {
     private LocalDateTime updatedAt;
 
     public void init() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         this.createdAt = now;
         this.updatedAt = now;
     }
 
     public void update() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = DateTimeUtils.now();
     }
 }

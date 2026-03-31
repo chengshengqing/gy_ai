@@ -275,5 +275,7 @@ LLM 默认背景：
 所有代码定位必须输出为：
 <module_path>/<file_path>:<line_number>
 
-示例：
-infection-monitor/src/main/java/com/xxx/InfectionMonitorScheduler.java:29
+- 正确示例：
+/Users/chengshengqing/IdeaProjects/yg_ai/src/main/java/com/zzhy/yg_ai/task/InfectionMonitorScheduler.java:29
+- 错误示例：
+/Users/chengshengqing/IdeaProjects/yg_ai/src/main/java/com/zzhy/yg_ai/service/impl/LlmEventExtractorServiceImpl.java#L52

@@ -111,7 +111,7 @@ yg_ai/
 - `InfectionPipeline`
   当前最关键的业务编排类，负责：
   `patient_raw_data_collect_task` 任务消费、
-  `patient_struct_data_task` 任务消费、
+  `patient_raw_data_change_task` 任务消费、
   `PatientService -> SummaryAgent -> summary 持久化`
 
 #### `ai/prompt`
@@ -271,18 +271,22 @@ yg_ai/
 
 处理过程：
 
-1. `InfectionPipeline.processPendingStructData()` claim `patient_struct_data_task`
-2. 根据 `reqno` 查询 `patient_raw_data` 中未结构化记录
-3. 直接读取已生成的 `filter_data_json`
-4. 用 `SummaryAgent.extractDailyIllness()` 生成当天结构化结果与增量摘要
-5. 将结构化内容写回 `patient_raw_data.struct_data_json`
-6. 将汇总后的摘要写入 `patient_summary.summary_json`
+1. `InfectionPipeline.processPendingStructData()` claim `patient_raw_data_change_task`
+2. claim 结果按 `reqno` 聚合，形成患者级本轮消费集合
+3. 对每个患者校验变更行版本，只保留 `raw_data_last_time == patient_raw_data.last_time` 的有效 change
+4. 取有效 change 的最早 `data_date` 作为本轮 `replayFromDate`
+5. 调用 `resetDerivedData(reqno, replayFromDate)` 清空派生字段并截断摘要
+6. 查询 `patient_raw_data` 中 `struct_data_json` 为空、且 `data_date >= replayFromDate` 的记录
+7. 用 `SummaryAgent.extractDailyIllness()` 生成当天结构化结果与增量摘要
+8. 将结构化内容写回 `patient_raw_data.struct_data_json`
+9. 将汇总后的摘要写入 `patient_summary.summary_json`
+10. 本轮患者级 change 行统一标记为 `SUCCESS` 或 `FAILED`
 
 说明：
 
 - `pat_illnessCourse` 的过滤规则已经前移到原始采集落库阶段
-- 当前摘要链仍在使用 `patient_struct_data_task`
-- 后续建议逐步迁移为消费 `patient_raw_data_change_task`
+- 当前摘要链已经切换为消费 `patient_raw_data_change_task`
+- 旧 `patient_struct_data_task` 已从代码中删除
 
 ### 5.3 时间线展示链路
 

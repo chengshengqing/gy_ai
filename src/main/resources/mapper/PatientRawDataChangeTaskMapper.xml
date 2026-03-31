@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PatientRawDataChangeTaskMapper">
+
+    <insert id="insertBatchWithoutId" useGeneratedKeys="false">
+        insert into patient_raw_data_change_task (
+            patient_raw_data_id,
+            reqno,
+            data_date,
+            status,
+            attempt_count,
+            max_attempts,
+            raw_data_last_time,
+            available_at,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="tasks" item="task" separator=",">
+            (
+                #{task.patientRawDataId},
+                #{task.reqno},
+                #{task.dataDate},
+                #{task.status},
+                #{task.attemptCount},
+                #{task.maxAttempts},
+                #{task.rawDataLastTime},
+                #{task.availableAt},
+                #{task.createTime},
+                #{task.updateTime}
+            )
+        </foreach>
+    </insert>
+
+    <select id="selectPendingReqnos" resultType="string">
+        select reqno
+        from patient_raw_data_change_task
+        where status in
+        <foreach collection="statuses" item="status" open="(" separator="," close=")">
+            #{status}
+        </foreach>
+          and available_at <![CDATA[ <= ]]> #{now}
+          and attempt_count <![CDATA[ < ]]> max_attempts
+        group by reqno
+        order by min(available_at), min(create_time)
+        offset 0 rows fetch next #{limit} rows only
+    </select>
+</mapper>

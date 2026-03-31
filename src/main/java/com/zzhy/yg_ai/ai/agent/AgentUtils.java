@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 
 import java.util.*;
@@ -21,7 +22,7 @@ public class AgentUtils {
     private static final int MAX_SECTION_LENGTH = 10000;
     private static final int CHUNK_TARGET_LENGTH = 5500;
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = DateTimeUtils.createObjectMapper();
 
 
     /**

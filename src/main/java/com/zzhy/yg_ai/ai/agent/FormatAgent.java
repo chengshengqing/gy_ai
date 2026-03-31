@@ -7,12 +7,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.prompt.FormatAgentPrompt;
 import com.zzhy.yg_ai.ai.prompt.SummaryAgentPrompt;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.common.FilterTextUtils;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.domain.model.PatientContext;
-import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -83,7 +83,7 @@ public class FormatAgent extends AbstractAgent {
 
             PatientContext context = new PatientContext();
             context.setSource("format-agent");
-            context.setCreatedAt(LocalDateTime.now());
+            context.setCreatedAt(DateTimeUtils.now());
             context.setContextJson(AgentUtils.normalizeToJson(finalOutput));
 //            context.setEventJson(normalizeToJson(finalEventOutput));
             return context;
@@ -91,7 +91,7 @@ public class FormatAgent extends AbstractAgent {
             log.error("format-agent 处理失败，回退错误消息", e);
             PatientContext context = new PatientContext();
             context.setSource("format-agent");
-            context.setCreatedAt(LocalDateTime.now());
+            context.setCreatedAt(DateTimeUtils.now());
             context.setContextJson("{\"code\":\"500\",\"message\":\"格式化失败，llm未处理\"}");
             return context;
         }
@@ -195,14 +195,14 @@ public class FormatAgent extends AbstractAgent {
 
             PatientContext context = new PatientContext();
             context.setSource("format-agent");
-            context.setCreatedAt(LocalDateTime.now());
+            context.setCreatedAt(DateTimeUtils.now());
             context.setContextJson(normalizeToJson(finalOutput));
             return context;
         } catch (Exception e) {
             log.error("format-agent 处理失败，回退错误消息", e);
             PatientContext context = new PatientContext();
             context.setSource("format-agent");
-            context.setCreatedAt(LocalDateTime.now());
+            context.setCreatedAt(DateTimeUtils.now());
             context.setContextJson("{\"code\":\"500\",\"message\":\"格式化失败，llm未处理\"}");
             return context;
         }

@@ -83,7 +83,8 @@
                               v                                           v
                  +------------+------------+                 +------------+------------+
                  | 当前摘要任务消费者         |                 | 未来预警/扩展任务消费者    |
-                 | patient_struct_data_task |                 | event/snapshot/...     |
+                 | normalize consumer       |                 | event/snapshot/...     |
+                 | claim by reqno           |                 |                         |
                  +------------+------------+                 +------------+------------+
                               |
                               v
@@ -119,6 +120,7 @@
 - `filter_data_json` 保存规则处理后的可读事实块
 - `struct_data_json` 保存 LLM 结构化结果
 - `event_json` 预留给后续事件抽取结果
+- 字段级结构说明见 `docs/patient-raw-json-structure.md`
 
 处理顺序为：
 
@@ -419,18 +421,24 @@ patient_raw_data / patient_summary
 
 执行过程：
 
-1. 查询待结构化患者列表
-2. 读取 `patient_raw_data` 中 `struct_data_json` 为空的记录
-3. 直接读取已生成的 `filter_data_json`
-4. 使用 `SummaryAgent.extractDailyIllness()` 生成：
+1. claim `patient_raw_data_change_task` 中可执行的变更任务
+2. 按 `reqno` 聚合本轮 change 行
+3. 对每个患者过滤 stale change，只保留 `raw_data_last_time` 仍等于 `patient_raw_data.last_time` 的记录
+4. 计算该患者本轮最早变更日
+5. 清空该日期及之后的 `struct_data_json / event_json`，并截断 `patient_summary`
+6. 读取 `patient_raw_data` 中 `struct_data_json` 为空、且 `data_date >= earliestChangedDate` 的记录
+7. 使用 `SummaryAgent.extractDailyIllness()` 生成：
    - `structDataJson`
    - `updatedSummaryJson`
-5. 回写 `patient_raw_data`
-6. 更新 `patient_summary`
+8. 回写 `patient_raw_data`
+9. 更新 `patient_summary`
+10. 将本轮患者级 change 行标记为 `SUCCESS` 或 `FAILED`
 
 架构特征：
 
 - 摘要采用增量构建，而不是每次整份重算
+- 摘要调度已经完全建立在 `patient_raw_data_change_task` 上
+- 原始采集与摘要消费之间通过变更任务表解耦
 - `pat_illnessCourse` 的过滤规则已经前移到采集落库阶段
 - 时间线在落库前会按时间排序
 

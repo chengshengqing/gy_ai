@@ -118,40 +118,60 @@
 
 角色：
 
-- 原始数据变更通知表
+- 原始数据变更消费任务表
 
 当前职责：
 
 - 记录每次被新增或修改的 `patient_raw_data` 行
 - 以 `patient_raw_data_id + raw_data_last_time` 形式向下游发布变更信号
+- 作为结构化摘要链路的直接消费任务表
+- 按 `reqno` 聚合后驱动“从最早变更日开始”的摘要重放
 
 当前关键字段：
 
 - `patient_raw_data_id`
 - `reqno`
+- `data_date`
+- `status`
+- `attempt_count`
+- `max_attempts`
 - `raw_data_last_time`
+- `available_at`
+- `last_start_time`
+- `last_finish_time`
+- `last_error_message`
 - `create_time`
+- `update_time`
 
 在当前架构中的定位：
 
 - 原始采集层与下游消费者的解耦桥梁
-- 后续摘要、预警或扩展任务都应优先考虑消费这张表，而不是反向耦合采集流程
+- 当前结构化摘要已经消费这张表，而不是直接耦合采集流程
+- 后续预警或扩展任务也应优先考虑消费这张表，或沿着同类 outbox / task 模式继续扩展
+
+当前实现补充：
+
+- 采集阶段只负责写 `patient_raw_data` 与追加 `patient_raw_data_change_task`
+- 结构化阶段 claim 这张表后，按 `reqno` 聚合
+- 对同一患者本轮 claim 到的变更行，先校验 `raw_data_last_time` 是否仍与 `patient_raw_data.last_time` 一致
+- 仅对仍然有效的变更行计算最早 `data_date`
+- 从该日期开始清空 `struct_data_json / event_json`，并截断 `patient_summary` 后再做增量重放
 
 ## 2.5 `patient_struct_data_task`
 
 角色：
 
-- 当前结构化摘要任务表
+- 已删除的历史任务表
 
 当前职责：
 
-- 驱动 `patient_raw_data` 到 `patient_summary` 的结构化摘要链路
+- 无。该表已被 `patient_raw_data_change_task` 替代。
 
 在当前架构中的定位：
 
-- 仍然是现阶段摘要链路的运行载体
-- 但不是原始采集阶段的直接输出目标
-- 后续建议逐步迁移为消费 `patient_raw_data_change_task`
+- 仅作为历史设计记录保留在文档中
+- 当前代码已不再依赖该表
+- 新增或重试结构化摘要时，统一通过 `patient_raw_data_change_task` 完成
 
 ## 2.6 `ai_process_log`
 
@@ -214,9 +234,8 @@ infection_llm_node_run
 
 - `patient_raw_data_collect_task`
 - `patient_raw_data_change_task`
-- `patient_struct_data_task`
 
-这 3 张表属于当前采集与下游处理的任务层，不纳入院感预警核心结果表统计。
+这 2 张表属于当前采集与下游处理的任务层，不纳入院感预警核心结果表统计。
 
 - `infection_event_pool`
 - `infection_llm_node_run`

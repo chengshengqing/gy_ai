@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.domain.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -41,7 +42,7 @@ public class InfectionLlmNodeRunEntity implements Serializable {
     private LocalDateTime updatedAt;
 
     public void initPending() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         this.status = this.status == null ? "PENDING" : this.status;
         this.retryCount = this.retryCount == null ? 0 : this.retryCount;
         this.createdAt = now;
@@ -49,6 +50,6 @@ public class InfectionLlmNodeRunEntity implements Serializable {
     }
 
     public void touch() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = DateTimeUtils.now();
     }
 }

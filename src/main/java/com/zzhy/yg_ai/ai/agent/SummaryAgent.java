@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.ai.prompt.FormatAgentPrompt;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
@@ -40,7 +41,7 @@ import org.springframework.util.StringUtils;
 public class SummaryAgent extends AbstractAgent {
 
     private static final int MODEL_TIMELINE_MAX_LENGTH = 6000;
-    private static final DateTimeFormatter ILLNESS_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter ILLNESS_TIME_FORMATTER = DateTimeUtils.DATE_TIME_FORMATTER;
     private static final Set<String> ALLOWED_STATUS = Set.of(
             "active", "acute_exacerbation", "worsening", "improving", "chronic", "stable", "clarified", "unclear"
     );
@@ -198,7 +199,10 @@ public class SummaryAgent extends AbstractAgent {
         int abnormalPulseCount = 0;
 
         for (JsonNode item : vitalNode) {
-            double temp = parseDouble(item.path("temperature").asText());
+            double temp = parseDouble(firstNonBlank(
+                    item.path("temp").asText(""),
+                    item.path("temperature").asText("")
+            ));
             if (!Double.isNaN(temp)) {
                 maxTemp = Math.max(maxTemp, temp);
                 minTemp = Math.min(minTemp, temp);
@@ -206,7 +210,9 @@ public class SummaryAgent extends AbstractAgent {
                     feverCount++;
                 }
             }
-            double pulse = parseDouble(item.path("pulse").asText());
+            double pulse = parseDouble(firstNonBlank(
+                    item.path("pulse").asText("")
+            ));
             if (!Double.isNaN(pulse)) {
                 maxPulse = Math.max(maxPulse, pulse);
                 minPulse = Math.min(minPulse, pulse);
@@ -214,7 +220,10 @@ public class SummaryAgent extends AbstractAgent {
                     abnormalPulseCount++;
                 }
             }
-            int[] bp = parseBloodPressure(item.path("blood_pressure").asText());
+            int[] bp = parseBloodPressure(firstNonBlank(
+                    item.path("bp").asText(""),
+                    item.path("blood_pressure").asText("")
+            ));
             if (bp != null) {
                 minSys = Math.min(minSys, bp[0]);
                 minDia = Math.min(minDia, bp[1]);
@@ -2664,11 +2673,7 @@ public class SummaryAgent extends AbstractAgent {
             return Long.MIN_VALUE;
         }
         String value = text.trim();
-        List<DateTimeFormatter> dateTimeFormatters = List.of(
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
-                DateTimeFormatter.ISO_LOCAL_DATE_TIME
-        );
+        List<DateTimeFormatter> dateTimeFormatters = DateTimeUtils.DATE_TIME_PARSE_FORMATTERS;
         for (DateTimeFormatter formatter : dateTimeFormatters) {
             try {
                 return LocalDateTime.parse(value, formatter)
@@ -2698,7 +2703,7 @@ public class SummaryAgent extends AbstractAgent {
         if (dt == null && rawData.getDataDate() != null) {
             dt = rawData.getDataDate().atTime(LocalTime.MIN);
         }
-        return dt == null ? "" : dt.format(ILLNESS_TIME_FORMATTER);
+        return dt == null ? "" : DateTimeUtils.truncateToMillis(dt).format(ILLNESS_TIME_FORMATTER);
     }
 
     private String callWithPrompt(String systemPrompt, String userPrompt, String inputJson) {

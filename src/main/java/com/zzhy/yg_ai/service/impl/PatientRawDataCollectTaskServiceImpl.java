@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity;
 import com.zzhy.yg_ai.domain.enums.PatientRawDataTaskStatus;
@@ -51,7 +52,7 @@ public class PatientRawDataCollectTaskServiceImpl
             }
 
             LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
-            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime now = DateTimeUtils.now();
             updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, existing.getId())
                     .set(PatientRawDataCollectTaskEntity::getSourceLastTime, sourceLastTime)
                     .set(PatientRawDataCollectTaskEntity::getChangeTypes, null)
@@ -75,7 +76,7 @@ public class PatientRawDataCollectTaskServiceImpl
     @Override
     public List<PatientRawDataCollectTaskEntity> claimPendingTasks(int limit) {
         int batchSize = limit <= 0 ? infectionMonitorProperties.getBatchSize() : limit;
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         LambdaQueryWrapper<PatientRawDataCollectTaskEntity> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.in(PatientRawDataCollectTaskEntity::getStatus,
                         PatientRawDataTaskStatus.PENDING.name(),
@@ -114,7 +115,7 @@ public class PatientRawDataCollectTaskServiceImpl
         if (taskId == null) {
             return;
         }
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
                 .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.SUCCESS.name())
@@ -129,7 +130,7 @@ public class PatientRawDataCollectTaskServiceImpl
         if (taskId == null) {
             return;
         }
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = DateTimeUtils.now();
         LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
                 .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.FAILED.name())
@@ -149,7 +150,7 @@ public class PatientRawDataCollectTaskServiceImpl
         LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
                 .set(PatientRawDataCollectTaskEntity::getChangeTypes, changeTypes)
-                .set(PatientRawDataCollectTaskEntity::getUpdateTime, LocalDateTime.now());
+                .set(PatientRawDataCollectTaskEntity::getUpdateTime, DateTimeUtils.now());
         this.update(updateWrapper);
     }
 }

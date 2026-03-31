@@ -735,6 +735,7 @@ LLM 输出不能直接入库，必须经过标准化。
 
 - 结构定义：`com.zzhy.yg_ai.domain.entity.PatientCourseData`
 - 生成逻辑：`com.zzhy.yg_ai.service.impl.PatientServiceImpl#buildSemanticBlockJson`
+- 实际输出结构说明：`docs/patient-raw-json-structure.md`
 
 ### `struct_data_json`
 

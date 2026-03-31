@@ -3,9 +3,9 @@ spring:
     activate:
       on-profile: local
   datasource:
-    url: ${YG_AI_DB_URL:jdbc:sqlserver://127.0.0.1:1433;databaseName=yg_ai_local;encrypt=true;trustServerCertificate=true;}
+    url: ${YG_AI_DB_URL:jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;}
     username: ${YG_AI_DB_USERNAME:sa}
-    password: ${YG_AI_DB_PASSWORD:changeit}
+    password: ${YG_AI_DB_PASSWORD:Abcd@1234}
   data:
     redis:
       host: ${YG_AI_REDIS_HOST:127.0.0.1}
@@ -14,19 +14,19 @@ spring:
   ai:
     openai:
       api-key: ${YG_AI_OPENAI_API_KEY:EMPTY}
-      base-url: ${YG_AI_OPENAI_BASE_URL:http://127.0.0.1:6001}
+      base-url: ${YG_AI_OPENAI_BASE_URL:http://192.168.0.205:6001}
       chat:
         options:
           model: ${YG_AI_OPENAI_MODEL:Qwen3.5-27B-FP8}
 
 infection:
   monitor:
-    scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:20}
+    scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:200}
     batch-size: ${YG_AI_MONITOR_BATCH_SIZE:20}
     worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:4}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:3}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:60}
-    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:7}
+    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:30}
     debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
     debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
   format:
@@ -34,3 +34,8 @@ infection:
     worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:4}
     max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:3}
     retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:60}
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+

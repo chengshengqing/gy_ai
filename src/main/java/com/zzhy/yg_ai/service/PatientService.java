@@ -26,15 +26,23 @@ public interface PatientService {
 
     RawDataCollectResult collectAndSaveRawDataResult(String reqno);
 
+    PatientRawDataEntity getRawDataById(Long id);
+
     /**
      * 查询待格式化结构数据（struct_data_json 为空）。
      */
     List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate);
 
+    List<PatientRawDataEntity> listPendingEventRawData(String reqno, LocalDate replayFromDate);
+
+    void resetDerivedData(String reqno, LocalDate changedFromDate);
+
     /**
      * 更新格式化后的结构化 JSON。
      */
     void saveStructDataJson(Long id, String structDataJson,String eventJson);
+
+    void saveEventJson(Long id, String eventJson);
 
     void saveOrUpdateLatestSummary(PatientSummaryEntity summary);
 

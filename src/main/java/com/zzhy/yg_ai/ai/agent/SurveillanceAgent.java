@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.zzhy.yg_ai.ai.validator.SurveillanceResponseValidator;
 import com.zzhy.yg_ai.ai.validator.SurveillanceValidationEnums;
 import com.zzhy.yg_ai.common.JsonUtil;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.dto.PatillnessCourseInfo;
 import com.zzhy.yg_ai.ai.validator.SurveillanceResponseValidator.ValidationResult;
 import com.zzhy.yg_ai.domain.entity.AiProcessLog;
@@ -21,7 +22,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -139,8 +139,8 @@ public class SurveillanceAgent  extends AbstractAgent
                 itemsInforZhq.setItemname("诊：" + syndromeTypeNode.asText());
                 itemsInforZhq.setTargetSetName("诊：" + syndromeTypeNode.asText());
                 itemsInforZhq.setDataname("诊：" + syndromeTypeNode.asText());
-                itemsInforZhq.setTtime(LocalDate.now().atStartOfDay());
-                itemsInforZhq.setExedate(LocalDateTime.now());
+                itemsInforZhq.setTtime(DateTimeUtils.today().atStartOfDay());
+                itemsInforZhq.setExedate(DateTimeUtils.now());
                 itemsInforZhq.setRiskLevel(riskLevel);
                 itemsInforZhq.setSyndromeType(syndromeTypeValue);
                 itemsInforZhq.setKeyEvidence(keyEvidence);

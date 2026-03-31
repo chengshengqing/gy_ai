@@ -3,6 +3,7 @@ package com.zzhy.yg_ai.domain.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import java.io.Serializable;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -24,7 +25,7 @@ public class InfectionDailyJobLogEntity implements Serializable {
     private LocalDateTime createTime;
 
     public void init() {
-        this.jobDate = this.jobDate == null ? LocalDate.now() : this.jobDate;
-        this.createTime = LocalDateTime.now();
+        this.jobDate = this.jobDate == null ? DateTimeUtils.today() : this.jobDate;
+        this.createTime = DateTimeUtils.now();
     }
 }
