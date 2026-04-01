@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
 import com.zzhy.yg_ai.domain.enums.InfectionSourceType;
 import com.zzhy.yg_ai.domain.model.EvidenceBlock;
@@ -22,7 +21,7 @@ public class ClinicalTextBlockBuilder extends AbstractEvidenceBlockBuilder {
     }
 
     @Override
-    public List<EvidenceBlock> build(PatientRawDataEntity rawData, PatientSummaryEntity latestSummary) {
+    public List<EvidenceBlock> build(PatientRawDataEntity rawData, String timelineWindowJson) {
         ObjectNode filteredRoot = parseObject(rawData == null ? null : rawData.getFilterDataJson(), "filter_data_json",
                 rawData == null ? null : rawData.getId());
         ArrayNode notes = extractNotes(filteredRoot);

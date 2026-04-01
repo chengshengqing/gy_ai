@@ -22,7 +22,7 @@
 
 当前已成型主链路：
 
-`SQL Server -> patient_raw_data -> AI 摘要 -> patient_summary -> timeline API`
+`SQL Server -> patient_raw_data -> AI 单日摘要 -> patient_raw_data.event_json / struct_data_json -> timeline API`
 
 当前已经完成的任务：
 
@@ -88,7 +88,7 @@ LLM 默认背景：
 - `PatientServiceImpl`
 - `FormatAgent`
 - `SummaryAgent`
-- `PatientSummaryTimelineViewServiceImpl`
+- `PatientTimelineViewServiceImpl`
 
 ### 扩展链路关键类
 
@@ -153,7 +153,7 @@ LLM 默认背景：
 
 尤其注意：
 
-- `SummaryAgent` 输出会进入摘要与 timeline 转换
+- `SummaryAgent` 输出会进入 `patient_raw_data.event_json` 与 timeline 转换
 - `SurveillanceAgent` 输出需要经过校验器验证
 - 后续院感预警节点输出必须先经过标准化和护栏校验，不能直接入主结果
 
@@ -171,7 +171,7 @@ LLM 默认背景：
 
 ### 6. 时间线视图是稳定输出层
 
-`PatientSummaryTimelineViewServiceImpl` 与 `timeline-view-rules.yaml` 共同定义了展示模型。
+`PatientTimelineViewServiceImpl` 与 `timeline-view-rules.yaml` 共同定义了展示模型。
 
 修改这部分时要注意：
 

@@ -45,4 +45,35 @@
         order by min(available_at), min(create_time)
         offset 0 rows fetch next #{limit} rows only
     </select>
+
+    <select id="selectMissingStructTaskRawData" resultType="com.zzhy.yg_ai.domain.entity.PatientRawDataEntity">
+        select
+            r.id,
+            r.reqno,
+            r.data_date,
+            r.clinical_notes,
+            r.data_json,
+            r.filter_data_json,
+            r.struct_data_json,
+            r.event_json,
+            r.create_time,
+            r.last_time
+        from patient_raw_data r
+        left join patient_raw_data_change_task t
+            on t.patient_raw_data_id = r.id
+           and t.raw_data_last_time = r.last_time
+        where r.last_time is not null
+          and t.id is null
+        <if test="reqnos != null and reqnos.size() > 0">
+          and r.reqno in
+            <foreach collection="reqnos" item="reqno" open="(" separator="," close=")">
+                #{reqno}
+            </foreach>
+        </if>
+        <if test="lastTimeFrom != null">
+          and r.last_time <![CDATA[ >= ]]> #{lastTimeFrom}
+        </if>
+        order by r.last_time asc, r.id asc
+        offset 0 rows fetch next #{limit} rows only
+    </select>
 </mapper>

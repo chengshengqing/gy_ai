@@ -219,7 +219,7 @@
 验收标准：
 
 - 可表达病例当前院感状态
-- 不直接复制 `summary_json` 作为快照正文
+- 不直接复制时间轴窗口 JSON 作为快照正文
 
 ### Task P2-2 实现事件驱动局部重算
 
@@ -333,7 +333,7 @@
 
 覆盖重点：
 
-- `PatientSummaryTimelineViewServiceImpl`
+- `PatientTimelineViewServiceImpl`
 - `timeline-view-rules.yaml`
 - 标签、风险、徽章映射逻辑
 

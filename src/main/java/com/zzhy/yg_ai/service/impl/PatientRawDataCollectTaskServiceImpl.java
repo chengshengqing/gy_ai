@@ -77,6 +77,7 @@ public class PatientRawDataCollectTaskServiceImpl
     public List<PatientRawDataCollectTaskEntity> claimPendingTasks(int limit) {
         int batchSize = limit <= 0 ? infectionMonitorProperties.getBatchSize() : limit;
         LocalDateTime now = DateTimeUtils.now();
+        reclaimTimedOutRunningTasks(now);
         LambdaQueryWrapper<PatientRawDataCollectTaskEntity> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.in(PatientRawDataCollectTaskEntity::getStatus,
                         PatientRawDataTaskStatus.PENDING.name(),
@@ -108,6 +109,29 @@ public class PatientRawDataCollectTaskServiceImpl
             }
         }
         return claimed;
+    }
+
+    @Override
+    public int reclaimTimedOutRunningTasks() {
+        return reclaimTimedOutRunningTasks(DateTimeUtils.now());
+    }
+
+    private int reclaimTimedOutRunningTasks(LocalDateTime now) {
+        if (now == null) {
+            return 0;
+        }
+        LocalDateTime timeoutAt = now.minusSeconds(Math.max(1, infectionMonitorProperties.getRunningTimeoutSeconds()));
+        LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.eq(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.RUNNING.name())
+                .isNotNull(PatientRawDataCollectTaskEntity::getLastStartTime)
+                .le(PatientRawDataCollectTaskEntity::getLastStartTime, timeoutAt)
+                .apply("attempt_count < max_attempts")
+                .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.FAILED.name())
+                .set(PatientRawDataCollectTaskEntity::getAvailableAt, now)
+                .set(PatientRawDataCollectTaskEntity::getLastFinishTime, now)
+                .set(PatientRawDataCollectTaskEntity::getLastErrorMessage, "任务运行超时，已回收待重试")
+                .set(PatientRawDataCollectTaskEntity::getUpdateTime, now);
+        return this.baseMapper.update(null, updateWrapper);
     }
 
     @Override

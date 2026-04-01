@@ -16,13 +16,11 @@ import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.enums.PatientCourseDataType;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
-import com.zzhy.yg_ai.mapper.PatientSummaryMapper;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientService;
@@ -51,7 +49,6 @@ import org.springframework.util.StringUtils;
 public class PatientServiceImpl implements PatientService {
 
     private final PatientRawDataMapper patientRawDataMapper;
-    private final PatientSummaryMapper patientSummaryMapper;
     private final ObjectMapper objectMapper;
     private final FilterTextUtils filterTextUtils;
     private final InfectionMonitorProperties infectionMonitorProperties;
@@ -78,25 +75,14 @@ public class PatientServiceImpl implements PatientService {
         List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
 
         activeReqnos = activeReqnos.stream()
-//                .filter(reqno -> "260300011".equals(reqno))
-                .filter(reqno -> "260300124".equals(reqno))
+                .filter(reqno -> "260300011".equals(reqno))
+//                .filter(reqno -> "260300124".equals(reqno))
                 .collect(Collectors.toList());
 
         if (!debugReqnos.isEmpty()) {
             log.info("已配置 debugReqnos，但 debugMode=false，当前仍按正式扫描策略执行");
         }
         return normalizeReqnos(activeReqnos);
-    }
-
-    @Override
-    public PatientSummaryEntity getLatestSummary(String reqno) {
-        if (!StringUtils.hasText(reqno)) {
-            return null;
-        }
-        return patientSummaryMapper.selectOne(new QueryWrapper<PatientSummaryEntity>()
-                .eq("reqno", reqno)
-                .orderByDesc("update_time")
-                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
     }
 
     @Override
@@ -240,7 +226,6 @@ public class PatientServiceImpl implements PatientService {
         QueryWrapper<PatientRawDataEntity> queryWrapper = new QueryWrapper<PatientRawDataEntity>()
                 .eq("reqno", reqno)
                 .isNotNull("struct_data_json")
-                .isNull("event_json")
                 .isNotNull("data_json")
                 .orderByAsc("data_date", "id");
         if (replayFromDate != null) {
@@ -250,7 +235,7 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public void saveStructDataJson(Long id, String structDataJson,String eventJson) {
+    public void saveStructDataJson(Long id, String structDataJson, String eventJson) {
         if (id == null) {
             return;
         }
@@ -284,22 +269,33 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public void saveOrUpdateLatestSummary(PatientSummaryEntity summary) {
-        if (summary == null || !StringUtils.hasText(summary.getReqno())) {
-            return;
+    public String buildSummaryWindowJson(String reqno, LocalDate anchorDate, int windowDays) {
+        if (!StringUtils.hasText(reqno) || anchorDate == null) {
+            return null;
         }
-        if (summary.getUpdateTime() == null) {
-            summary.setUpdateTime(DateTimeUtils.now());
+        int effectiveWindowDays = windowDays <= 0 ? 7 : windowDays;
+        LocalDate windowStart = anchorDate.minusDays(effectiveWindowDays - 1L);
+        List<PatientRawDataEntity> rows = patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno.trim())
+                .ge("data_date", windowStart)
+                .le("data_date", anchorDate)
+                .isNotNull("event_json")
+                .orderByAsc("data_date", "id"));
+
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("reqno", reqno.trim());
+        ArrayNode timeline = root.putArray("timeline");
+        for (PatientRawDataEntity row : rows) {
+            if (row == null || !StringUtils.hasText(row.getEventJson())) {
+                continue;
+            }
+            JsonNode eventNode = parseJsonQuietly(row.getEventJson());
+            if (eventNode != null && eventNode.isObject()) {
+                timeline.add(eventNode);
+            }
         }
-        PatientSummaryEntity latest = getLatestSummary(summary.getReqno());
-        if (latest == null) {
-            patientSummaryMapper.insert(summary);
-            return;
-        }
-        latest.setSummaryJson(summary.getSummaryJson());
-        latest.setTokenCount(summary.getTokenCount());
-        latest.setUpdateTime(summary.getUpdateTime());
-        patientSummaryMapper.updateById(latest);
+
+        return writeJsonQuietly(root);
     }
 
     @Override
@@ -345,6 +341,26 @@ public class PatientServiceImpl implements PatientService {
             result.add(new PatientRawDataTimelineGroup(e.getKey(), e.getValue()));
         }
         return result;
+    }
+
+    private JsonNode parseJsonQuietly(String json) {
+        if (!StringUtils.hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(json);
+        } catch (JsonProcessingException e) {
+            log.warn("JSON解析失败，忽略当前片段");
+            return null;
+        }
+    }
+
+    private String writeJsonQuietly(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("JSON序列化失败", e);
+        }
     }
 
     private PatientCourseData buildCourseData(String reqno,
@@ -892,89 +908,15 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public void resetDerivedData(String reqno, LocalDate changedFromDate) {
-        if (!StringUtils.hasText(reqno) || changedFromDate == null) {
+    public void resetDerivedDataForRawData(Long rawDataId) {
+        if (rawDataId == null) {
             return;
         }
         UpdateWrapper<PatientRawDataEntity> rawDataUpdateWrapper = new UpdateWrapper<>();
-        rawDataUpdateWrapper.eq("reqno", reqno)
-                .ge("data_date", changedFromDate)
+        rawDataUpdateWrapper.eq("id", rawDataId)
                 .set("struct_data_json", null)
                 .set("event_json", null);
         patientRawDataMapper.update(null, rawDataUpdateWrapper);
-        truncateSummaryFromDate(reqno, changedFromDate);
-    }
-
-    private void truncateSummaryFromDate(String reqno, LocalDate changedFromDate) {
-        PatientSummaryEntity latest = getLatestSummary(reqno);
-        if (latest == null || !StringUtils.hasText(latest.getSummaryJson())) {
-            return;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(latest.getSummaryJson());
-            if (root == null) {
-                return;
-            }
-
-            if (root.isObject()) {
-                ObjectNode objectNode = (ObjectNode) root;
-                JsonNode timelineNode = objectNode.get("timeline");
-                if (timelineNode != null && timelineNode.isArray()) {
-                    objectNode.set("timeline", truncateTimelineArray((ArrayNode) timelineNode, changedFromDate));
-                    latest.setSummaryJson(objectMapper.writeValueAsString(objectNode));
-                }
-            } else if (root.isArray()) {
-                ArrayNode truncated = truncateTimelineArray((ArrayNode) root, changedFromDate);
-                latest.setSummaryJson(objectMapper.writeValueAsString(truncated));
-            } else {
-                return;
-            }
-            latest.setTokenCount(latest.getSummaryJson() == null ? 0 : latest.getSummaryJson().length());
-            latest.setUpdateTime(DateTimeUtils.now());
-            patientSummaryMapper.updateById(latest);
-        } catch (Exception e) {
-            log.warn("截断摘要时间轴失败，reqno={}, changedFromDate={}", reqno, changedFromDate, e);
-        }
-    }
-
-    private ArrayNode truncateTimelineArray(ArrayNode timelineArray, LocalDate changedFromDate) {
-        ArrayNode truncated = objectMapper.createArrayNode();
-        if (timelineArray == null) {
-            return truncated;
-        }
-        for (JsonNode item : timelineArray) {
-            if (item == null || !item.isObject()) {
-                continue;
-            }
-            LocalDate itemDate = extractTimelineDate(item);
-            if (itemDate != null && !itemDate.isBefore(changedFromDate)) {
-                continue;
-            }
-            truncated.add(item);
-        }
-        return truncated;
-    }
-
-    private LocalDate extractTimelineDate(JsonNode timelineNode) {
-        if (timelineNode == null || !timelineNode.isObject()) {
-            return null;
-        }
-        String rawDate = firstNonBlank(
-                timelineNode.path("time").asText(null),
-                timelineNode.path("date").asText(null)
-        );
-        if (!StringUtils.hasText(rawDate)) {
-            return null;
-        }
-        String normalized = rawDate.trim();
-        if (normalized.length() >= 10) {
-            normalized = normalized.substring(0, 10);
-        }
-        try {
-            return LocalDate.parse(normalized);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     private String firstNonBlank(String... values) {
@@ -1212,19 +1154,6 @@ public class PatientServiceImpl implements PatientService {
             filteredList.add(copied);
         }
         return filteredList;
-    }
-
-    private String resolveFirstIllnessCourse(String reqno, PatientCourseData courseData) {
-        String firstCourse = getInhosdateRaw(reqno);
-        if (StringUtils.hasText(firstCourse)) {
-            return firstCourse;
-        }
-        for (PatientCourseData.PatIllnessCourse illnessCourse : nonNullList(courseData == null ? null : courseData.getPatIllnessCourseList())) {
-            if (IllnessRecordType.FIRST_COURSE.matches(illnessCourse.getItemname())) {
-                return illnessCourse.getIllnesscontent();
-            }
-        }
-        return null;
     }
 
     private String resolveFirstIllnessCourse(String reqno, List<PatientCourseData.PatIllnessCourse> courseDataList) {
@@ -1651,25 +1580,6 @@ public class PatientServiceImpl implements PatientService {
         } catch (NumberFormatException e) {
             return false;
         }
-    }
-
-    private String buildLabResultValue(PatientCourseData.PatTestResult result) {
-        StringBuilder sb = new StringBuilder();
-        if (StringUtils.hasText(result.getResultdesc())) {
-            sb.append(result.getResultdesc());
-        }
-        if (StringUtils.hasText(result.getState())) {
-            if (sb.length() > 0) {
-                sb.append(" ");
-            }
-            sb.append(result.getState());
-        } else if (StringUtils.hasText(result.getAllJyFlag())) {
-            if (sb.length() > 0) {
-                sb.append(" ");
-            }
-            sb.append("(").append(result.getAllJyFlag()).append(")");
-        }
-        return sb.toString();
     }
 
     private List<String> splitImagingResult(String testResult) {

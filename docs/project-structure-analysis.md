@@ -20,6 +20,11 @@
 
 项目当前更完整、可运行的主链路是第一条，即“患者原始数据采集 -> 结构化摘要 -> 时间线展示”。
 
+当前实现口径：
+
+- 时间线展示与事件窗口上下文统一来自 `patient_raw_data.event_json`
+- 展示层类名统一使用 `PatientTimeline*`
+
 系统的数据输入模式是：
 
 - 每日定时拉取
@@ -112,7 +117,7 @@ yg_ai/
   当前最关键的业务编排类，负责：
   `patient_raw_data_collect_task` 任务消费、
   `patient_raw_data_change_task` 任务消费、
-  `PatientService -> SummaryAgent -> summary 持久化`
+  `PatientService -> SummaryAgent -> 单日 struct/event 持久化`
 
 #### `ai/prompt`
 
@@ -165,8 +170,8 @@ yg_ai/
 
 - `PatientRawDataController`
   提供原始病程时间线演示接口。
-- `PatientSummaryController`
-  提供摘要时间线视图接口。
+- `PatientTimelineController`
+  提供时间线视图接口。
 
 整体上控制器层很薄，业务逻辑主要集中在 Service 与 AI 层。
 
@@ -181,18 +186,17 @@ yg_ai/
   `PatientRawDataTimelineGroup`、`PatientTimelineViewData`、`PatillnessCourseInfo`
 - `entity`
   面向数据库表的数据实体，如：
-  `PatientRawDataEntity`、`PatientSummaryEntity`、`AiProcessLog`、`ItemsInforZhq`
+  `PatientRawDataEntity`、`AiProcessLog`、`ItemsInforZhq`
 - `enums`
   枚举定义，如 `IllnessRecordType`
 - `model`
-  用于 Agent 间传递或临时建模的对象，如 `PatientContext`、`PatientSummary`
+  用于 Agent 间传递或临时建模的对象，如 `PatientContext`
 
 ### 4.6 `mapper`
 
 数据访问层，共 5 个 Mapper 接口：
 
 - `PatientRawDataMapper`
-- `PatientSummaryMapper`
 - `PatillnessCourseInfoMapper`
 - `ItemsInforZhqMapper`
 - `AiProcessLogMapper`
@@ -205,13 +209,13 @@ yg_ai/
 
 - 接口层
   - `PatientService`
-  - `PatientSummaryTimelineViewService`
+  - `PatientTimelineViewService`
   - `AiProcessLogService`
   - `IItemsInforZhqService`
   - `IPatillnessCourseInfoService`
 - 实现层
   - `PatientServiceImpl`
-  - `PatientSummaryTimelineViewServiceImpl`
+  - `PatientTimelineViewServiceImpl`
   - `AiProcessLogServiceImpl`
   - `ItemsInforZhqServiceImpl`
   - `PatillnessCourseInfoServiceImpl`
@@ -220,8 +224,8 @@ yg_ai/
 
 - `PatientServiceImpl`
   负责从 SQL Server 查询患者数据、按天组装、写入 `patient_raw_data`、维护 `data_json/filter_data_json`、执行增量 merge、写入原始数据变更任务。
-- `PatientSummaryTimelineViewServiceImpl`
-  负责把 `summaryJson` 转成前端可直接渲染的 timeline 数据。
+- `PatientTimelineViewServiceImpl`
+  负责把 `event_json` 转成前端可直接渲染的 timeline 数据。
 
 ### 4.8 `task`
 
@@ -274,19 +278,17 @@ yg_ai/
 1. `InfectionPipeline.processPendingStructData()` claim `patient_raw_data_change_task`
 2. claim 结果按 `reqno` 聚合，形成患者级本轮消费集合
 3. 对每个患者校验变更行版本，只保留 `raw_data_last_time == patient_raw_data.last_time` 的有效 change
-4. 取有效 change 的最早 `data_date` 作为本轮 `replayFromDate`
-5. 调用 `resetDerivedData(reqno, replayFromDate)` 清空派生字段并截断摘要
-6. 查询 `patient_raw_data` 中 `struct_data_json` 为空、且 `data_date >= replayFromDate` 的记录
-7. 用 `SummaryAgent.extractDailyIllness()` 生成当天结构化结果与增量摘要
-8. 将结构化内容写回 `patient_raw_data.struct_data_json`
-9. 将汇总后的摘要写入 `patient_summary.summary_json`
-10. 本轮患者级 change 行统一标记为 `SUCCESS` 或 `FAILED`
+4. 对每条有效 change 仅处理对应单日 `patient_raw_data`
+5. 调用 `resetDerivedDataForRawData(rawDataId)` 清空当日派生字段
+6. 用 `SummaryAgent.extractDailyIllness()` 生成当天结构化结果与单日摘要
+7. 将结构化内容写回 `patient_raw_data.struct_data_json`
+8. 将单日摘要写回 `patient_raw_data.event_json`
+9. 本轮患者级 change 行统一标记为 `SUCCESS` 或 `FAILED`
 
 说明：
 
 - `pat_illnessCourse` 的过滤规则已经前移到原始采集落库阶段
 - 当前摘要链已经切换为消费 `patient_raw_data_change_task`
-- 旧 `patient_struct_data_task` 已从代码中删除
 
 ### 5.3 时间线展示链路
 
@@ -297,8 +299,8 @@ yg_ai/
 
 处理过程：
 
-1. 查询 `patient_summary` 最新摘要
-2. 读取 `summaryJson`
+1. 分页查询 `patient_raw_data.event_json`
+2. 读取单日摘要
 3. 根据 `timeline-view-rules.yaml` 中的规则进行分类、标签、风险、徽章生成
 4. 输出 `PatientTimelineViewData`
 
@@ -336,10 +338,9 @@ yg_ai/
 
 ### 6.2 `resources/mapper`
 
-包含 4 个 MyBatis XML：
+包含 3 个主用 MyBatis XML：
 
 - `PatientRawDataMapper.xml`
-- `PatientSummaryMapper.xml`
 - `PatillnessCourseInfoMapper.xml`
 - `ItemsInforZhqMapper.xml`
 
@@ -522,7 +523,7 @@ yg_ai/
    当前项目到底是“住院病程摘要系统”还是“院感监测平台”，需要明确主线。
 2. 数据库表说明
    尤其是：
-   `patient_raw_data`、`patient_summary`、`ai_process_log`、`items_infor_zhq`
+   `patient_raw_data`、`ai_process_log`、`items_infor_zhq`
 3. 关键调用链
    从定时任务到 Service、Mapper、Agent 的标准入口。
 4. Prompt 管理原则

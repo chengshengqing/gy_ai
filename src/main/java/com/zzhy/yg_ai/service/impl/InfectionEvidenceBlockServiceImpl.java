@@ -1,7 +1,6 @@
 package com.zzhy.yg_ai.service.impl;
 
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.model.EvidenceBlockBuildResult;
 import com.zzhy.yg_ai.service.InfectionEvidenceBlockService;
 import com.zzhy.yg_ai.service.evidence.ClinicalTextBlockBuilder;
@@ -21,15 +20,15 @@ public class InfectionEvidenceBlockServiceImpl implements InfectionEvidenceBlock
     private final TimelineContextBlockBuilder timelineContextBlockBuilder;
 
     @Override
-    public EvidenceBlockBuildResult buildBlocks(PatientRawDataEntity rawData, PatientSummaryEntity latestSummary) {
+    public EvidenceBlockBuildResult buildBlocks(PatientRawDataEntity rawData, String timelineWindowJson) {
         if (rawData == null) {
             return new EvidenceBlockBuildResult(null, null, null, null);
         }
         return new EvidenceBlockBuildResult(
-                structuredFactBlockBuilder.build(rawData, latestSummary),
-                clinicalTextBlockBuilder.build(rawData, latestSummary),
-                midSemanticBlockBuilder.build(rawData, latestSummary),
-                timelineContextBlockBuilder.build(rawData, latestSummary)
+                structuredFactBlockBuilder.build(rawData, timelineWindowJson),
+                clinicalTextBlockBuilder.build(rawData, timelineWindowJson),
+                midSemanticBlockBuilder.build(rawData, timelineWindowJson),
+                timelineContextBlockBuilder.build(rawData, timelineWindowJson)
         );
     }
 }

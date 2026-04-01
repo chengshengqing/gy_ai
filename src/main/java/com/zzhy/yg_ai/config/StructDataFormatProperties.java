@@ -10,8 +10,9 @@ import org.springframework.stereotype.Component;
 public class StructDataFormatProperties {
 
     private int fixedDelay = 30000;
-    private int batchSize = 50;
+    private int batchSize = 5;
     private int workerThreads = 8;
     private int maxAttempts = 5;
     private int retryDelaySeconds = 300;
+    private int runningTimeoutSeconds = 1800;
 }

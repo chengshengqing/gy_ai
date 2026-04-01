@@ -6,11 +6,9 @@ import com.zzhy.yg_ai.config.StructDataFormatProperties;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
 import com.zzhy.yg_ai.domain.model.EvidenceBlockBuildResult;
-import com.zzhy.yg_ai.domain.model.LlmEventExtractorResult;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.service.InfectionEvidenceBlockService;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
@@ -18,18 +16,9 @@ import com.zzhy.yg_ai.service.LlmEventExtractorService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientRawDataCollectTaskService;
 import com.zzhy.yg_ai.service.PatientService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,8 +45,6 @@ public class InfectionPipeline {
     private final InfectionEvidenceBlockService infectionEvidenceBlockService;
     private final LlmEventExtractorService llmEventExtractorService;
     private final StructDataFormatProperties structDataFormatProperties;
-    private final ObjectMapper objectMapper;
-
     public InfectionPipeline(InfectionMonitorProperties infectionMonitorProperties,
                              SummaryAgent summaryAgent,
                              PatientService patientService,
@@ -66,8 +53,7 @@ public class InfectionPipeline {
                              InfectionDailyJobLogService infectionDailyJobLogService,
                              InfectionEvidenceBlockService infectionEvidenceBlockService,
                              LlmEventExtractorService llmEventExtractorService,
-                             StructDataFormatProperties structDataFormatProperties,
-                             ObjectMapper objectMapper) {
+                             StructDataFormatProperties structDataFormatProperties) {
         this.infectionMonitorProperties = infectionMonitorProperties;
         this.summaryAgent = summaryAgent;
         this.patientService = patientService;
@@ -77,7 +63,6 @@ public class InfectionPipeline {
         this.infectionEvidenceBlockService = infectionEvidenceBlockService;
         this.llmEventExtractorService = llmEventExtractorService;
         this.structDataFormatProperties = structDataFormatProperties;
-        this.objectMapper = objectMapper;
     }
 
     public int enqueueRawDataTasks(List<String> reqnos) {
@@ -225,38 +210,17 @@ public class InfectionPipeline {
             return StructTaskExecutionResult.failed(taskIds, reqno, 0, "reqno为空");
         }
 
-        LocalDate replayFromDate = null;
-        boolean hasFreshChange = false;
-        for (PatientRawDataChangeTaskEntity taskEntity : taskGroup) {
-            PatientRawDataEntity rawData = taskEntity == null ? null : patientService.getRawDataById(taskEntity.getPatientRawDataId());
-            if (rawData == null || rawData.getLastTime() == null || taskEntity == null || taskEntity.getRawDataLastTime() == null) {
-                continue;
-            }
-            if (!rawData.getLastTime().equals(taskEntity.getRawDataLastTime())) {
-                continue;
-            }
-            LocalDate changedDate = taskEntity.getDataDate() == null ? rawData.getDataDate() : taskEntity.getDataDate();
-            replayFromDate = minDate(replayFromDate, changedDate);
-            hasFreshChange = true;
-        }
-        if (!hasFreshChange || replayFromDate == null) {
+        List<PatientRawDataEntity> rows = collectFreshRawData(taskGroup);
+        if (rows.isEmpty()) {
             return StructTaskExecutionResult.success(taskIds, reqno, 0);
         }
-
-        patientService.resetDerivedData(reqno, replayFromDate);
-        List<PatientRawDataEntity> rows = patientService.listPendingStructRawData(reqno, replayFromDate);
-        if (rows == null || rows.isEmpty()) {
-            return StructTaskExecutionResult.success(taskIds, reqno, 0);
-        }
-
-        PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
         int successCount = 0;
         int failedCount = 0;
         String lastErrorMessage = null;
         InfectionJobStage failedStage = InfectionJobStage.NORMALIZE;
         for (PatientRawDataEntity rawData : rows) {
-            RawDataProcessResult processResult = processPendingRawData(reqno, latestSummary, rawData);
-            if (!processResult.success()) {
+            RawDataProcessResult processResult = processPendingRawData(reqno, rawData);
+            if (!processResult.isSuccess()) {
                 failedCount++;
                 lastErrorMessage = StringUtils.hasText(processResult.errorMessage())
                         ? processResult.errorMessage()
@@ -264,26 +228,25 @@ public class InfectionPipeline {
                 failedStage = processResult.failedStage() == null ? InfectionJobStage.NORMALIZE : processResult.failedStage();
                 continue;
             }
-            latestSummary = processResult.updatedSummary();
             successCount++;
         }
         return new StructTaskExecutionResult(taskIds, reqno, rows.size(), successCount, failedCount, lastErrorMessage, failedStage);
     }
 
-    private RawDataProcessResult processPendingRawData(String reqno,
-                                                       PatientSummaryEntity latestSummary,
-                                                       PatientRawDataEntity rawData) {
+    private RawDataProcessResult processPendingRawData(String reqno, PatientRawDataEntity rawData) {
         if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
             return RawDataProcessResult.failed(InfectionJobStage.NORMALIZE, "rawData为空或缺少dataJson");
         }
 
         try {
-            SummaryAgent.DailyIllnessResult dailyIllnessResult = summaryAgent.extractDailyIllness(latestSummary, rawData);
-            PatientSummaryEntity newSummary = buildUpdatedSummary(reqno, rawData, dailyIllnessResult.updatedSummaryJson());
+            patientService.resetDerivedDataForRawData(rawData.getId());
+            SummaryAgent.DailyIllnessResult dailyIllnessResult = summaryAgent.extractDailyIllness(rawData);
             rawData.setStructDataJson(dailyIllnessResult.structDataJson());
-            patientService.saveStructDataJson(rawData.getId(), dailyIllnessResult.structDataJson(), null);
-            patientService.saveOrUpdateLatestSummary(newSummary);
-            return RawDataProcessResult.success(newSummary);
+            rawData.setEventJson(dailyIllnessResult.dailySummaryJson());
+            patientService.saveStructDataJson(rawData.getId(),
+                    dailyIllnessResult.structDataJson(),
+                    dailyIllnessResult.dailySummaryJson());
+            return RawDataProcessResult.success();
         } catch (Exception e) {
             log.error("病程增量摘要失败，rowId={}, reqno={}", rawData.getId(), rawData.getReqno(), e);
             return RawDataProcessResult.failed(InfectionJobStage.NORMALIZE, "存在未完成的 rawData 行，需重试");
@@ -297,31 +260,8 @@ public class InfectionPipeline {
             return EventTaskExecutionResult.failed(taskIds, reqno, 0, "reqno为空");
         }
 
-        LocalDate replayFromDate = null;
-        boolean hasFreshChange = false;
-        for (PatientRawDataChangeTaskEntity taskEntity : taskGroup) {
-            PatientRawDataEntity rawData = taskEntity == null ? null : patientService.getRawDataById(taskEntity.getPatientRawDataId());
-            if (rawData == null || rawData.getLastTime() == null || taskEntity == null || taskEntity.getRawDataLastTime() == null) {
-                continue;
-            }
-            if (!rawData.getLastTime().equals(taskEntity.getRawDataLastTime())) {
-                continue;
-            }
-            LocalDate changedDate = taskEntity.getDataDate() == null ? rawData.getDataDate() : taskEntity.getDataDate();
-            replayFromDate = minDate(replayFromDate, changedDate);
-            hasFreshChange = true;
-        }
-        if (!hasFreshChange || replayFromDate == null) {
-            return EventTaskExecutionResult.success(taskIds, reqno, 0);
-        }
-
-        PatientSummaryEntity latestSummary = patientService.getLatestSummary(reqno);
-        if (latestSummary == null || !StringUtils.hasText(latestSummary.getSummaryJson())) {
-            return EventTaskExecutionResult.failed(taskIds, reqno, 0, "summary_json为空，暂不能触发事件抽取");
-        }
-
-        List<PatientRawDataEntity> rows = patientService.listPendingEventRawData(reqno, replayFromDate);
-        if (rows == null || rows.isEmpty()) {
+        List<PatientRawDataEntity> rows = collectFreshRawData(taskGroup);
+        if (rows.isEmpty()) {
             return EventTaskExecutionResult.success(taskIds, reqno, 0);
         }
 
@@ -330,7 +270,8 @@ public class InfectionPipeline {
         String lastErrorMessage = null;
         for (PatientRawDataEntity rawData : rows) {
             try {
-                patientService.saveEventJson(rawData.getId(), extractEvents(rawData, latestSummary));
+                String timelineWindowJson = patientService.buildSummaryWindowJson(reqno, rawData.getDataDate(), 7);
+                extractEvents(rawData, timelineWindowJson);
                 successCount++;
             } catch (Exception e) {
                 failedCount++;
@@ -344,16 +285,12 @@ public class InfectionPipeline {
         return EventTaskExecutionResult.success(taskIds, reqno, successCount);
     }
 
-    private String extractEvents(PatientRawDataEntity rawData, PatientSummaryEntity summary) {
-        EvidenceBlockBuildResult buildResult = infectionEvidenceBlockService.buildBlocks(rawData, summary);
+    private void extractEvents(PatientRawDataEntity rawData, String timelineWindowJson) {
+        EvidenceBlockBuildResult buildResult = infectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson);
         if (buildResult == null || buildResult.primaryBlocks().isEmpty()) {
-            return emptyEventJson();
+            return;
         }
-        LlmEventExtractorResult extractorResult = llmEventExtractorService.extractAndSave(buildResult);
-        if (extractorResult == null || !StringUtils.hasText(extractorResult.eventJson())) {
-            return emptyEventJson();
-        }
-        return extractorResult.eventJson();
+        llmEventExtractorService.extractAndSave(buildResult);
     }
 
     private void finalizeStructTask(StructTaskExecutionResult result) {
@@ -439,134 +376,25 @@ public class InfectionPipeline {
         return null;
     }
 
-    private LocalDate minDate(LocalDate left, LocalDate right) {
-        if (left == null) {
-            return right;
+    private List<PatientRawDataEntity> collectFreshRawData(List<PatientRawDataChangeTaskEntity> taskGroup) {
+        Map<String, PatientRawDataEntity> rows = new LinkedHashMap<>();
+        if (taskGroup == null || taskGroup.isEmpty()) {
+            return List.of();
         }
-        if (right == null) {
-            return left;
-        }
-        return left.isBefore(right) ? left : right;
-    }
-
-    private PatientSummaryEntity buildUpdatedSummary(String reqno,
-                                                    PatientRawDataEntity rawData,
-                                                    String updatedSummaryJson) {
-        String sortedSummaryJson = sortTimelineByTimeAsc(updatedSummaryJson);
-        PatientSummaryEntity newSummary = new PatientSummaryEntity();
-        newSummary.setReqno(reqno);
-        newSummary.setSummaryJson(sortedSummaryJson);
-        newSummary.setTokenCount(sortedSummaryJson.length());
-        newSummary.setUpdateTime(rawData.getLastTime() == null
-                ? DateTimeUtils.now()
-                : DateTimeUtils.truncateToMillis(rawData.getLastTime()));
-        return newSummary;
-    }
-
-
-    private String sortTimelineByTimeAsc(String summaryJson) {
-        if (!StringUtils.hasText(summaryJson)) {
-            return summaryJson;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(summaryJson);
-            if (root == null) {
-                return summaryJson;
-            }
-            if (root.isArray()) {
-                ArrayNode sorted = sortTimelineArray((ArrayNode) root);
-                return objectMapper.writeValueAsString(sorted);
-            }
-            if (root.isObject()) {
-                ObjectNode objectNode = (ObjectNode) root;
-                JsonNode timelineNode = objectNode.get("timeline");
-                if (timelineNode != null && timelineNode.isArray()) {
-                    objectNode.set("timeline", sortTimelineArray((ArrayNode) timelineNode));
-                }
-                return objectMapper.writeValueAsString(objectNode);
-            }
-            return summaryJson;
-        } catch (Exception e) {
-            log.warn("timeline排序失败，使用原摘要");
-            return summaryJson;
-        }
-    }
-
-    private ArrayNode sortTimelineArray(ArrayNode timelineArray) {
-        if (timelineArray == null || timelineArray.size() <= 1) {
-            return timelineArray;
-        }
-        List<JsonNode> items = new ArrayList<>();
-        timelineArray.forEach(items::add);
-        items.sort((left, right) -> {
-            long leftEpoch = extractTimelineNodeEpoch(left);
-            long rightEpoch = extractTimelineNodeEpoch(right);
-            if (leftEpoch == rightEpoch) {
-                return 0;
-            }
-            if (leftEpoch == Long.MIN_VALUE) {
-                return 1;
-            }
-            if (rightEpoch == Long.MIN_VALUE) {
-                return -1;
-            }
-            return Long.compare(leftEpoch, rightEpoch);
-        });
-        ArrayNode sorted = objectMapper.createArrayNode();
-        items.forEach(sorted::add);
-        return sorted;
-    }
-
-    private long extractTimelineNodeEpoch(JsonNode node) {
-        if (node == null || !node.isObject()) {
-            return Long.MIN_VALUE;
-        }
-        List<String> keys = List.of("time", "dataDate", "date", "updateTime");
-        for (String key : keys) {
-            JsonNode valueNode = node.get(key);
-            if (valueNode == null || valueNode.isNull()) {
+        for (PatientRawDataChangeTaskEntity taskEntity : taskGroup) {
+            if (taskEntity == null || taskEntity.getPatientRawDataId() == null || taskEntity.getRawDataLastTime() == null) {
                 continue;
             }
-            String value = valueNode.asText();
-            if (!StringUtils.hasText(value)) {
+            PatientRawDataEntity rawData = patientService.getRawDataById(taskEntity.getPatientRawDataId());
+            if (rawData == null || rawData.getLastTime() == null) {
                 continue;
             }
-            long epoch = parseTimeToEpoch(value.trim());
-            if (epoch != Long.MIN_VALUE) {
-                return epoch;
+            if (!rawData.getLastTime().equals(taskEntity.getRawDataLastTime())) {
+                continue;
             }
+            rows.putIfAbsent(rawData.getId() + "|" + taskEntity.getRawDataLastTime(), rawData);
         }
-        return Long.MIN_VALUE;
-    }
-
-    private long parseTimeToEpoch(String value) {
-        List<DateTimeFormatter> dateTimeFormatters = DateTimeUtils.DATE_TIME_PARSE_FORMATTERS;
-        for (DateTimeFormatter formatter : dateTimeFormatters) {
-            try {
-                return LocalDateTime.parse(value, formatter)
-                        .atZone(java.time.ZoneId.systemDefault())
-                        .toInstant()
-                        .toEpochMilli();
-            } catch (DateTimeParseException ignored) {
-                // try next format
-            }
-        }
-        try {
-            return LocalDate.parse(value, DateTimeFormatter.ISO_LOCAL_DATE)
-                    .atTime(LocalTime.MIN)
-                    .atZone(java.time.ZoneId.systemDefault())
-                    .toInstant().toEpochMilli();
-        } catch (DateTimeParseException ignored) {
-            return Long.MIN_VALUE;
-        }
-    }
-
-    private String emptyEventJson() {
-        try {
-            return objectMapper.writeValueAsString(Collections.singletonMap("events", List.of()));
-        } catch (Exception e) {
-            return "{\"events\":[]}";
-        }
+        return new ArrayList<>(rows.values());
     }
 
     private record StructTaskExecutionResult(List<Long> taskIds,
@@ -586,20 +414,19 @@ public class InfectionPipeline {
         }
     }
 
-    private record RawDataProcessResult(PatientSummaryEntity updatedSummary,
-                                        InfectionJobStage failedStage,
+    private record RawDataProcessResult(InfectionJobStage failedStage,
                                         String errorMessage) {
 
-        private static RawDataProcessResult success(PatientSummaryEntity updatedSummary) {
-            return new RawDataProcessResult(updatedSummary, null, null);
+        private static RawDataProcessResult success() {
+            return new RawDataProcessResult(null, null);
         }
 
         private static RawDataProcessResult failed(InfectionJobStage failedStage, String errorMessage) {
-            return new RawDataProcessResult(null, failedStage, errorMessage);
+            return new RawDataProcessResult(failedStage, errorMessage);
         }
 
-        private boolean success() {
-            return updatedSummary != null;
+        private boolean isSuccess() {
+            return failedStage == null && !StringUtils.hasText(errorMessage);
         }
     }
 

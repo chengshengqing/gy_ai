@@ -11,7 +11,7 @@
 
 当前最完整的主链路是：
 
-`SQL Server 原始住院数据 -> patient_raw_data -> LLM 结构化摘要 -> patient_summary -> 时间线接口 / 静态展示页`
+`SQL Server 原始住院数据 -> patient_raw_data -> LLM 单日结构化摘要 -> patient_raw_data.struct_data_json / event_json -> 时间线接口 / 静态展示页`
 
 系统的数据来源模式是：
 
@@ -91,32 +91,33 @@ src/main/resources
 
 - 入口任务：`StructDataFormatScheduler`
 - AI 核心：`FormatAgent`、`SummaryAgent`
-- 输出表：`patient_raw_data.struct_data_json`、`patient_summary.summary_json`
-- 任务表：`patient_struct_data_task`
+- 输出表：`patient_raw_data.struct_data_json`、`patient_raw_data.event_json`
+- 任务表：`patient_raw_data_change_task`
 - 运维日志表：`infection_daily_job_log`
 
 职责：
 
 - 对病程文本做去重过滤
-- 生成当天结构化事实与增量摘要
-- 将摘要累积成 timeline 结构
-- 为前端时间线视图提供标准化数据源
+- 生成当天结构化事实与单日摘要
+- 将单日摘要写入 `event_json`
+- 为前端时间线视图和事件抽取窗口提供标准化数据源
 
 执行方式：
 
-- 原始数据采集完成后，按 `reqno` 写入 `patient_struct_data_task`
-- 定时任务优先领取待处理任务，再执行结构化和摘要更新
+- 原始数据采集完成后，按日写入 `patient_raw_data_change_task`
+- 定时任务优先领取待处理任务，再执行单日结构化和摘要更新
 - 不再依赖单纯扫描 `struct_data_json is null` 作为唯一处理驱动
+- 结构化调度前会巡检并补建缺失的 change task
 
 ### 3. 时间线展示
 
-- 控制器：`PatientSummaryController`、`PatientRawDataController`
-- 服务：`PatientSummaryTimelineViewServiceImpl`
+- 控制器：`PatientTimelineController`、`PatientRawDataController`
+- 服务：`PatientTimelineViewServiceImpl`
 - 规则配置：`timeline-view-rules.yaml`
 
 职责：
 
-- 读取最新摘要
+- 直接分页读取 `patient_raw_data.event_json`
 - 转换为前端可渲染的 `PatientTimelineViewData`
 - 结合配置规则生成风险项、徽章、标签和展示字段
 
@@ -209,7 +210,7 @@ GET /api/patient-summary/timeline-view?reqno={reqno}
 
 用途：
 
-- 获取某患者最新 AI 摘要转换后的时间线视图数据
+- 获取某患者基于 `patient_raw_data.event_json` 转换后的时间线视图数据
 
 ### 2. 原始病程演示接口
 
@@ -258,6 +259,7 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 主链路边界说明：
 
 - `InfectionPipeline` 当前只负责患者采集和结构化摘要主流程
+- 事件抽取窗口上下文通过 `patient_raw_data.event_json` 按需构造
 - `WarningAgent`、`AuditAgent`、`SummaryWarningScheduler` 仍为预留模块
 - 患者扫描默认按“在院 / 近期出院”规则查询，可通过 `infection.monitor.debug-mode=true` 和 `infection.monitor.debug-reqnos` 切到调试名单
 

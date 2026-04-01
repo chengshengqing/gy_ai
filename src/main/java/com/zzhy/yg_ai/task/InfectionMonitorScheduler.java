@@ -4,6 +4,7 @@ import com.zzhy.yg_ai.ai.orchestrator.InfectionPipeline;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.PatientRawDataCollectTaskService;
 import com.zzhy.yg_ai.service.PatientService;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
@@ -17,18 +18,22 @@ public class InfectionMonitorScheduler {
     private final PatientService patientService;
     private final InfectionPipeline infectionPipeline;
     private final InfectionDailyJobLogService infectionDailyJobLogService;
+    private final PatientRawDataCollectTaskService patientRawDataCollectTaskService;
 
     public InfectionMonitorScheduler(PatientService patientService,
                                      InfectionPipeline infectionPipeline,
-                                     InfectionDailyJobLogService infectionDailyJobLogService) {
+                                     InfectionDailyJobLogService infectionDailyJobLogService,
+                                     PatientRawDataCollectTaskService patientRawDataCollectTaskService) {
         this.patientService = patientService;
         this.infectionPipeline = infectionPipeline;
         this.infectionDailyJobLogService = infectionDailyJobLogService;
+        this.patientRawDataCollectTaskService = patientRawDataCollectTaskService;
     }
 
     @Scheduled(fixedDelayString = "${infection.monitor.enqueue-fixed-delay:${infection.monitor.fixed-delay:60000}}")
     public void enqueuePendingPatients() {
         try {
+            reclaimTimedOutCollectTasks("采集扫描");
             List<String> reqnos = patientService.listActiveReqnos();
             if (reqnos == null || reqnos.isEmpty()) {
                 log.info("院感采集扫描任务本轮无患者");
@@ -53,6 +58,7 @@ public class InfectionMonitorScheduler {
     @Scheduled(fixedDelayString = "${infection.monitor.process-fixed-delay:${infection.monitor.fixed-delay:60000}}")
     public void processPendingCollectTasks() {
         try {
+            reclaimTimedOutCollectTasks("采集执行");
             int processedCount = infectionPipeline.processPendingRawDataTasks();
             if (processedCount <= 0) {
                 infectionDailyJobLogService.log(InfectionJobStage.LOAD,
@@ -72,6 +78,13 @@ public class InfectionMonitorScheduler {
                     InfectionJobStatus.ERROR,
                     null,
                     "院感采集执行任务失败: " + e.getMessage());
+        }
+    }
+
+    private void reclaimTimedOutCollectTasks(String phase) {
+        int reclaimedCount = patientRawDataCollectTaskService.reclaimTimedOutRunningTasks();
+        if (reclaimedCount > 0) {
+            log.warn("{}阶段回收超时采集任务，count={}", phase, reclaimedCount);
         }
     }
 }

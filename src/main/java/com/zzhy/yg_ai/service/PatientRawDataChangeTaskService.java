@@ -2,8 +2,8 @@ package com.zzhy.yg_ai.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
 
 public interface PatientRawDataChangeTaskService extends IService<PatientRawDataChangeTaskEntity> {
@@ -23,4 +23,6 @@ public interface PatientRawDataChangeTaskService extends IService<PatientRawData
     void markEventSuccess(List<Long> taskIds, String message);
 
     void markEventFailed(List<Long> taskIds, String errorMessage);
+
+    int repairMissingStructTasks(List<String> reqnos, LocalDateTime lastTimeFrom, int limit);
 }

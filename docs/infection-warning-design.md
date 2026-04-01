@@ -35,8 +35,11 @@
 
 - `patient_raw_data`
   每日病例快照输入源
-- `patient_summary`
-  时间轴摘要上下文源
+
+当前补充：
+
+- `patient_raw_data.event_json` 已作为单日时间轴摘要来源
+- 7 天窗口上下文通过 `patient_raw_data.event_json` 按需拼装
 
 这意味着下一阶段不需要从零搭建数据采集系统，而是要在已有增量输入链路之上，增加院感预警分析能力。
 
@@ -100,7 +103,7 @@
 ## 5. 总体实施架构
 
 ```text
-每日定时拉取 patient_raw_data / patient_summary
+每日定时拉取 patient_raw_data
     -> 读取指定 reqno + data_date 快照
     -> 与历史快照比较
     -> 识别新增 / 更正 / 撤销
@@ -129,21 +132,9 @@
 - `struct_data_json`
   中间语义增强源
 - `event_json`
-  可作为已有辅助事件源
+  单日时间轴摘要与窗口上下文源
 - `clinical_notes`
   轻量文本辅助
-
-### `patient_summary`
-
-主要字段角色：
-
-- `summary_json`
-  时间轴上下文源
-
-说明：
-
-- `summary_json` 只用于病程背景和解释生成
-- 不作为最终事实判定主来源
 
 ## 6.2 增量模式约束
 
@@ -229,7 +220,7 @@
 
 来源：
 
-- `summary_json`
+- 最近 7 天 `patient_raw_data.event_json` 现拼窗口 JSON
 
 作用：
 
@@ -361,7 +352,7 @@
 
 来源：
 
-- `summary_json`
+- 最近 7 天窗口 JSON
 
 规则：
 
@@ -423,7 +414,7 @@ Prompt 统一放入：
 
 输入：
 
-- `summary_json`
+- 最近 7 天窗口 JSON
 
 输出：
 
@@ -600,7 +591,7 @@ LLM 输出不能直接入库，必须经过标准化。
 
 - `infection_event_pool`
 - `infection_case_snapshot`
-- `patient_summary.summary_json`
+- 最近 7 天 `patient_raw_data.event_json` 构造的窗口 JSON
 
 建议内容：
 
@@ -741,9 +732,10 @@ LLM 输出不能直接入库，必须经过标准化。
 
 - 生成逻辑：`com.zzhy.yg_ai.ai.agent.SummaryAgent`
 
-### `summary_json`
+### `event_json`
 
 - 生成逻辑：`com.zzhy.yg_ai.ai.agent.SummaryAgent`
+- 语义：单日时间轴摘要
 
 ## 18. 验收标准
 
@@ -756,7 +748,7 @@ LLM 输出不能直接入库，必须经过标准化。
   - 摘要上下文
 - LLM 返回非法 JSON 时，写入 `infection_llm_node_run` 错误记录，并保底入 `note` 事件
 - 低置信度时，语义事件能正确标记或跳过
-- `summary_json` 不直接落入事件池，只生成上下文对象
+- 窗口 JSON 不直接落入事件池，只生成上下文对象
 
 ## 19. 实施顺序
 

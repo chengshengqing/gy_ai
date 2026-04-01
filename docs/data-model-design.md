@@ -53,32 +53,14 @@
   只保存原始采集块，包含 `pat_diagInfor`、`pat_bodySurface`、`pat_doctorAdvice_*`、`pat_illnessCourse`、`pat_testSam`、`pat_useMedicine`、`pat_videoResult`、`pat_transfer`、`pat_opsCutInfor`、`pat_test`
 - `filter_data_json`
   保存规则处理后的事实块，当前包含 `patient_info`、`diagnosis`、`vital_signs`、`lab_results`、`imaging`、`doctor_orders`、`clinical_notes`、过滤后的 `pat_illnessCourse`
+- `struct_data_json`
+  保存单日结构化中间结果，不再重复存放单日摘要内容
+- `event_json`
+  当前已切换为“单日时间轴摘要”字段，不再保存事件抽取结果
 - `last_time`
   当前已重新启用，表示该日 `patient_raw_data` 最后一次更新时间
 
-## 2.2 `patient_summary`
-
-角色：
-
-- 病例时间轴摘要上下文源
-
-当前关键字段：
-
-- `reqno`
-- `summary_json`
-- `update_time`
-
-在新架构中的定位：
-
-- 时间轴背景
-- 医生解释生成辅助上下文
-- 页面摘要视图来源
-
-说明：
-
-- 不作为最终事实真相源
-
-## 2.3 `patient_raw_data_collect_task`
+## 2.2 `patient_raw_data_collect_task`
 
 角色：
 
@@ -114,7 +96,7 @@
 - 这张表只负责“患者级采集任务”
 - 不负责下游摘要、预警、审核等业务任务
 
-## 2.4 `patient_raw_data_change_task`
+## 2.3 `patient_raw_data_change_task`
 
 角色：
 
@@ -125,7 +107,7 @@
 - 记录每次被新增或修改的 `patient_raw_data` 行
 - 以 `patient_raw_data_id + raw_data_last_time` 形式向下游发布变更信号
 - 作为结构化摘要链路的直接消费任务表
-- 按 `reqno` 聚合后驱动“从最早变更日开始”的摘要重放
+- 作为事件抽取链路的直接消费任务表
 
 当前关键字段：
 
@@ -152,28 +134,12 @@
 当前实现补充：
 
 - 采集阶段只负责写 `patient_raw_data` 与追加 `patient_raw_data_change_task`
-- 结构化阶段 claim 这张表后，按 `reqno` 聚合
+- 结构化阶段与事件阶段均 claim 这张表
 - 对同一患者本轮 claim 到的变更行，先校验 `raw_data_last_time` 是否仍与 `patient_raw_data.last_time` 一致
-- 仅对仍然有效的变更行计算最早 `data_date`
-- 从该日期开始清空 `struct_data_json / event_json`，并截断 `patient_summary` 后再做增量重放
+- 仅处理仍然有效的单日变更行，不再做“从最早变更日开始”的整段重放
+- 结构化调度前会巡检最近窗口的 `patient_raw_data`，补建 `appendChanges()` 漏掉的任务
 
-## 2.5 `patient_struct_data_task`
-
-角色：
-
-- 已删除的历史任务表
-
-当前职责：
-
-- 无。该表已被 `patient_raw_data_change_task` 替代。
-
-在当前架构中的定位：
-
-- 仅作为历史设计记录保留在文档中
-- 当前代码已不再依赖该表
-- 新增或重试结构化摘要时，统一通过 `patient_raw_data_change_task` 完成
-
-## 2.6 `ai_process_log`
+## 2.4 `ai_process_log`
 
 角色：
 
@@ -189,7 +155,7 @@
 - 院感预警后续会有更多节点类型
 - 需要更细粒度的运行记录
 
-## 2.7 `items_infor_zhq`
+## 2.5 `items_infor_zhq`
 
 角色：
 
@@ -217,8 +183,6 @@
 patient_raw_data
     -> infection_event_pool
     -> infection_llm_node_run
-
-patient_summary
     -> infection_case_snapshot
 
 infection_event_pool
@@ -902,19 +866,7 @@ infection_llm_node_run
 - `raw_data_id`
 - `source_ref`
 
-## 10.2 `patient_summary` 与 `infection_case_snapshot`
-
-建议关系：
-
-- `patient_summary` 提供上下文
-- `infection_case_snapshot` 保存当前院感认知状态
-
-说明：
-
-- 不建议把 `summary_json` 直接复制到快照表
-- 如确需保留，应存摘要引用或压缩版上下文
-
-## 10.3 `infection_case_snapshot` 与 `infection_alert_result`
+## 10.2 `infection_case_snapshot` 与 `infection_alert_result`
 
 建议关系：
 

@@ -5,9 +5,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzhy.yg_ai.config.TimelineViewRuleProperties;
 import com.zzhy.yg_ai.domain.dto.PatientTimelineViewData;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
-import com.zzhy.yg_ai.mapper.PatientSummaryMapper;
-import com.zzhy.yg_ai.service.PatientSummaryTimelineViewService;
+import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
+import com.zzhy.yg_ai.service.PatientTimelineViewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -29,14 +29,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
- * 将 PatientSummaryEntity.summaryJson 转换为前端可直接渲染的 timelineViewData。
+ * 将 patient_raw_data.event_json 转换为前端可直接渲染的 timelineViewData。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTimelineViewService {
+public class PatientTimelineViewServiceImpl implements PatientTimelineViewService {
 
-    private final PatientSummaryMapper patientSummaryMapper;
+    private final PatientRawDataMapper patientRawDataMapper;
     private final ObjectMapper objectMapper;
     private final TimelineViewRuleProperties ruleProperties;
 
@@ -47,26 +47,40 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
     private volatile Map<String, String> problemTypeLabelMap;
 
     @Override
-    public PatientTimelineViewData buildTimelineViewData(String reqno) {
+    public PatientTimelineViewData buildTimelineViewData(String reqno, int pageNo, int pageSize) {
         PatientTimelineViewData result = new PatientTimelineViewData();
-        PatientSummaryEntity latest = findLatestSummary(reqno);
-        if (latest == null || !StringUtils.hasText(latest.getSummaryJson())) {
-            result.setReqno(StringUtils.hasText(reqno) ? reqno : "");
+        int safePageNo = Math.max(1, pageNo);
+        int safePageSize = Math.max(1, Math.min(pageSize, 50));
+        result.setReqno(StringUtils.hasText(reqno) ? reqno.trim() : "");
+        result.setPageNo(safePageNo);
+        result.setPageSize(safePageSize);
+        if (!StringUtils.hasText(reqno)) {
+            return result;
+        }
+        QueryWrapper<PatientRawDataEntity> countWrapper = new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno.trim())
+                .isNotNull("event_json");
+        long total = patientRawDataMapper.selectCount(countWrapper);
+        result.setTotal(total);
+        result.setHasMore((long) safePageNo * safePageSize < total);
+        if (total <= 0) {
             return result;
         }
 
-        JsonNode root = readJson(latest.getSummaryJson());
-        if (root == null) {
-            result.setReqno(StringUtils.hasText(reqno) ? reqno : latest.getReqno());
-            return result;
-        }
-
-        result.setReqno(firstNonBlank(latest.getReqno(), textValue(root, "reqno"), reqno));
-        List<JsonNode> timelineNodes = extractTimeline(root);
+        int offset = (safePageNo - 1) * safePageSize;
+        QueryWrapper<PatientRawDataEntity> pageWrapper = new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno.trim())
+                .isNotNull("event_json")
+                .orderByDesc("data_date", "id")
+                .last("OFFSET " + offset + " ROWS FETCH NEXT " + safePageSize + " ROWS ONLY");
+        List<PatientRawDataEntity> rows = patientRawDataMapper.selectList(pageWrapper);
         List<TimelineBuildContext> contexts = new ArrayList<>();
-        for (JsonNode timelineNode : timelineNodes) {
+        int pageOrder = 0;
+        for (PatientRawDataEntity row : rows) {
+            JsonNode timelineNode = readJson(row == null ? null : row.getEventJson());
             TimelineBuildContext context = convertTimelineItem(timelineNode);
             if (context != null) {
+                context.pageOrder = pageOrder++;
                 contexts.add(context);
             }
         }
@@ -75,6 +89,7 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         if (!contexts.isEmpty()) {
             applyAutoGenerationRules(contexts);
         }
+        contexts.sort(Comparator.comparingInt(c -> c.pageOrder));
 
         List<PatientTimelineViewData.TimelineItem> items = new ArrayList<>();
         contexts.forEach(c -> items.add(c.item));
@@ -82,40 +97,13 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
         return result;
     }
 
-    private PatientSummaryEntity findLatestSummary(String reqno) {
-        QueryWrapper<PatientSummaryEntity> qw = new QueryWrapper<>();
-        if (StringUtils.hasText(reqno)) {
-            qw.eq("reqno", reqno);
-        }
-        qw.orderByDesc("update_time")
-                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY");
-        return patientSummaryMapper.selectOne(qw);
-    }
-
     private JsonNode readJson(String json) {
         try {
             return objectMapper.readTree(json);
         } catch (Exception e) {
-            log.warn("summaryJson 解析失败", e);
+            log.warn("eventJson 解析失败", e);
             return null;
         }
-    }
-
-    private List<JsonNode> extractTimeline(JsonNode root) {
-        if (root == null || root.isNull()) {
-            return Collections.emptyList();
-        }
-        List<JsonNode> list = new ArrayList<>();
-        JsonNode timeline = root.path("timeline");
-        if (timeline.isArray()) {
-            timeline.forEach(list::add);
-            return list;
-        }
-        if (root.isArray()) {
-            root.forEach(list::add);
-            return list;
-        }
-        return list;
     }
 
     private TimelineBuildContext convertTimelineItem(JsonNode timelineNode) {
@@ -853,6 +841,7 @@ public class PatientSummaryTimelineViewServiceImpl implements PatientSummaryTime
     private static class TimelineBuildContext {
         private PatientTimelineViewData.TimelineItem item;
         private LocalDate date;
+        private int pageOrder;
         private String summary;
         private List<String> sourceRefs = new ArrayList<>();
         private List<String> riskFlags = new ArrayList<>();

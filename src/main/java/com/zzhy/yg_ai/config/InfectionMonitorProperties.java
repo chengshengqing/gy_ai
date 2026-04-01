@@ -16,6 +16,7 @@ public class InfectionMonitorProperties {
     private int workerThreads = 8;
     private int maxAttempts = 5;
     private int retryDelaySeconds = 300;
+    private int runningTimeoutSeconds = 1800;
     private int recentAdmissionDays = 30;
     private boolean debugMode = false;
     private List<String> debugReqnos = new ArrayList<>();

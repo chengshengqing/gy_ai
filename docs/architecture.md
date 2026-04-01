@@ -29,6 +29,18 @@
 - 时间线展示
 - 传染病症候群监测的 AI 辅助分析
 
+## 2.1 当前实现口径（2026-04）
+
+当前代码已经完成以下收敛：
+
+- `SummaryAgent` 只生成单日结果，不再维护全量 timeline
+- `patient_raw_data.struct_data_json` 保存单日结构化中间结果
+- `patient_raw_data.event_json` 保存单日时间轴摘要
+- 时间线展示直接分页读取 `patient_raw_data.event_json`
+- 事件抽取上下文通过公共方法按 `reqno + anchorDate` 查询最近 7 天窗口 JSON
+- `patient_raw_data_change_task` 是结构化与事件抽取的唯一待处理入口
+- 结构化调度前会巡检并补建 `appendChanges()` 漏掉的 change task
+
 下一阶段主任务：
 
 - 院感预警分析
@@ -90,13 +102,14 @@
                               v
                  +------------+------------+
                  |      SummaryAgent       |
-                 | 摘要 / timeline         |
+                 | 单日 struct / event     |
                  +------------+------------+
                               |
                               v
                  +------------+------------+
-                 |    patient_summary      |
-                 | 最新时间线摘要            |
+                 |    patient_raw_data     |
+                 | struct_data_json        |
+                 | event_json              |
                  +------------+------------+
                               |
                               v
@@ -119,7 +132,7 @@
 - `data_json` 只保存原始采集块，不做规则加工
 - `filter_data_json` 保存规则处理后的可读事实块
 - `struct_data_json` 保存 LLM 结构化结果
-- `event_json` 预留给后续事件抽取结果
+- `event_json` 保存单日时间轴摘要，是时间线展示和窗口上下文的直接来源
 - 字段级结构说明见 `docs/patient-raw-json-structure.md`
 
 处理顺序为：
@@ -161,7 +174,7 @@ PatillnessCourseInfo -> SurveillanceAgent -> 校验 -> ai_process_log / items_in
 下一阶段将新增第三条核心链路：
 
 ```text
-patient_raw_data / patient_summary
+patient_raw_data
     -> 增量差异识别
     -> EvidenceBlock 切分
     -> LlmEventExtractor
@@ -220,7 +233,7 @@ patient_raw_data / patient_summary
 
 - `filter_data_json` 是主事实源
 - `struct_data_json` 是中间层语义增强源
-- `summary_json` 是时间轴摘要上下文源
+- 时间轴窗口 JSON 是病程背景上下文源
 
 最终分析仍以“原始事实 + 标准化事件”为主。
 
@@ -321,15 +334,15 @@ patient_raw_data / patient_summary
 
 - `PatientServiceImpl`
   原始数据采集、按天聚合、`data_json/filter_data_json` 落库、增量 merge、变更任务写入
-- `PatientSummaryTimelineViewServiceImpl`
-  摘要转时间线展示数据
+- `PatientTimelineViewServiceImpl`
+  单日摘要转时间线展示数据
 - `AiProcessLogServiceImpl`
   AI 处理日志记录
 
 设计说明：
 
 - `PatientServiceImpl` 是当前数据加工主中心。
-- `PatientSummaryTimelineViewServiceImpl` 是展示输出层中心。
+- `PatientTimelineViewServiceImpl` 是展示输出层中心。
 
 ### 4.5 数据访问层 `mapper`
 
@@ -341,7 +354,6 @@ patient_raw_data / patient_summary
 核心 Mapper：
 
 - `PatientRawDataMapper`
-- `PatientSummaryMapper`
 - `PatillnessCourseInfoMapper`
 - `ItemsInforZhqMapper`
 - `AiProcessLogMapper`
@@ -362,12 +374,12 @@ patient_raw_data / patient_summary
 
 核心类：
 
-- `PatientSummaryTimelineViewServiceImpl`
+- `PatientTimelineViewServiceImpl`
 - `TimelineViewRuleProperties`
 
 职责：
 
-- 读取 `summaryJson`
+- 读取分页 `event_json`
 - 识别主问题、次问题、风险项
 - 生成时间线展示字段
 - 将规则配置与业务数据结合
@@ -424,15 +436,16 @@ patient_raw_data / patient_summary
 1. claim `patient_raw_data_change_task` 中可执行的变更任务
 2. 按 `reqno` 聚合本轮 change 行
 3. 对每个患者过滤 stale change，只保留 `raw_data_last_time` 仍等于 `patient_raw_data.last_time` 的记录
-4. 计算该患者本轮最早变更日
-5. 清空该日期及之后的 `struct_data_json / event_json`，并截断 `patient_summary`
-6. 读取 `patient_raw_data` 中 `struct_data_json` 为空、且 `data_date >= earliestChangedDate` 的记录
-7. 使用 `SummaryAgent.extractDailyIllness()` 生成：
-   - `structDataJson`
-   - `updatedSummaryJson`
-8. 回写 `patient_raw_data`
-9. 更新 `patient_summary`
-10. 将本轮患者级 change 行标记为 `SUCCESS` 或 `FAILED`
+4. 逐条处理仍有效的单日变更行
+5. 清空该日的 `struct_data_json / event_json`
+6. 调用 `SummaryAgent.extractDailyIllness()` 生成单日结果
+7. 回写当前行 `patient_raw_data`
+8. 将本轮 change 行标记为 `SUCCESS` 或 `FAILED`
+
+当前补充：
+
+- 不再做“从最早变更日开始”的整段重放
+- 缺失的 change task 会在调度前巡检补建
 
 架构特征：
 
@@ -450,9 +463,9 @@ patient_raw_data / patient_summary
 
 执行过程：
 
-1. 查询某患者最新 `patient_summary`
-2. 解析 `summaryJson`
-3. 提取 timeline 节点
+1. 分页查询某患者 `patient_raw_data.event_json`
+2. 逐条解析单日摘要
+3. 生成时间线节点
 4. 应用规则配置：
    - 主问题识别
    - 风险项识别
@@ -493,7 +506,7 @@ patient_raw_data / patient_summary
 目标主流程：
 
 ```text
-每日定时拉取 patient_raw_data / patient_summary
+每日定时拉取 patient_raw_data
     -> 按 reqno + data_date 读取病例快照
     -> 与历史快照做差异识别
     -> 切分 4 类 EvidenceBlock
@@ -517,7 +530,7 @@ patient_raw_data / patient_summary
 - `MidSemanticBlock`
   来自 `struct_data_json` 的中间层语义块
 - `TimelineContextBlock`
-  来自 `summary_json` 的时间轴背景块，仅供 LLM 参考
+  来自最近 7 天 `event_json` 现拼窗口 JSON 的时间轴背景块，仅供 LLM 参考
 
 #### EventNormalizer 作用
 
@@ -582,20 +595,7 @@ patient_raw_data / patient_summary
 - `struct_data_json`
   AI 结构化处理结果
 
-### 6.3 `patient_summary`
-
-角色：
-
-- 患者最新时间线摘要存储
-
-典型字段用途：
-
-- `summary_json`
-  时间线摘要主载体
-- `update_time`
-  最新摘要更新时间
-
-### 6.4 `ai_process_log`
+### 6.3 `ai_process_log`
 
 角色：
 
@@ -606,7 +606,7 @@ patient_raw_data / patient_summary
 - 记录成功与失败
 - 保存原始响应和错误信息
 
-### 6.5 `items_infor_zhq`
+### 6.4 `items_infor_zhq`
 
 角色：
 
@@ -618,7 +618,7 @@ patient_raw_data / patient_summary
 - 保存症候群类型
 - 保存关键证据与建议动作
 
-### 6.6 Redis
+### 6.5 Redis
 
 当前角色：
 
@@ -629,7 +629,7 @@ patient_raw_data / patient_summary
 
 - 主链路中未形成强依赖
 
-### 6.7 下一阶段新增核心表
+### 6.6 下一阶段新增核心表
 
 #### `infection_event_pool`
 

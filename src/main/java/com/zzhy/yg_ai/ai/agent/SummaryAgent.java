@@ -10,7 +10,6 @@ import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.ai.prompt.FormatAgentPrompt;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -40,7 +39,6 @@ import org.springframework.util.StringUtils;
 @Component
 public class SummaryAgent extends AbstractAgent {
 
-    private static final int MODEL_TIMELINE_MAX_LENGTH = 8000;
     private static final DateTimeFormatter ILLNESS_TIME_FORMATTER = DateTimeUtils.DATE_TIME_FORMATTER;
     private static final Set<String> ALLOWED_STATUS = Set.of(
             "active", "acute_exacerbation", "worsening", "improving", "chronic", "stable", "clarified", "unclear"
@@ -65,16 +63,13 @@ public class SummaryAgent extends AbstractAgent {
         this.objectMapper = objectMapper;
     }
 
-    public DailyIllnessResult extractDailyIllness(PatientSummaryEntity latestSummary, PatientRawDataEntity rawData) {
+    public DailyIllnessResult extractDailyIllness(PatientRawDataEntity rawData) {
         if (rawData == null) {
-            return new DailyIllnessResult("{}", "{}");
+            return new DailyIllnessResult("{}", null);
         }
-        String baseSummaryJson = latestSummary == null || !StringUtils.hasText(latestSummary.getSummaryJson())
-                ? "{}"
-                : latestSummary.getSummaryJson();
         String rawInputJson = StringUtils.hasText(rawData.getFilterDataJson()) ? rawData.getFilterDataJson() : rawData.getDataJson();
         if (!StringUtils.hasText(rawInputJson)) {
-            return new DailyIllnessResult("{}", baseSummaryJson);
+            return new DailyIllnessResult("{}", null);
         }
 
         JsonNode root = AgentUtils.parseToNode(rawInputJson);
@@ -134,7 +129,6 @@ public class SummaryAgent extends AbstractAgent {
 
         Map<String, Object> structData = new LinkedHashMap<>();
         structData.put("day_context", dayContext);
-        structData.put("daily_fusion", validatedDailyFusionNode);
         structData.put("validation", Map.of(
                 "notes", noteValidationList,
                 "daily_fusion", dailyFusionValidation
@@ -144,8 +138,11 @@ public class SummaryAgent extends AbstractAgent {
         List<Map<String, Object>> timelineAppendEntries = validatedDailyFusionNode.isObject() && validatedDailyFusionNode.size() > 0
                 ? buildDailyFusionTimelineEntries(rawData, validatedDailyFusionNode)
                 : Collections.emptyList();
-        String updatedSummaryJson = appendTimelineEntries(baseSummaryJson, timelineAppendEntries, rawData.getReqno());
-        return new DailyIllnessResult(structDataJson, updatedSummaryJson);
+        String dailySummaryJson = null;
+        if (!timelineAppendEntries.isEmpty()) {
+            dailySummaryJson = AgentUtils.toJson(timelineAppendEntries.get(0));
+        }
+        return new DailyIllnessResult(structDataJson, dailySummaryJson);
     }
 
     private Map<String, Object> buildStandardizedDayFacts(JsonNode rawRoot,
@@ -1207,95 +1204,6 @@ public class SummaryAgent extends AbstractAgent {
         );
     }
 
-    private String trimTimelineForModelInput(String summaryJson, PatientRawDataEntity rawData) {
-        if (!StringUtils.hasText(summaryJson) || summaryJson.length() <= MODEL_TIMELINE_MAX_LENGTH) {
-            return StringUtils.hasText(summaryJson) ? summaryJson : "{}";
-        }
-        JsonNode root = parseJsonQuietly(summaryJson);
-        if (root == null) {
-            return summaryJson.substring(0, MODEL_TIMELINE_MAX_LENGTH);
-        }
-
-        long referenceEpoch = resolveReferenceEpoch(rawData);
-        JsonNode trimmedNode = root.deepCopy();
-        ArrayNode timelineArray = locateTimelineArray(trimmedNode);
-        if (timelineArray == null || timelineArray.size() <= 1) {
-            String raw = toJsonQuietly(trimmedNode);
-            return raw.length() <= MODEL_TIMELINE_MAX_LENGTH ? raw : raw.substring(0, MODEL_TIMELINE_MAX_LENGTH);
-        }
-
-        ArrayNode reduced = trimTimelineArray(timelineArray, referenceEpoch, MODEL_TIMELINE_MAX_LENGTH, trimmedNode);
-        replaceTimelineArray(trimmedNode, reduced);
-        String trimmed = toJsonQuietly(trimmedNode);
-        if (trimmed.length() > MODEL_TIMELINE_MAX_LENGTH) {
-            ArrayNode onlyFirst = objectMapper.createArrayNode();
-            onlyFirst.add(reduced.get(0));
-            replaceTimelineArray(trimmedNode, onlyFirst);
-            trimmed = toJsonQuietly(trimmedNode);
-            if (trimmed.length() > MODEL_TIMELINE_MAX_LENGTH) {
-                return trimmed.substring(0, MODEL_TIMELINE_MAX_LENGTH);
-            }
-        }
-        return trimmed;
-    }
-
-    private ArrayNode trimTimelineArray(ArrayNode original, long referenceEpoch, int maxLength, JsonNode containerNode) {
-        if (original == null || original.size() <= 1) {
-            return original;
-        }
-        JsonNode first = original.get(0);
-        List<JsonNode> candidates = new ArrayList<>();
-        for (int i = 1; i < original.size(); i++) {
-            candidates.add(original.get(i));
-        }
-        while (!candidates.isEmpty()) {
-            ArrayNode current = objectMapper.createArrayNode();
-            current.add(first);
-            candidates.forEach(current::add);
-            replaceTimelineArray(containerNode, current);
-            if (toJsonQuietly(containerNode).length() <= maxLength) {
-                return current;
-            }
-            candidates.sort(Comparator.comparingLong(node ->
-                    -Math.abs(referenceEpoch - extractTimelineEpoch(node))));
-            candidates.remove(0);
-        }
-        ArrayNode onlyFirst = objectMapper.createArrayNode();
-        onlyFirst.add(first);
-        return onlyFirst;
-    }
-
-    private String appendTimelineEntries(String summaryJson, List<Map<String, Object>> timelineAppendEntries, String reqno) {
-        JsonNode root = parseJsonQuietly(summaryJson);
-        ObjectNode container;
-        ArrayNode timeline;
-        if (root == null || root.isNull()) {
-            container = objectMapper.createObjectNode();
-            timeline = container.putArray("timeline");
-        } else if (root.isArray()) {
-            container = objectMapper.createObjectNode();
-            timeline = container.putArray("timeline");
-            root.forEach(timeline::add);
-        } else if (root.isObject()) {
-            container = (ObjectNode) root.deepCopy();
-            timeline = locateTimelineArray(container);
-            if (timeline == null) {
-                timeline = container.putArray("timeline");
-            }
-        } else {
-            container = objectMapper.createObjectNode();
-            timeline = container.putArray("timeline");
-        }
-
-        if (StringUtils.hasText(reqno)) {
-            container.put("reqno", reqno);
-        }
-        for (Map<String, Object> entry : timelineAppendEntries) {
-            timeline.add(objectMapper.valueToTree(entry));
-        }
-        return toJsonQuietly(container);
-    }
-
     private ValidatedLlmResult callWithValidation(PromptDefinition promptDefinition, String inputJson) {
         List<AttemptReport> attempts = new ArrayList<>();
         List<ValidationIssue> issues = Collections.emptyList();
@@ -1678,6 +1586,6 @@ public class SummaryAgent extends AbstractAgent {
         }
     }
 
-    public record DailyIllnessResult(String structDataJson, String updatedSummaryJson) {
+    public record DailyIllnessResult(String structDataJson, String dailySummaryJson) {
     }
 }

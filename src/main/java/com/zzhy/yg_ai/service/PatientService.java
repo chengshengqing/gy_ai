@@ -1,7 +1,6 @@
 package com.zzhy.yg_ai.service;
 
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
@@ -13,8 +12,6 @@ import java.util.List;
 public interface PatientService {
 
     List<String> listActiveReqnos();
-
-    PatientSummaryEntity getLatestSummary(String reqno);
 
     /**
      * 采集患者全量信息并按天入库 patient_raw_data。
@@ -35,16 +32,16 @@ public interface PatientService {
 
     List<PatientRawDataEntity> listPendingEventRawData(String reqno, LocalDate replayFromDate);
 
-    void resetDerivedData(String reqno, LocalDate changedFromDate);
+    void resetDerivedDataForRawData(Long rawDataId);
 
     /**
      * 更新格式化后的结构化 JSON。
      */
-    void saveStructDataJson(Long id, String structDataJson,String eventJson);
+    void saveStructDataJson(Long id, String structDataJson, String eventJson);
 
     void saveEventJson(Long id, String eventJson);
 
-    void saveOrUpdateLatestSummary(PatientSummaryEntity summary);
+    String buildSummaryWindowJson(String reqno, LocalDate anchorDate, int windowDays);
 
     String getInhosdateRaw(String reqno);
 

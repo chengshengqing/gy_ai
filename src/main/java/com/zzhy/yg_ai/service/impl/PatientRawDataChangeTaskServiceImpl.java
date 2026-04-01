@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.config.StructDataFormatProperties;
+import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.enums.PatientRawDataChangeTaskStatus;
 import com.zzhy.yg_ai.mapper.PatientRawDataChangeTaskMapper;
@@ -13,6 +14,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -31,13 +33,16 @@ public class PatientRawDataChangeTaskServiceImpl
         if (patientRawDataId == null || !StringUtils.hasText(reqno) || rawDataLastTime == null) {
             return;
         }
+        if (taskExists(patientRawDataId, rawDataLastTime)) {
+            return;
+        }
         PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
         task.setPatientRawDataId(patientRawDataId);
         task.setReqno(reqno.trim());
         task.setDataDate(dataDate);
         task.setRawDataLastTime(rawDataLastTime);
         task.initForCreate(structDataFormatProperties.getMaxAttempts());
-        this.save(task);
+        saveIfAbsent(task);
     }
 
     @Override
@@ -45,6 +50,7 @@ public class PatientRawDataChangeTaskServiceImpl
         if (tasks == null || tasks.isEmpty()) {
             return;
         }
+        LinkedHashMap<String, PatientRawDataChangeTaskEntity> deduplicated = new LinkedHashMap<>();
         List<PatientRawDataChangeTaskEntity> validTasks = new ArrayList<>();
         for (PatientRawDataChangeTaskEntity task : tasks) {
             if (task == null
@@ -61,10 +67,17 @@ public class PatientRawDataChangeTaskServiceImpl
                     || task.getMaxAttempts() == null) {
                 task.initForCreate(structDataFormatProperties.getMaxAttempts());
             }
-            validTasks.add(task);
+            deduplicated.putIfAbsent(task.getPatientRawDataId() + "|" + task.getRawDataLastTime(), task);
         }
+        validTasks.addAll(deduplicated.values());
         if (!validTasks.isEmpty()) {
-            this.baseMapper.insertBatchWithoutId(validTasks);
+            try {
+                this.baseMapper.insertBatchWithoutId(validTasks);
+            } catch (Exception e) {
+                for (PatientRawDataChangeTaskEntity task : validTasks) {
+                    saveIfAbsent(task);
+                }
+            }
         }
     }
 
@@ -134,11 +147,36 @@ public class PatientRawDataChangeTaskServiceImpl
         markFailed(taskIds, errorMessage, PatientRawDataChangeTaskStatus.EVENT_FAILED.name());
     }
 
+    @Override
+    public int repairMissingStructTasks(List<String> reqnos, LocalDateTime lastTimeFrom, int limit) {
+        int effectiveLimit = limit <= 0 ? Math.max(1, structDataFormatProperties.getBatchSize()) : limit;
+        List<PatientRawDataEntity> missingRows = this.baseMapper.selectMissingStructTaskRawData(reqnos, lastTimeFrom, effectiveLimit);
+        if (missingRows == null || missingRows.isEmpty()) {
+            return 0;
+        }
+        List<PatientRawDataChangeTaskEntity> tasks = new ArrayList<>();
+        for (PatientRawDataEntity row : missingRows) {
+            if (row == null || row.getId() == null || !StringUtils.hasText(row.getReqno()) || row.getLastTime() == null) {
+                continue;
+            }
+            PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
+            task.setPatientRawDataId(row.getId());
+            task.setReqno(row.getReqno().trim());
+            task.setDataDate(row.getDataDate());
+            task.setRawDataLastTime(row.getLastTime());
+            task.initForCreate(structDataFormatProperties.getMaxAttempts());
+            tasks.add(task);
+        }
+        appendChanges(tasks);
+        return tasks.size();
+    }
+
     private List<PatientRawDataChangeTaskEntity> claimPendingTasks(int patientLimit,
                                                                    List<String> statuses,
                                                                    String runningStatus) {
         int batchSize = patientLimit <= 0 ? structDataFormatProperties.getBatchSize() : patientLimit;
         LocalDateTime now = DateTimeUtils.now();
+        reclaimTimedOutRunningTasks(now, statuses, runningStatus);
         List<String> selectedReqnos = this.baseMapper.selectPendingReqnos(statuses, now, batchSize);
         if (selectedReqnos == null || selectedReqnos.isEmpty()) {
             return Collections.emptyList();
@@ -199,6 +237,38 @@ public class PatientRawDataChangeTaskServiceImpl
         return this.list(queryWrapper);
     }
 
+    private void reclaimTimedOutRunningTasks(LocalDateTime now, List<String> pendingStatuses, String runningStatus) {
+        if (now == null || pendingStatuses == null || pendingStatuses.isEmpty() || !StringUtils.hasText(runningStatus)) {
+            return;
+        }
+        String failedStatus = resolveFailedStatus(pendingStatuses);
+        if (!StringUtils.hasText(failedStatus)) {
+            return;
+        }
+        LocalDateTime timeoutAt = now.minusSeconds(Math.max(1, structDataFormatProperties.getRunningTimeoutSeconds()));
+        LambdaUpdateWrapper<PatientRawDataChangeTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.eq(PatientRawDataChangeTaskEntity::getStatus, runningStatus)
+                .isNotNull(PatientRawDataChangeTaskEntity::getLastStartTime)
+                .le(PatientRawDataChangeTaskEntity::getLastStartTime, timeoutAt)
+                .apply("attempt_count < max_attempts")
+                .set(PatientRawDataChangeTaskEntity::getStatus, failedStatus)
+                .set(PatientRawDataChangeTaskEntity::getAvailableAt, now)
+                .set(PatientRawDataChangeTaskEntity::getLastFinishTime, now)
+                .set(PatientRawDataChangeTaskEntity::getLastErrorMessage, "任务运行超时，已回收待重试")
+                .set(PatientRawDataChangeTaskEntity::getUpdateTime, now);
+        this.update(updateWrapper);
+    }
+
+    private String resolveFailedStatus(List<String> pendingStatuses) {
+        for (String status : pendingStatuses) {
+            if (PatientRawDataChangeTaskStatus.STRUCT_FAILED.name().equals(status)
+                    || PatientRawDataChangeTaskStatus.EVENT_FAILED.name().equals(status)) {
+                return status;
+            }
+        }
+        return null;
+    }
+
     private void markFailed(List<Long> taskIds, String errorMessage, String failedStatus) {
         if (taskIds == null || taskIds.isEmpty()) {
             return;
@@ -213,5 +283,30 @@ public class PatientRawDataChangeTaskServiceImpl
                 .set(PatientRawDataChangeTaskEntity::getLastErrorMessage, errorMessage)
                 .set(PatientRawDataChangeTaskEntity::getUpdateTime, now);
         this.update(updateWrapper);
+    }
+
+    private boolean taskExists(Long rawDataId, LocalDateTime rawDataLastTime) {
+        if (rawDataId == null || rawDataLastTime == null) {
+            return false;
+        }
+        return this.count(new LambdaQueryWrapper<PatientRawDataChangeTaskEntity>()
+                .eq(PatientRawDataChangeTaskEntity::getPatientRawDataId, rawDataId)
+                .eq(PatientRawDataChangeTaskEntity::getRawDataLastTime, rawDataLastTime)) > 0;
+    }
+
+    private void saveIfAbsent(PatientRawDataChangeTaskEntity task) {
+        if (task == null || task.getPatientRawDataId() == null || task.getRawDataLastTime() == null) {
+            return;
+        }
+        if (taskExists(task.getPatientRawDataId(), task.getRawDataLastTime())) {
+            return;
+        }
+        try {
+            this.save(task);
+        } catch (Exception e) {
+            if (!taskExists(task.getPatientRawDataId(), task.getRawDataLastTime())) {
+                throw e;
+            }
+        }
     }
 }

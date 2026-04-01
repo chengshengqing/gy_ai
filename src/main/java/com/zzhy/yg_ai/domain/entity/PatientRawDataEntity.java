@@ -45,7 +45,7 @@ public class PatientRawDataEntity {
      */
     private String structDataJson;
     /**
-     * LLM提取的事件JSON
+     * LLM生成的单日时间轴摘要 JSON
      */
     private String eventJson;
     /**

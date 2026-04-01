@@ -10,6 +10,13 @@ import java.util.List;
 public class PatientTimelineViewData {
 
     private String reqno = "";
+    @JsonProperty("page_no")
+    private int pageNo = 1;
+    @JsonProperty("page_size")
+    private int pageSize = 10;
+    private long total;
+    @JsonProperty("has_more")
+    private boolean hasMore;
 
     private List<TimelineItem> items = new ArrayList<>();
 

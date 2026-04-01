@@ -68,6 +68,7 @@ infection:
     worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:8}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}
+    running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
     recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:30}
     debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
     debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
@@ -77,6 +78,7 @@ infection:
     worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:8}
     max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:300}
+    running-timeout-seconds: ${YG_AI_FORMAT_RUNNING_TIMEOUT_SECONDS:1800}
 
 logging:
   level:
