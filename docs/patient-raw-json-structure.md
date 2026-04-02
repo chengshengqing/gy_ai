@@ -283,6 +283,9 @@
   "lab_results": {},
   "imaging": [],
   "doctor_orders": {},
+  "use_medicine": [],
+  "transfer": [],
+  "operation": [],
   "clinical_notes": [],
   "pat_illnessCourse": []
 }
@@ -293,6 +296,7 @@
 - `filter_data_json` 是规则处理后的事实块
 - 当前是下游摘要、预警链路的主输入之一
 - 体征和检验已做结构压缩，但保留正常与异常信息
+- 用药、转科、手术信息当前也会进入 `filter_data_json`，但以 compact 事实块形式保存，不再直接暴露原始 `pat_*` 结构
 
 ### 4.2 顶层字段说明
 
@@ -445,6 +449,83 @@
 
 - 只保留医嘱名称列表，不保留原始时间、备注等字段
 
+#### `use_medicine`
+
+```json
+[
+  {
+    "medication_name": "头孢哌酮舒巴坦",
+    "category": "抗菌药物",
+    "route": "静滴",
+    "dose": "2.0",
+    "unit": "g",
+    "frequency": "q12h",
+    "start_time": "yyyy-MM-dd HH:mm",
+    "end_time": "string",
+    "purpose": "抗感染",
+    "order_type": "长期"
+  }
+]
+```
+
+说明：
+
+- 来源于 `pat_useMedicine`
+- 仅保留药名、分类、给药途径、剂量、频次、起止时间、用药目的、医嘱类型等高价值字段
+- `start_time` 优先取 `beginTime`，为空时回退 `zxsj`
+
+#### `transfer`
+
+```json
+[
+  {
+    "transfer_time": "yyyy-MM-dd HH:mm",
+    "from_department": "急诊科",
+    "to_department": "呼吸与危重症医学科"
+  }
+]
+```
+
+说明：
+
+- 来源于 `pat_transfer`
+- 仅保留转科时间、转出科室、转入科室
+- `transfer_time` 取自 `indeptdate`
+
+#### `operation`
+
+```json
+[
+  {
+    "operation_name": "剖宫产术",
+    "operation_time": "yyyy-MM-dd HH:mm",
+    "operation_end_time": "string",
+    "cut_type": "II类切口",
+    "anesthesia_mode": "腰硬联合麻醉",
+    "pre_ward_medicines": [
+      {
+        "medication_name": "头孢唑啉",
+        "dose": "1.0g",
+        "start_time": "yyyy-MM-dd HH:mm"
+      }
+    ],
+    "perioperative_medicines": [
+      {
+        "medication_name": "头孢唑啉",
+        "dose": "1.0g",
+        "start_time": "yyyy-MM-dd HH:mm"
+      }
+    ]
+  }
+]
+```
+
+说明：
+
+- 来源于 `pat_opsCutInfor`
+- 保留手术名称、开始结束时间、切口类型、麻醉方式
+- 术前用药和围术期用药会被压缩为药名、剂量、开始时间三个字段
+
 #### `clinical_notes`
 
 ```json
@@ -493,7 +574,7 @@
 - 面向 LLM 与规则消费
 - 保留正常值和异常值
 - 删除对推理价值较低的冗余字段
-- 对体征、检验做轻量结构压缩，降低 token 长度
+- 对体征、检验、用药、转科、手术做轻量结构压缩，降低 token 长度
 
 ## 6. 给 Codex 的推荐引用方式
 

@@ -52,7 +52,7 @@
 - `data_json`
   只保存原始采集块，包含 `pat_diagInfor`、`pat_bodySurface`、`pat_doctorAdvice_*`、`pat_illnessCourse`、`pat_testSam`、`pat_useMedicine`、`pat_videoResult`、`pat_transfer`、`pat_opsCutInfor`、`pat_test`
 - `filter_data_json`
-  保存规则处理后的事实块，当前包含 `patient_info`、`diagnosis`、`vital_signs`、`lab_results`、`imaging`、`doctor_orders`、`clinical_notes`、过滤后的 `pat_illnessCourse`
+  保存规则处理后的事实块，当前包含 `patient_info`、`diagnosis`、`vital_signs`、`lab_results`、`imaging`、`doctor_orders`、`use_medicine`、`transfer`、`operation`、`clinical_notes`、过滤后的 `pat_illnessCourse`
 - `struct_data_json`
   保存单日结构化中间结果，不再重复存放单日摘要内容
 - `event_json`

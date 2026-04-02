@@ -1049,6 +1049,9 @@ public class PatientServiceImpl implements PatientService {
                     buildDoctorOrders(dailyData.getLongDoctorAdviceList(),
                             dailyData.getTemporaryDoctorAdviceList(),
                             dailyData.getSgDoctorAdviceList()));
+            filtered.put("use_medicine", buildUseMedicine(dailyData.getPatUseMedicineList()));
+            filtered.put("transfer", buildTransfers(dailyData.getPatTransferList()));
+            filtered.put("operation", buildOperations(dailyData.getPatOpsCutInforList()));
             List<PatientCourseData.PatIllnessCourse> filteredIllnessCourseList =
                     filterIllnessCourseList(dailyData.getPatIllnessCourseList(), firstCourse);
             filtered.put("clinical_notes", buildClinicalNotes(filteredIllnessCourseList));
@@ -1095,8 +1098,14 @@ public class PatientServiceImpl implements PatientService {
                             readList(rawRoot, "pat_test", new TypeReference<List<PatientCourseData.PatTest>>() {}))));
                     case VIDEO_RESULT -> filterRoot.set("imaging", objectMapper.valueToTree(buildImaging(
                             readList(rawRoot, "pat_videoResult", new TypeReference<List<PatientCourseData.PatVideoResult>>() {}))));
-                    case FULL_PATIENT, USE_MEDICINE, TRANSFER, OPERATION -> {
-                        // filter_data_json 当前不直接暴露这些原始块
+                    case USE_MEDICINE -> filterRoot.set("use_medicine", objectMapper.valueToTree(buildUseMedicine(
+                            readList(rawRoot, "pat_useMedicine", new TypeReference<List<PatientCourseData.PatUseMedicine>>() {}))));
+                    case TRANSFER -> filterRoot.set("transfer", objectMapper.valueToTree(buildTransfers(
+                            readList(rawRoot, "pat_transfer", new TypeReference<List<PatientCourseData.PatTransfer>>() {}))));
+                    case OPERATION -> filterRoot.set("operation", objectMapper.valueToTree(buildOperations(
+                            readList(rawRoot, "pat_opsCutInfor", new TypeReference<List<PatientCourseData.PatOpsCutInfor>>() {}))));
+                    case FULL_PATIENT -> {
+                        // patient_info remains managed by full rebuild path
                     }
                 }
             }
@@ -1126,6 +1135,12 @@ public class PatientServiceImpl implements PatientService {
                     readList(rawRoot, "pat_doctorAdvice_long", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
                     readList(rawRoot, "pat_doctorAdvice_temporary", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {}),
                     readList(rawRoot, "pat_doctorAdvice_sg", new TypeReference<List<PatientCourseData.PatDoctorAdvice>>() {})));
+            filtered.put("use_medicine", buildUseMedicine(
+                    readList(rawRoot, "pat_useMedicine", new TypeReference<List<PatientCourseData.PatUseMedicine>>() {})));
+            filtered.put("transfer", buildTransfers(
+                    readList(rawRoot, "pat_transfer", new TypeReference<List<PatientCourseData.PatTransfer>>() {})));
+            filtered.put("operation", buildOperations(
+                    readList(rawRoot, "pat_opsCutInfor", new TypeReference<List<PatientCourseData.PatOpsCutInfor>>() {})));
             List<PatientCourseData.PatIllnessCourse> filteredIllnessCourseList = filterIllnessCourseList(
                     readList(rawRoot, "pat_illnessCourse", new TypeReference<List<PatientCourseData.PatIllnessCourse>>() {}),
                     firstCourse
@@ -1475,6 +1490,140 @@ public class PatientServiceImpl implements PatientService {
         doctorOrders.put("temporary", extractOrderNameList(temporaryDoctorAdviceList));
         doctorOrders.put("sg", extractOrderNameList(sgDoctorAdviceList));
         return doctorOrders;
+    }
+
+    private List<Map<String, Object>> buildUseMedicine(List<PatientCourseData.PatUseMedicine> useMedicineList) {
+        List<Map<String, Object>> medications = new ArrayList<>();
+        for (PatientCourseData.PatUseMedicine useMedicine : nonNullList(useMedicineList)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            if (useMedicine == null) {
+                continue;
+            }
+            if (StringUtils.hasText(useMedicine.getMediName())) {
+                item.put("medication_name", useMedicine.getMediName());
+            }
+            if (StringUtils.hasText(useMedicine.getMedCalss())) {
+                item.put("category", useMedicine.getMedCalss());
+            }
+            if (StringUtils.hasText(useMedicine.getMediPath())) {
+                item.put("route", useMedicine.getMediPath());
+            }
+            if (StringUtils.hasText(useMedicine.getMediNum())) {
+                item.put("dose", useMedicine.getMediNum());
+            }
+            if (StringUtils.hasText(useMedicine.getUnit())) {
+                item.put("unit", useMedicine.getUnit());
+            }
+            if (StringUtils.hasText(useMedicine.getFrequency())) {
+                item.put("frequency", useMedicine.getFrequency());
+            }
+            String startTime = firstNonBlank(
+                    formatDateTime(useMedicine.getBeginTime(), "yyyy-MM-dd HH:mm"),
+                    useMedicine.getZxsj()
+            );
+            if (StringUtils.hasText(startTime)) {
+                item.put("start_time", startTime);
+            }
+            if (StringUtils.hasText(useMedicine.getEndTime())) {
+                item.put("end_time", useMedicine.getEndTime());
+            }
+            if (StringUtils.hasText(useMedicine.getMediAim())) {
+                item.put("purpose", useMedicine.getMediAim());
+            }
+            if (StringUtils.hasText(useMedicine.getDocadvtype())) {
+                item.put("order_type", useMedicine.getDocadvtype());
+            }
+            if (!item.isEmpty()) {
+                medications.add(item);
+            }
+        }
+        return medications;
+    }
+
+    private List<Map<String, Object>> buildTransfers(List<PatientCourseData.PatTransfer> transferList) {
+        List<Map<String, Object>> transfers = new ArrayList<>();
+        for (PatientCourseData.PatTransfer transfer : nonNullList(transferList)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            if (transfer == null) {
+                continue;
+            }
+            String transferTime = formatDateTime(transfer.getIndeptdate(), "yyyy-MM-dd HH:mm");
+            if (StringUtils.hasText(transferTime)) {
+                item.put("transfer_time", transferTime);
+            }
+            if (StringUtils.hasText(transfer.getOutdeptname())) {
+                item.put("from_department", transfer.getOutdeptname());
+            }
+            if (StringUtils.hasText(transfer.getIndeptname())) {
+                item.put("to_department", transfer.getIndeptname());
+            }
+            if (!item.isEmpty()) {
+                transfers.add(item);
+            }
+        }
+        return transfers;
+    }
+
+    private List<Map<String, Object>> buildOperations(List<PatientCourseData.PatOpsCutInfor> opsList) {
+        List<Map<String, Object>> operations = new ArrayList<>();
+        for (PatientCourseData.PatOpsCutInfor ops : nonNullList(opsList)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            if (ops == null) {
+                continue;
+            }
+            if (StringUtils.hasText(ops.getOpsName())) {
+                item.put("operation_name", ops.getOpsName());
+            }
+            String operationTime = formatDateTime(ops.getBegTime(), "yyyy-MM-dd HH:mm");
+            if (StringUtils.hasText(operationTime)) {
+                item.put("operation_time", operationTime);
+            }
+            if (StringUtils.hasText(ops.getEndTime())) {
+                item.put("operation_end_time", ops.getEndTime());
+            }
+            if (StringUtils.hasText(ops.getCutType())) {
+                item.put("cut_type", ops.getCutType());
+            }
+            if (StringUtils.hasText(ops.getHocusMode())) {
+                item.put("anesthesia_mode", ops.getHocusMode());
+            }
+            List<Map<String, Object>> preWardMedicines = buildOperationMedicines(ops.getPreWardMedicineList());
+            if (!preWardMedicines.isEmpty()) {
+                item.put("pre_ward_medicines", preWardMedicines);
+            }
+            List<Map<String, Object>> perioperativeMedicines = buildOperationMedicines(ops.getPerioperativeMedicineList());
+            if (!perioperativeMedicines.isEmpty()) {
+                item.put("perioperative_medicines", perioperativeMedicines);
+            }
+            if (!item.isEmpty()) {
+                operations.add(item);
+            }
+        }
+        return operations;
+    }
+
+    private List<Map<String, Object>> buildOperationMedicines(List<PatientCourseData.OpsMedicine> medicineList) {
+        List<Map<String, Object>> medicines = new ArrayList<>();
+        for (PatientCourseData.OpsMedicine medicine : nonNullList(medicineList)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            if (medicine == null) {
+                continue;
+            }
+            if (StringUtils.hasText(medicine.getMediName())) {
+                item.put("medication_name", medicine.getMediName());
+            }
+            if (StringUtils.hasText(medicine.getDosage())) {
+                item.put("dose", medicine.getDosage());
+            }
+            String beginTime = formatDateTime(medicine.getBeginTime(), "yyyy-MM-dd HH:mm");
+            if (StringUtils.hasText(beginTime)) {
+                item.put("start_time", beginTime);
+            }
+            if (!item.isEmpty()) {
+                medicines.add(item);
+            }
+        }
+        return medicines;
     }
 
     private List<String> buildClinicalNotes(List<PatientCourseData.PatIllnessCourse> illnessCourseList) {
