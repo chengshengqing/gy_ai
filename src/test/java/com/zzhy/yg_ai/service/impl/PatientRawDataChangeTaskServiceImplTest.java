@@ -110,6 +110,6 @@ class PatientRawDataChangeTaskServiceImplTest {
         assertEquals(1L, claimed.get(0).getId());
         assertEquals(2L, claimed.get(1).getId());
         verify(serviceSpy, times(2)).list(any(LambdaQueryWrapper.class));
-        verify(serviceSpy).update(any(LambdaUpdateWrapper.class));
+        verify(serviceSpy, times(2)).update(any(LambdaUpdateWrapper.class));
     }
 }

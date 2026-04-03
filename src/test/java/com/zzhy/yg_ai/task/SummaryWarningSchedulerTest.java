@@ -1,5 +1,6 @@
 package com.zzhy.yg_ai.task;
 
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,12 +31,12 @@ class SummaryWarningSchedulerTest {
     }
 
     @Test
-    void processPendingEventTasksLogsSkipWhenNoTaskExists() {
+    void processPendingEventTasksDoesNotPersistSkipLogWhenNoTaskExists() {
         when(infectionPipeline.processPendingEventData()).thenReturn(0);
 
         scheduler.processPendingEventTasks();
 
-        verify(infectionDailyJobLogService).log(
+        verify(infectionDailyJobLogService, never()).log(
                 InfectionJobStage.LLM,
                 InfectionJobStatus.SKIP,
                 null,
@@ -58,16 +59,16 @@ class SummaryWarningSchedulerTest {
     }
 
     @Test
-    void processPendingEventTasksLogsErrorWhenPipelineThrows() {
-        when(infectionPipeline.processPendingEventData()).thenThrow(new RuntimeException("llm failed"));
+    void processPendingCaseTasksLogsSuccessWhenTasksProcessed() {
+        when(infectionPipeline.processPendingCaseData()).thenReturn(1);
 
-        scheduler.processPendingEventTasks();
+        scheduler.processPendingCaseTasks();
 
         verify(infectionDailyJobLogService).log(
-                InfectionJobStage.LLM,
-                InfectionJobStatus.ERROR,
+                InfectionJobStage.FINALIZE,
+                InfectionJobStatus.SUCCESS,
                 null,
-                "事件抽取定时任务执行失败: llm failed"
+                "processedCount=1"
         );
     }
 }

@@ -107,13 +107,14 @@
 - 记录每次被新增或修改的 `patient_raw_data` 行
 - 以 `patient_raw_data_id + raw_data_last_time` 形式向下游发布变更信号
 - 作为结构化摘要链路的直接消费任务表
-- 作为事件抽取链路的直接消费任务表
+- 不再承担事件抽取链路的直接消费
 
 当前关键字段：
 
 - `patient_raw_data_id`
 - `reqno`
 - `data_date`
+- `source_batch_time`
 - `status`
 - `attempt_count`
 - `max_attempts`
@@ -129,17 +130,58 @@
 
 - 原始采集层与下游消费者的解耦桥梁
 - 当前结构化摘要已经消费这张表，而不是直接耦合采集流程
-- 后续预警或扩展任务也应优先考虑消费这张表，或沿着同类 outbox / task 模式继续扩展
+- 事件抽取链路已经从这张表剥离，改为消费 `infection_event_task`
 
 当前实现补充：
 
-- 采集阶段只负责写 `patient_raw_data` 与追加 `patient_raw_data_change_task`
-- 结构化阶段与事件阶段均 claim 这张表
+- 采集阶段会写 `patient_raw_data` 并追加 `patient_raw_data_change_task`
+- 结构化阶段 claim 这张表
 - 对同一患者本轮 claim 到的变更行，先校验 `raw_data_last_time` 是否仍与 `patient_raw_data.last_time` 一致
 - 仅处理仍然有效的单日变更行，不再做“从最早变更日开始”的整段重放
 - 结构化调度前会巡检最近窗口的 `patient_raw_data`，补建 `appendChanges()` 漏掉的任务
 
-## 2.4 `ai_process_log`
+## 2.4 `infection_event_task`
+
+角色：
+
+- 预警主链路任务表
+
+当前职责：
+
+- 承载 `EVENT_EXTRACT` 任务
+- 承载 `CASE_RECOMPUTE` 任务
+- 将事件抽取与结构化链路彻底解耦
+
+当前关键字段：
+
+- `task_type`
+- `status`
+- `reqno`
+- `patient_raw_data_id`
+- `data_date`
+- `raw_data_last_time`
+- `source_batch_time`
+- `changed_types`
+- `trigger_reason_codes`
+- `priority`
+- `merge_key`
+- `attempt_count`
+- `max_attempts`
+- `available_at`
+- `last_start_time`
+- `last_finish_time`
+- `last_error_message`
+- `create_time`
+- `update_time`
+
+当前实现补充：
+
+- `EVENT_EXTRACT` 的 `merge_key` 使用 `patient_raw_data_id + raw_data_last_time`
+- `CASE_RECOMPUTE` 的 `merge_key` 使用 `reqno + time_bucket`
+- 候选层不再额外调用 LLM，只按变更来源写入 `trigger_reason_codes`
+- `ILLNESS_COURSE` 新增会直接路由到 `EVENT_EXTRACT`
+
+## 2.5 `ai_process_log`
 
 角色：
 
@@ -155,7 +197,7 @@
 - 院感预警后续会有更多节点类型
 - 需要更细粒度的运行记录
 
-## 2.5 `items_infor_zhq`
+## 2.6 `items_infor_zhq`
 
 角色：
 
@@ -198,8 +240,9 @@ infection_llm_node_run
 
 - `patient_raw_data_collect_task`
 - `patient_raw_data_change_task`
+- `infection_event_task`
 
-这 2 张表属于当前采集与下游处理的任务层，不纳入院感预警核心结果表统计。
+这 3 张表属于当前采集与下游处理的任务层，不纳入院感预警核心结果表统计。
 
 - `infection_event_pool`
 - `infection_llm_node_run`

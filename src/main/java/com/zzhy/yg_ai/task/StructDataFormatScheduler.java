@@ -37,10 +37,6 @@ public class StructDataFormatScheduler {
             repairMissingStructTasks();
             int formattedCount = infectionPipeline.processPendingStructData();
             if (formattedCount <= 0) {
-                infectionDailyJobLogService.log(InfectionJobStage.NORMALIZE,
-                        InfectionJobStatus.SKIP,
-                        null,
-                        "本轮无待处理结构化任务");
                 return;
             }
             log.info("结构化格式化定时任务完成，formattedCount={}", formattedCount);
@@ -64,7 +60,7 @@ public class StructDataFormatScheduler {
         }
         int repaired = patientRawDataChangeTaskService.repairMissingStructTasks(
                 reqnos,
-                LocalDateTime.now().minusDays(90),
+                LocalDateTime.now().minusDays(14),
                 Math.max(20, reqnos.size() * 2));
         if (repaired > 0) {
             log.warn("补建缺失结构化任务完成，repaired={}", repaired);

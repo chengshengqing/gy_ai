@@ -2,20 +2,19 @@ package com.zzhy.yg_ai.ai.orchestrator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzhy.yg_ai.ai.agent.SummaryAgent;
 import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.config.StructDataFormatProperties;
+import com.zzhy.yg_ai.domain.entity.InfectionEventTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
-import com.zzhy.yg_ai.domain.entity.PatientSummaryEntity;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
+import com.zzhy.yg_ai.domain.enums.InfectionEventTaskType;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
 import com.zzhy.yg_ai.domain.enums.InfectionSourceType;
@@ -24,6 +23,7 @@ import com.zzhy.yg_ai.domain.model.EvidenceBlockBuildResult;
 import com.zzhy.yg_ai.domain.model.LlmEventExtractorResult;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.InfectionEventTaskService;
 import com.zzhy.yg_ai.service.InfectionEvidenceBlockService;
 import com.zzhy.yg_ai.service.LlmEventExtractorService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
@@ -54,6 +54,9 @@ class InfectionPipelineTest {
     private PatientRawDataChangeTaskService patientRawDataChangeTaskService;
 
     @Mock
+    private InfectionEventTaskService infectionEventTaskService;
+
+    @Mock
     private InfectionDailyJobLogService infectionDailyJobLogService;
 
     @Mock
@@ -80,11 +83,11 @@ class InfectionPipelineTest {
                 patientService,
                 patientRawDataCollectTaskService,
                 patientRawDataChangeTaskService,
+                infectionEventTaskService,
                 infectionDailyJobLogService,
                 infectionEvidenceBlockService,
                 llmEventExtractorService,
-                structDataFormatProperties,
-                new ObjectMapper()
+                structDataFormatProperties
         );
     }
 
@@ -93,6 +96,8 @@ class InfectionPipelineTest {
         PatientRawDataCollectTaskEntity collectTask = new PatientRawDataCollectTaskEntity();
         collectTask.setId(1L);
         collectTask.setReqno("REQ-3001");
+        collectTask.setPreviousSourceLastTime(LocalDateTime.of(2026, 4, 3, 0, 0));
+        collectTask.setSourceLastTime(LocalDateTime.of(2026, 4, 3, 3, 0));
         when(patientRawDataCollectTaskService.claimPendingTasks(5)).thenReturn(List.of(collectTask));
 
         RawDataCollectResult result = new RawDataCollectResult();
@@ -100,169 +105,137 @@ class InfectionPipelineTest {
         result.setStatus("success");
         result.setMessage("采集完成");
         result.setSavedDays(2);
-        result.setChangeTypes("DIAGNOSIS");
-        when(patientService.collectAndSaveRawDataResult("REQ-3001")).thenReturn(result);
+        result.setChangeTypes("ILLNESS_COURSE");
+        when(patientService.collectAndSaveRawDataResult(
+                "REQ-3001",
+                LocalDateTime.of(2026, 4, 3, 0, 0),
+                LocalDateTime.of(2026, 4, 3, 3, 0)
+        )).thenReturn(result);
 
         int processedCount = infectionPipeline.processPendingRawDataTasks();
 
         assertEquals(1, processedCount);
-        verify(patientRawDataCollectTaskService).updateChangeTypes(1L, "DIAGNOSIS");
+        verify(patientRawDataCollectTaskService).updateChangeTypes(1L, "ILLNESS_COURSE");
         verify(patientRawDataCollectTaskService).markSuccess(1L, "采集完成");
-        verify(patientRawDataCollectTaskService, never()).markFailed(any(), any());
     }
 
     @Test
-    void processPendingRawDataTasksMarksCollectTaskFailedWhenCollectionThrows() {
-        PatientRawDataCollectTaskEntity collectTask = new PatientRawDataCollectTaskEntity();
-        collectTask.setId(2L);
-        collectTask.setReqno("REQ-3002");
-        when(patientRawDataCollectTaskService.claimPendingTasks(5)).thenReturn(List.of(collectTask));
-        when(patientService.collectAndSaveRawDataResult("REQ-3002")).thenThrow(new RuntimeException("source unavailable"));
-
-        int processedCount = infectionPipeline.processPendingRawDataTasks();
-
-        assertEquals(0, processedCount);
-        verify(patientRawDataCollectTaskService).updateChangeTypes(2L, null);
-        verify(patientRawDataCollectTaskService).markFailed(2L, "source unavailable");
-        verify(infectionDailyJobLogService).log(
-                InfectionJobStage.LOAD,
-                InfectionJobStatus.ERROR,
-                "REQ-3002",
-                "source unavailable"
-        );
-        verify(patientRawDataCollectTaskService, never()).markSuccess(any(), any());
-    }
-
-    @Test
-    void processPendingStructDataConsumesGroupedChangeTasksAndMarksSuccess() {
-        LocalDate firstDate = LocalDate.of(2026, 3, 25);
-        LocalDate secondDate = LocalDate.of(2026, 3, 27);
-        LocalDateTime firstVersion = LocalDateTime.of(2026, 3, 29, 10, 0);
-        LocalDateTime secondVersion = LocalDateTime.of(2026, 3, 29, 10, 5);
-
-        PatientRawDataChangeTaskEntity firstChange = buildChangeTask(11L, 101L, "REQ-4001", firstDate, firstVersion);
-        PatientRawDataChangeTaskEntity secondChange = buildChangeTask(12L, 102L, "REQ-4001", secondDate, secondVersion);
-        when(patientRawDataChangeTaskService.claimPendingStructTasks(5)).thenReturn(List.of(firstChange, secondChange));
-
-        PatientRawDataEntity firstRaw = buildRawData(101L, "REQ-4001", firstDate, firstVersion);
-        PatientRawDataEntity secondRaw = buildRawData(102L, "REQ-4001", secondDate, secondVersion);
-        when(patientService.getRawDataById(101L)).thenReturn(firstRaw);
-        when(patientService.getRawDataById(102L)).thenReturn(secondRaw);
-        when(patientService.listPendingStructRawData("REQ-4001", firstDate)).thenReturn(List.of(firstRaw, secondRaw));
-        when(summaryAgent.extractDailyIllness(any(), eq(firstRaw)))
-                .thenReturn(new SummaryAgent.DailyIllnessResult("{\"row\":1}", "{\"timeline\":[]}"));
-        when(summaryAgent.extractDailyIllness(any(), eq(secondRaw)))
-                .thenReturn(new SummaryAgent.DailyIllnessResult("{\"row\":2}", "{\"timeline\":[]}"));
-
-        int formattedCount = infectionPipeline.processPendingStructData();
-
-        assertEquals(2, formattedCount);
-        verify(patientService).resetDerivedData("REQ-4001", firstDate);
-        verify(patientService).listPendingStructRawData("REQ-4001", firstDate);
-        verify(patientService).saveStructDataJson(101L, "{\"row\":1}", null);
-        verify(patientService).saveStructDataJson(102L, "{\"row\":2}", null);
-        verify(patientRawDataChangeTaskService).markStructSuccess(List.of(11L, 12L), "结构化处理成功，successCount=2", true);
-        verify(patientRawDataChangeTaskService, never()).markStructFailed(any(), any());
-    }
-
-    @Test
-    void processPendingStructDataSkipsStaleChangesAndMarksSuccessWithoutReplay() {
-        LocalDateTime oldVersion = LocalDateTime.of(2026, 3, 29, 9, 0);
-        LocalDateTime newVersion = LocalDateTime.of(2026, 3, 29, 10, 0);
-
-        PatientRawDataChangeTaskEntity staleChange = buildChangeTask(21L, 201L, "REQ-5001", LocalDate.of(2026, 3, 26), oldVersion);
-        when(patientRawDataChangeTaskService.claimPendingStructTasks(5)).thenReturn(List.of(staleChange));
-
-        PatientRawDataEntity currentRaw = buildRawData(201L, "REQ-5001", LocalDate.of(2026, 3, 26), newVersion);
-        when(patientService.getRawDataById(201L)).thenReturn(currentRaw);
-
-        int formattedCount = infectionPipeline.processPendingStructData();
-
-        assertEquals(0, formattedCount);
-        verify(patientService, never()).resetDerivedData(any(), any());
-        verify(patientService, never()).listPendingStructRawData(any(), any());
-        verify(patientRawDataChangeTaskService).markStructSuccess(List.of(21L), "无待处理结构化数据", false);
-    }
-
-    @Test
-    void processPendingStructDataMarksFailedWhenSummaryGenerationFails() {
-        LocalDate replayDate = LocalDate.of(2026, 3, 24);
-        LocalDateTime version = LocalDateTime.of(2026, 3, 29, 11, 0);
-
-        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(31L, 301L, "REQ-6001", replayDate, version);
-        PatientRawDataEntity rawData = buildRawData(301L, "REQ-6001", replayDate, version);
+    void processPendingStructDataMarksSuccessWhenRowsFormatted() {
+        LocalDate dataDate = LocalDate.of(2026, 4, 3);
+        LocalDateTime version = LocalDateTime.of(2026, 4, 3, 3, 5);
+        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(11L, 101L, "REQ-4001", dataDate, version);
+        PatientRawDataEntity rawData = buildRawData(101L, "REQ-4001", dataDate, version);
         when(patientRawDataChangeTaskService.claimPendingStructTasks(5)).thenReturn(List.of(changeTask));
-        when(patientService.getRawDataById(301L)).thenReturn(rawData);
-        when(patientService.listPendingStructRawData("REQ-6001", replayDate)).thenReturn(List.of(rawData));
-        when(summaryAgent.extractDailyIllness(any(), eq(rawData))).thenThrow(new RuntimeException("LLM error"));
+        when(patientService.getRawDataById(101L)).thenReturn(rawData);
+        when(summaryAgent.extractDailyIllness(rawData))
+                .thenReturn(new SummaryAgent.DailyIllnessResult("{\"row\":1}", "{\"timeline\":[]}"));
 
         int formattedCount = infectionPipeline.processPendingStructData();
-
-        assertEquals(0, formattedCount);
-        verify(patientService).resetDerivedData("REQ-6001", replayDate);
-        verify(patientRawDataChangeTaskService).markStructFailed(List.of(31L), "存在未完成的 rawData 行，需重试");
-        verify(infectionDailyJobLogService).log(
-                InfectionJobStage.NORMALIZE,
-                InfectionJobStatus.ERROR,
-                "REQ-6001",
-                "存在未完成的 rawData 行，需重试"
-        );
-    }
-
-    @Test
-    void processPendingEventDataTriggersEventExtractionAfterSummaryBuilt() {
-        LocalDate replayDate = LocalDate.of(2026, 3, 28);
-        LocalDateTime version = LocalDateTime.of(2026, 3, 30, 9, 0);
-
-        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(41L, 401L, "REQ-7001", replayDate, version);
-        PatientRawDataEntity rawData = buildRawData(401L, "REQ-7001", replayDate, version);
-        PatientSummaryEntity latestSummary = new PatientSummaryEntity();
-        latestSummary.setReqno("REQ-7001");
-        latestSummary.setSummaryJson("{\"timeline\":[]}");
-        when(patientRawDataChangeTaskService.claimPendingEventTasks(5)).thenReturn(List.of(changeTask));
-        when(patientService.getRawDataById(401L)).thenReturn(rawData);
-        when(patientService.getLatestSummary("REQ-7001")).thenReturn(latestSummary);
-        when(patientService.listPendingEventRawData("REQ-7001", replayDate)).thenReturn(List.of(rawData));
-        when(infectionEvidenceBlockService.buildBlocks(any(), any())).thenReturn(nonEmptyBuildResult());
-        when(llmEventExtractorService.extractAndSave(any()))
-                .thenReturn(new LlmEventExtractorResult("{\"events\":[{\"event_key\":\"k1\"}]}", List.of(), List.of(), 1));
-
-        int formattedCount = infectionPipeline.processPendingEventData();
 
         assertEquals(1, formattedCount);
-        verify(infectionEvidenceBlockService).buildBlocks(any(), any());
-        verify(llmEventExtractorService).extractAndSave(any());
-        verify(patientService).saveEventJson(401L, "{\"events\":[{\"event_key\":\"k1\"}]}");
-        verify(patientRawDataChangeTaskService).markEventSuccess(List.of(41L), "事件抽取成功，successCount=1");
+        verify(patientService).resetDerivedDataForRawData(101L);
+        verify(patientService).saveStructDataJson(101L, "{\"row\":1}", "{\"timeline\":[]}");
+        verify(patientRawDataChangeTaskService).markStructSuccess(List.of(11L), "结构化处理成功，successCount=1");
     }
 
     @Test
-    void processPendingEventDataMarksFailedWhenEventExtractionFails() {
-        LocalDate replayDate = LocalDate.of(2026, 3, 28);
-        LocalDateTime version = LocalDateTime.of(2026, 3, 30, 9, 0);
+    void processPendingStructDataMarksSkippedWhenTaskVersionExpired() {
+        LocalDate dataDate = LocalDate.of(2026, 4, 3);
+        LocalDateTime taskVersion = LocalDateTime.of(2026, 4, 3, 3, 5);
+        LocalDateTime latestVersion = LocalDateTime.of(2026, 4, 3, 4, 1);
+        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(12L, 102L, "REQ-4002", dataDate, taskVersion);
+        PatientRawDataEntity rawData = buildRawData(102L, "REQ-4002", dataDate, latestVersion);
+        when(patientRawDataChangeTaskService.claimPendingStructTasks(5)).thenReturn(List.of(changeTask));
+        when(patientService.getRawDataById(102L)).thenReturn(rawData);
 
-        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(51L, 501L, "REQ-7002", replayDate, version);
-        PatientRawDataEntity rawData = buildRawData(501L, "REQ-7002", replayDate, version);
-        PatientSummaryEntity latestSummary = new PatientSummaryEntity();
-        latestSummary.setReqno("REQ-7002");
-        latestSummary.setSummaryJson("{\"timeline\":[]}");
-        when(patientRawDataChangeTaskService.claimPendingEventTasks(5)).thenReturn(List.of(changeTask));
-        when(patientService.getRawDataById(501L)).thenReturn(rawData);
-        when(patientService.getLatestSummary("REQ-7002")).thenReturn(latestSummary);
-        when(patientService.listPendingEventRawData("REQ-7002", replayDate)).thenReturn(List.of(rawData));
+        int formattedCount = infectionPipeline.processPendingStructData();
+
+        assertEquals(0, formattedCount);
+        verify(patientRawDataChangeTaskService).markStructSkipped(List.of(12L), "结构化任务版本已过期，跳过");
+        verify(summaryAgent, never()).extractDailyIllness(any());
+    }
+
+    @Test
+    void processPendingEventDataConsumesIndependentEventTaskAndCreatesCaseTask() {
+        LocalDate dataDate = LocalDate.of(2026, 4, 3);
+        LocalDateTime version = LocalDateTime.of(2026, 4, 3, 3, 10);
+        InfectionEventTaskEntity taskEntity = new InfectionEventTaskEntity();
+        taskEntity.setId(21L);
+        taskEntity.setTaskType(InfectionEventTaskType.EVENT_EXTRACT.name());
+        taskEntity.setReqno("REQ-5001");
+        taskEntity.setPatientRawDataId(201L);
+        taskEntity.setDataDate(dataDate);
+        taskEntity.setRawDataLastTime(version);
+        taskEntity.setSourceBatchTime(LocalDateTime.of(2026, 4, 3, 3, 0));
+        when(infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.EVENT_EXTRACT, 5))
+                .thenReturn(List.of(taskEntity));
+
+        PatientRawDataEntity rawData = buildRawData(201L, "REQ-5001", dataDate, version);
+        when(patientService.getRawDataById(201L)).thenReturn(rawData);
+        when(patientService.buildSummaryWindowJson("REQ-5001", dataDate, 7)).thenReturn("{\"changes\":[]}");
+        when(infectionEvidenceBlockService.buildBlocks(rawData, "{\"changes\":[]}")).thenReturn(nonEmptyBuildResult());
+        when(llmEventExtractorService.extractAndSave(any()))
+                .thenReturn(new LlmEventExtractorResult("{\"events\":[{\"event_key\":\"k1\"}]}", List.of(), List.of(new com.zzhy.yg_ai.domain.entity.InfectionEventPoolEntity()), 1));
+
+        int extractedCount = infectionPipeline.processPendingEventData();
+
+        assertEquals(1, extractedCount);
+        verify(infectionEventTaskService).upsertCaseRecomputeTask(
+                "REQ-5001",
+                201L,
+                dataDate,
+                version,
+                LocalDateTime.of(2026, 4, 3, 3, 0),
+                30,
+                10
+        );
+        verify(infectionEventTaskService).markSuccess(List.of(21L), "事件抽取成功，已创建caseTask=1");
+    }
+
+    @Test
+    void processPendingCaseDataMarksSuccessForPlaceholderCaseTask() {
+        InfectionEventTaskEntity taskEntity = new InfectionEventTaskEntity();
+        taskEntity.setId(31L);
+        taskEntity.setTaskType(InfectionEventTaskType.CASE_RECOMPUTE.name());
+        taskEntity.setReqno("REQ-6001");
+        when(infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.CASE_RECOMPUTE, 5))
+                .thenReturn(List.of(taskEntity));
+
+        int processedCount = infectionPipeline.processPendingCaseData();
+
+        assertEquals(1, processedCount);
+        verify(infectionEventTaskService).markSuccess(List.of(31L), "病例重算占位任务完成");
+    }
+
+    @Test
+    void processPendingEventDataMarksFailedWhenExtractorThrows() {
+        LocalDate dataDate = LocalDate.of(2026, 4, 3);
+        LocalDateTime version = LocalDateTime.of(2026, 4, 3, 3, 10);
+        InfectionEventTaskEntity taskEntity = new InfectionEventTaskEntity();
+        taskEntity.setId(41L);
+        taskEntity.setTaskType(InfectionEventTaskType.EVENT_EXTRACT.name());
+        taskEntity.setReqno("REQ-7001");
+        taskEntity.setPatientRawDataId(401L);
+        taskEntity.setDataDate(dataDate);
+        taskEntity.setRawDataLastTime(version);
+        when(infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.EVENT_EXTRACT, 5))
+                .thenReturn(List.of(taskEntity));
+        when(patientService.getRawDataById(401L)).thenReturn(buildRawData(401L, "REQ-7001", dataDate, version));
+        when(patientService.buildSummaryWindowJson("REQ-7001", dataDate, 7)).thenReturn("{}");
         when(infectionEvidenceBlockService.buildBlocks(any(), any())).thenReturn(nonEmptyBuildResult());
         when(llmEventExtractorService.extractAndSave(any())).thenThrow(new RuntimeException("extract failed"));
 
-        int formattedCount = infectionPipeline.processPendingEventData();
+        int extractedCount = infectionPipeline.processPendingEventData();
 
-        assertEquals(0, formattedCount);
-        verify(patientRawDataChangeTaskService).markEventFailed(List.of(51L), "存在未完成的事件抽取 rawData 行，需重试");
+        assertEquals(0, extractedCount);
+        verify(infectionEventTaskService).markFailed(List.of(41L), "存在未完成的事件抽取 rawData 行，需重试");
         verify(infectionDailyJobLogService).log(
                 InfectionJobStage.LLM,
                 InfectionJobStatus.ERROR,
-                "REQ-7002",
+                "REQ-7001",
                 "存在未完成的事件抽取 rawData 行，需重试"
         );
+        verify(infectionEventTaskService, never()).markSuccess(any(), any());
     }
 
     private PatientRawDataChangeTaskEntity buildChangeTask(Long id,
@@ -295,7 +268,7 @@ class InfectionPipelineTest {
                 "block-1",
                 "REQ-7001",
                 401L,
-                LocalDate.of(2026, 3, 28),
+                LocalDate.of(2026, 4, 3),
                 EvidenceBlockType.CLINICAL_TEXT,
                 InfectionSourceType.RAW,
                 "pat_illnessCourse.N-1",

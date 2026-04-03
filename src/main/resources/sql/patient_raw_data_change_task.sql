@@ -9,6 +9,7 @@ BEGIN
         attempt_count INT NOT NULL DEFAULT 0,
         max_attempts INT NOT NULL DEFAULT 5,
         raw_data_last_time DATETIME NOT NULL,
+        source_batch_time DATETIME NULL,
         available_at DATETIME NOT NULL DEFAULT GETDATE(),
         last_start_time DATETIME NULL,
         last_finish_time DATETIME NULL,
@@ -77,5 +78,11 @@ GO
 IF COL_LENGTH('dbo.patient_raw_data_change_task', 'update_time') IS NULL
 BEGIN
     ALTER TABLE dbo.patient_raw_data_change_task ADD update_time DATETIME NOT NULL DEFAULT GETDATE();
+END
+GO
+
+IF COL_LENGTH('dbo.patient_raw_data_change_task', 'source_batch_time') IS NULL
+BEGIN
+    ALTER TABLE dbo.patient_raw_data_change_task ADD source_batch_time DATETIME NULL;
 END
 GO

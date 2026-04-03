@@ -38,7 +38,9 @@
 - `patient_raw_data.event_json` 保存单日时间轴摘要
 - 时间线展示直接分页读取 `patient_raw_data.event_json`
 - 事件抽取上下文通过公共方法按 `reqno + anchorDate` 查询最近 7 天窗口 JSON
-- `patient_raw_data_change_task` 是结构化与事件抽取的唯一待处理入口
+- `patient_raw_data_change_task` 只负责结构化链路
+- `infection_event_task` 负责事件抽取与病例重算链路
+- `enqueuePendingPatients()` 已切换为按上游批次时间推进，而不是每轮按当前时间强制重扫
 - 结构化调度前会巡检并补建 `appendChanges()` 漏掉的 change task
 
 下一阶段主任务：
@@ -61,63 +63,66 @@
                          v
       +---------------------------------------------+
       | InfectionMonitorScheduler                   |
-      | 1. 扫描入队  2. 执行采集任务                   |
+      | 1. 按 source_batch_time 扫描入队              |
+      | 2. 执行采集任务                               |
       +----------------------+----------------------+
                              |
-           +-----------------+-----------------+
-           |                                   |
-           v                                   v
-  +--------+----------------+        +---------+----------+
-  | patient_raw_data_       |        | InfectionPipeline  |
-  | collect_task            |        | 原始采集任务消费入口   |
-  +--------+----------------+        +---------+----------+
-                                                    |
-                                                    v
-                                         +----------+-----------+
-                                         |   PatientService     |
-                                         | 原始数据查询与按天组装 |
-                                         +----------+-----------+
-                                                    |
-                                                    v
-                                         +----------+-----------+
-                                         |  patient_raw_data    |
-                                         | 原始每日快照落库       |
-                                         +----------+-----------+
-                                                    |
-                                                    v
-                                         +----------+-----------+
-                                         | patient_raw_data_    |
-                                         | change_task          |
-                                         +----------+-----------+
-                                                    |
-                              +---------------------+---------------------+
-                              |                                           |
-                              v                                           v
-                 +------------+------------+                 +------------+------------+
-                 | 当前摘要任务消费者         |                 | 未来预警/扩展任务消费者    |
-                 | normalize consumer       |                 | event/snapshot/...     |
-                 | claim by reqno           |                 |                         |
-                 +------------+------------+                 +------------+------------+
-                              |
-                              v
-                 +------------+------------+
-                 |      SummaryAgent       |
-                 | 单日 struct / event     |
-                 +------------+------------+
-                              |
-                              v
-                 +------------+------------+
-                 |    patient_raw_data     |
-                 | struct_data_json        |
-                 | event_json              |
-                 +------------+------------+
-                              |
-                              v
-                 +------------+------------+
-                 | TimelineViewService     |
-                 +------------+------------+
-                              |
-                              v
+                             v
+                 +-----------+------------+
+                 | patient_raw_data_      |
+                 | collect_task           |
+                 +-----------+------------+
+                             |
+                             v
+                 +-----------+------------+
+                 | InfectionPipeline      |
+                 | processPendingRawData  |
+                 +-----------+------------+
+                             |
+                             v
+                 +-----------+------------+
+                 | PatientService         |
+                 | 原始数据查询与按天组装   |
+                 +-----------+------------+
+                             |
+                             v
+                 +-----------+------------+
+                 | patient_raw_data       |
+                 | 原始每日快照落库         |
+                 +-----------+------------+
+                             |
+              +--------------+---------------+
+              |                              |
+              v                              v
+  +-----------+------------+    +------------+-----------+
+  | patient_raw_data_      |    | infection_event_task   |
+  | change_task            |    | EVENT_EXTRACT / CASE   |
+  | 仅结构化链路             |    | 仅预警链路              |
+  +-----------+------------+    +------------+-----------+
+              |                              |
+              v                              v
+  +-----------+------------+    +------------+-----------+
+  | StructDataFormat       |    | SummaryWarning         |
+  | Scheduler              |    | Scheduler              |
+  +-----------+------------+    +------------+-----------+
+              |                              |
+              v                              v
+  +-----------+------------+    +------------+-----------+
+  | SummaryAgent           |    | LlmEventExtractor      |
+  | 单日 struct / event    |    | EventNormalizer        |
+  +-----------+------------+    +------------+-----------+
+              |                              |
+              v                              v
+  +-----------+------------+    +------------+-----------+
+  | patient_raw_data       |    | infection_event_pool   |
+  | struct_data_json       |    | infection_llm_node_run |
+  | event_json             |    +------------+-----------+
+  +-----------+------------+                 |
+              |                              v
+              v                  +-----------+------------+
+  +-----------+------------+     | CASE_RECOMPUTE 占位任务 |
+  | TimelineViewService    |     | 后续接法官节点           |
+  +------------------------+     +------------------------+
                  +------------+------------+
                  | REST API / Static UI    |
                  +-------------------------+
@@ -400,26 +405,30 @@ patient_raw_data
 
 执行过程：
 
-1. 查询待处理患者 `reqno`
-2. 将 `reqno` 写入 `patient_raw_data_collect_task`
-3. 采集执行任务 claim 原始采集任务
-4. `PatientServiceImpl.collectAndSaveRawDataResult(reqno)` 识别：
+1. 从上游表读取本轮 `source_batch_time`
+2. 若 `source_batch_time` 未超过已入队批次，则跳过本轮扫描
+3. 查询待处理患者 `reqno`
+4. 将 `reqno + previousSourceLastTime + sourceBatchTime` 写入 `patient_raw_data_collect_task`
+5. 采集执行任务 claim 原始采集任务
+6. `PatientServiceImpl.collectAndSaveRawDataResult(reqno, previousSourceLastTime, sourceBatchTime)` 识别：
    - 是否为新患者
-   - 上次成功采集时间
+   - 上一批次时间
    - 本轮 `changedTypes`
-5. 按查询类型读取业务源表：
+7. 按查询类型读取业务源表：
    - 新患者：`PatientCourseDataType.fullSnapshot()`
    - 已有患者：按 `changedTypes` 定向查询
-6. 将结果按天分组
-7. 原始块写入 `patient_raw_data.data_json`
-8. 规则处理结果写入 `patient_raw_data.filter_data_json`
-9. 更新 `patient_raw_data.last_time`
-10. 将变更的 `patient_raw_data.id + last_time` 写入 `patient_raw_data_change_task`
+8. 将结果按天分组
+9. 原始块写入 `patient_raw_data.data_json`
+10. 规则处理结果写入 `patient_raw_data.filter_data_json`
+11. 更新 `patient_raw_data.last_time`
+12. 为每条变更快照写入 `patient_raw_data_change_task`
+13. 若 `changedTypes` 命中事件来源规则，则同时写入 `infection_event_task(EVENT_EXTRACT)`
 
 架构特征：
 
 - 采用“源库读取 + 本地中间表缓存”的模式
 - 原始采集与下游摘要已解耦
+- 原始采集与预警主链路、结构化链路通过两张任务表并行解耦
 - 为后续 LLM、预警和扩展任务提供统一事实输入
 - 数据输入模型属于每日定时增量拉取
 - 新患者限制为最近 30 天入院
@@ -451,11 +460,50 @@ patient_raw_data
 
 - 摘要采用增量构建，而不是每次整份重算
 - 摘要调度已经完全建立在 `patient_raw_data_change_task` 上
-- 原始采集与摘要消费之间通过变更任务表解耦
+- 结构化链路与事件链路已经分离，结构化不再阻塞预警主链路
 - `pat_illnessCourse` 的过滤规则已经前移到采集落库阶段
 - 时间线在落库前会按时间排序
 
-### 5.3 时间线展示链路
+### 5.3 事件抽取链路
+
+触发入口：
+
+- `SummaryWarningScheduler.processPendingEventTasks()`
+
+执行过程：
+
+1. claim `infection_event_task` 中 `task_type=EVENT_EXTRACT` 的任务
+2. 按 `patient_raw_data_id + raw_data_last_time` 读取最新有效快照
+3. 调用 `PatientService.buildSummaryWindowJson(reqno, dataDate, 7)` 生成最近窗口上下文
+4. 调用 `InfectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson)` 构建证据块
+5. 调用 `LlmEventExtractorService.extractAndSave(buildResult)` 完成事件抽取、规范化与事件池写入
+6. 若本轮产生新的事件池结果，则合并写入 `infection_event_task(CASE_RECOMPUTE)`
+7. 当前 `EVENT_EXTRACT` 任务标记为 `SUCCESS / FAILED / SKIPPED`
+
+架构特征：
+
+- 事件链路由 `infection_event_task` 独立承载
+- 候选层不额外调用 LLM，只按变更来源路由到事件抽取
+- `ILLNESS_COURSE` 一旦新增，直接进入事件抽取任务
+- 结构化数据是事件抽取的增强背景，而不是前置阻塞条件
+### 5.4 病例重算链路
+
+触发入口：
+
+- `SummaryWarningScheduler.processPendingCaseTasks()`
+
+执行过程：
+
+1. claim `infection_event_task` 中 `task_type=CASE_RECOMPUTE` 的任务
+2. 当前实现先以占位任务形式记录病例级重算入口
+3. 后续会在该节点接入法官节点、快照更新和结果版本输出
+
+当前状态：
+
+- 任务表与调度入口已落地
+- 法官节点尚未接入，当前只保留占位执行与重试框架
+
+### 5.5 时间线展示链路
 
 触发入口：
 
@@ -479,7 +527,7 @@ patient_raw_data
 - 展示模型与存储模型解耦
 - 对前端暴露的是稳定视图对象，而不是原始摘要 JSON
 
-### 5.4 症候群监测链路
+### 5.6 症候群监测链路
 
 触发入口：
 
@@ -499,7 +547,7 @@ patient_raw_data
 - 这条链路和主时间线链路基本并行
 - 当前更接近“独立分析任务”，尚未完全并入统一院感编排
 
-### 5.5 下一阶段院感预警分析链路
+### 5.7 下一阶段院感预警分析链路
 
 这是下一阶段的主开发任务。
 

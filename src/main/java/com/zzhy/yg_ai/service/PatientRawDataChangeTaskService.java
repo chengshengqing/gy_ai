@@ -8,21 +8,21 @@ import java.util.List;
 
 public interface PatientRawDataChangeTaskService extends IService<PatientRawDataChangeTaskEntity> {
 
-    void appendChange(Long patientRawDataId, String reqno, LocalDate dataDate, LocalDateTime rawDataLastTime);
+    void appendChange(Long patientRawDataId,
+                      String reqno,
+                      LocalDate dataDate,
+                      LocalDateTime rawDataLastTime,
+                      LocalDateTime sourceBatchTime);
 
     void appendChanges(List<PatientRawDataChangeTaskEntity> tasks);
 
     List<PatientRawDataChangeTaskEntity> claimPendingStructTasks(int patientLimit);
 
-    void markStructSuccess(List<Long> taskIds, String message, boolean eventPending);
+    void markStructSuccess(List<Long> taskIds, String message);
+
+    void markStructSkipped(List<Long> taskIds, String message);
 
     void markStructFailed(List<Long> taskIds, String errorMessage);
-
-    List<PatientRawDataChangeTaskEntity> claimPendingEventTasks(int patientLimit);
-
-    void markEventSuccess(List<Long> taskIds, String message);
-
-    void markEventFailed(List<Long> taskIds, String errorMessage);
 
     int repairMissingStructTasks(List<String> reqnos, LocalDateTime lastTimeFrom, int limit);
 }

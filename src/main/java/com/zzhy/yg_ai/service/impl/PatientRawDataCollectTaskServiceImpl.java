@@ -37,6 +37,7 @@ public class PatientRawDataCollectTaskServiceImpl
             if (existing == null) {
                 PatientRawDataCollectTaskEntity task = new PatientRawDataCollectTaskEntity();
                 task.setReqno(reqno.trim());
+                task.setPreviousSourceLastTime(null);
                 task.setSourceLastTime(sourceLastTime);
                 task.setChangeTypes(null);
                 task.initForCreate(infectionMonitorProperties.getMaxAttempts());
@@ -54,6 +55,7 @@ public class PatientRawDataCollectTaskServiceImpl
             LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
             LocalDateTime now = DateTimeUtils.now();
             updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, existing.getId())
+                    .set(PatientRawDataCollectTaskEntity::getPreviousSourceLastTime, existing.getSourceLastTime())
                     .set(PatientRawDataCollectTaskEntity::getSourceLastTime, sourceLastTime)
                     .set(PatientRawDataCollectTaskEntity::getChangeTypes, null)
                     .set(PatientRawDataCollectTaskEntity::getUpdateTime, now)
@@ -71,6 +73,16 @@ public class PatientRawDataCollectTaskServiceImpl
             }
         }
         return enqueued;
+    }
+
+    @Override
+    public LocalDateTime getLatestSourceLastTime() {
+        PatientRawDataCollectTaskEntity latest = this.lambdaQuery()
+                .isNotNull(PatientRawDataCollectTaskEntity::getSourceLastTime)
+                .orderByDesc(PatientRawDataCollectTaskEntity::getSourceLastTime)
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY")
+                .one();
+        return latest == null ? null : latest.getSourceLastTime();
     }
 
     @Override

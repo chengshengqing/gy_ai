@@ -251,21 +251,24 @@ yg_ai/
 
 处理过程：
 
-1. 通过 `PatientService.listActiveReqnos()` 获取患者列表
-2. 将 `reqno` 写入 `patient_raw_data_collect_task`
-3. `InfectionPipeline.processPendingRawDataTasks()` claim 原始采集任务
-4. `PatientServiceImpl.collectAndSaveRawDataResult(reqno)` 识别新患者、增量患者和 `changedTypes`
-5. 按查询类型读取业务源表并按天聚合
-6. 原始块写入 `patient_raw_data.data_json`
-7. 规则处理结果写入 `patient_raw_data.filter_data_json`
-8. 更新 `patient_raw_data.last_time`
-9. 将变更行写入 `patient_raw_data_change_task`
+1. 调度入口先读取上游 `source_batch_time`
+2. 若批次未推进，则跳过本轮扫描
+3. 通过 `PatientService.listActiveReqnos()` 获取患者列表
+4. 将 `reqno + previousSourceLastTime + sourceBatchTime` 写入 `patient_raw_data_collect_task`
+5. `InfectionPipeline.processPendingRawDataTasks()` claim 原始采集任务
+6. `PatientServiceImpl.collectAndSaveRawDataResult(reqno, previousSourceLastTime, sourceBatchTime)` 识别新患者、增量患者和 `changedTypes`
+7. 按查询类型读取业务源表并按天聚合
+8. 原始块写入 `patient_raw_data.data_json`
+9. 规则处理结果写入 `patient_raw_data.filter_data_json`
+10. 更新 `patient_raw_data.last_time`
+11. 将变更行写入 `patient_raw_data_change_task`
+12. 若命中事件来源规则，则同时写入 `infection_event_task(EVENT_EXTRACT)`
 
 说明：
 
 - 新患者限制为最近 30 天入院。
 - 增量患者候选识别依赖各业务表 `last_time`，且要求 `patient_raw_data` 中已存在对应 `reqno`。
-- 原始采集与下游摘要链已经完成解耦。
+- 原始采集完成后会双写两类下游任务：结构化任务与事件任务。
 
 ### 5.2 结构化摘要链路
 
@@ -289,6 +292,29 @@ yg_ai/
 
 - `pat_illnessCourse` 的过滤规则已经前移到原始采集落库阶段
 - 当前摘要链已经切换为消费 `patient_raw_data_change_task`
+- 结构化链与事件链不再共用一张任务表
+
+### 5.3 事件抽取链路
+
+入口：
+
+- `SummaryWarningScheduler.processPendingEventTasks()`
+
+处理过程：
+
+1. `InfectionPipeline.processPendingEventData()` claim `infection_event_task` 中 `task_type=EVENT_EXTRACT` 的任务
+2. 校验任务版本，只处理 `raw_data_last_time == patient_raw_data.last_time` 的有效快照
+3. 调用 `PatientService.buildSummaryWindowJson(reqno, dataDate, 7)`
+4. 调用 `InfectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson)`
+5. 调用 `LlmEventExtractorService.extractAndSave(buildResult)`
+6. 如产生新的事件池结果，则追加 `infection_event_task(CASE_RECOMPUTE)`
+7. 事件任务标记为 `SUCCESS / FAILED / SKIPPED`
+
+说明：
+
+- 候选层不使用 LLM 做二次判断
+- `ILLNESS_COURSE` 新增会直接进入事件抽取任务
+- `CASE_RECOMPUTE` 已有任务表与调度骨架，法官节点尚未接入
 
 ### 5.3 时间线展示链路
 

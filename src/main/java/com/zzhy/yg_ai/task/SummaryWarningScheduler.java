@@ -26,10 +26,6 @@ public class SummaryWarningScheduler {
         try {
             int extractedCount = infectionPipeline.processPendingEventData();
             if (extractedCount <= 0) {
-                infectionDailyJobLogService.log(InfectionJobStage.LLM,
-                        InfectionJobStatus.SKIP,
-                        null,
-                        "本轮无待处理事件任务");
                 return;
             }
             log.info("事件抽取定时任务完成，extractedCount={}", extractedCount);
@@ -43,6 +39,27 @@ public class SummaryWarningScheduler {
                     InfectionJobStatus.ERROR,
                     null,
                     "事件抽取定时任务执行失败: " + e.getMessage());
+        }
+    }
+
+    @Scheduled(fixedDelayString = "${infection.warning.case-fixed-delay:${infection.warning.fixed-delay:60000}}")
+    public void processPendingCaseTasks() {
+        try {
+            int processedCount = infectionPipeline.processPendingCaseData();
+            if (processedCount <= 0) {
+                return;
+            }
+            log.info("病例重算定时任务完成，processedCount={}", processedCount);
+            infectionDailyJobLogService.log(InfectionJobStage.FINALIZE,
+                    InfectionJobStatus.SUCCESS,
+                    null,
+                    "processedCount=" + processedCount);
+        } catch (Exception e) {
+            log.error("病例重算定时任务执行失败", e);
+            infectionDailyJobLogService.log(InfectionJobStage.FINALIZE,
+                    InfectionJobStatus.ERROR,
+                    null,
+                    "病例重算定时任务执行失败: " + e.getMessage());
         }
     }
 }

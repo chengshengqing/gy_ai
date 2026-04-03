@@ -6,6 +6,7 @@ BEGIN
         status VARCHAR(32) NOT NULL,
         attempt_count INT NOT NULL DEFAULT 0,
         max_attempts INT NOT NULL DEFAULT 5,
+        previous_source_last_time DATETIME NULL,
         source_last_time DATETIME NULL,
         change_types VARCHAR(256) NULL,
         available_at DATETIME NOT NULL DEFAULT GETDATE(),
@@ -26,5 +27,12 @@ IF COL_LENGTH('dbo.patient_raw_data_collect_task', 'change_types') IS NULL
 BEGIN
     ALTER TABLE dbo.patient_raw_data_collect_task
         ADD change_types VARCHAR(256) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.patient_raw_data_collect_task', 'previous_source_last_time') IS NULL
+BEGIN
+    ALTER TABLE dbo.patient_raw_data_collect_task
+        ADD previous_source_last_time DATETIME NULL;
 END
 GO

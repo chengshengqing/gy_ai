@@ -6,6 +6,7 @@ import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.PatientRawDataCollectTaskService;
 import com.zzhy.yg_ai.service.PatientService;
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -34,18 +35,28 @@ public class InfectionMonitorScheduler {
     public void enqueuePendingPatients() {
         try {
             reclaimTimedOutCollectTasks("采集扫描");
+            LocalDateTime sourceBatchTime = patientService.getLatestSourceBatchTime();
+            LocalDateTime latestEnqueuedBatchTime = patientRawDataCollectTaskService.getLatestSourceLastTime();
+            if (sourceBatchTime == null) {
+                log.info("院感采集扫描任务本轮未获取到上游批次时间");
+                return;
+            }
+            if (latestEnqueuedBatchTime != null && !sourceBatchTime.isAfter(latestEnqueuedBatchTime)) {
+                log.debug("院感采集扫描任务跳过，sourceBatchTime={} 未超过 latestEnqueuedBatchTime={}",
+                        sourceBatchTime, latestEnqueuedBatchTime);
+                return;
+            }
             List<String> reqnos = patientService.listActiveReqnos();
             if (reqnos == null || reqnos.isEmpty()) {
                 log.info("院感采集扫描任务本轮无患者");
-                infectionDailyJobLogService.log(InfectionJobStage.LOAD, InfectionJobStatus.SKIP, null, "采集扫描阶段无可入队患者");
                 return;
             }
-            int enqueuedCount = infectionPipeline.enqueueRawDataTasks(reqnos);
-            log.info("院感采集扫描任务结束，patients={}, enqueuedCount={}", reqnos.size(), enqueuedCount);
+            int enqueuedCount = infectionPipeline.enqueueRawDataTasks(reqnos, sourceBatchTime);
+            log.info("院感采集扫描任务结束，sourceBatchTime={}, patients={}, enqueuedCount={}", sourceBatchTime, reqnos.size(), enqueuedCount);
             infectionDailyJobLogService.log(InfectionJobStage.LOAD,
                     InfectionJobStatus.SUCCESS,
                     null,
-                    "scanPatients=" + reqnos.size() + ", enqueued=" + enqueuedCount);
+                    "sourceBatchTime=" + sourceBatchTime + ", scanPatients=" + reqnos.size() + ", enqueued=" + enqueuedCount);
         } catch (Exception e) {
             log.error("院感采集扫描任务执行失败", e);
             infectionDailyJobLogService.log(InfectionJobStage.LOAD,
@@ -61,10 +72,6 @@ public class InfectionMonitorScheduler {
             reclaimTimedOutCollectTasks("采集执行");
             int processedCount = infectionPipeline.processPendingRawDataTasks();
             if (processedCount <= 0) {
-                infectionDailyJobLogService.log(InfectionJobStage.LOAD,
-                        InfectionJobStatus.SKIP,
-                        null,
-                        "采集执行阶段无待处理任务");
                 return;
             }
             log.info("院感采集执行任务结束，processedCount={}", processedCount);

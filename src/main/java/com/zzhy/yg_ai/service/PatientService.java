@@ -13,6 +13,8 @@ public interface PatientService {
 
     List<String> listActiveReqnos();
 
+    LocalDateTime getLatestSourceBatchTime();
+
     /**
      * 采集患者全量信息并按天入库 patient_raw_data。
      *
@@ -22,6 +24,10 @@ public interface PatientService {
     String collectAndSaveRawData(String reqno);
 
     RawDataCollectResult collectAndSaveRawDataResult(String reqno);
+
+    RawDataCollectResult collectAndSaveRawDataResult(String reqno,
+                                                     LocalDateTime previousSourceLastTime,
+                                                     LocalDateTime sourceBatchTime);
 
     PatientRawDataEntity getRawDataById(Long id);
 

@@ -4,25 +4,33 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.zzhy.yg_ai.common.DateTimeUtils;
+import com.zzhy.yg_ai.domain.enums.InfectionEventTaskStatus;
 import java.io.Serializable;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.Data;
 
 @Data
-@TableName("patient_raw_data_collect_task")
-public class PatientRawDataCollectTaskEntity implements Serializable {
+@TableName("infection_event_task")
+public class InfectionEventTaskEntity implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
     @TableId(type = IdType.AUTO)
     private Long id;
-    private String reqno;
+    private String taskType;
     private String status;
+    private String reqno;
+    private Long patientRawDataId;
+    private LocalDate dataDate;
+    private LocalDateTime rawDataLastTime;
+    private LocalDateTime sourceBatchTime;
+    private String changedTypes;
+    private String triggerReasonCodes;
+    private Integer priority;
+    private String mergeKey;
     private Integer attemptCount;
     private Integer maxAttempts;
-    private LocalDateTime previousSourceLastTime;
-    private LocalDateTime sourceLastTime;
-    private String changeTypes;
     private LocalDateTime availableAt;
     private LocalDateTime lastStartTime;
     private LocalDateTime lastFinishTime;
@@ -32,9 +40,10 @@ public class PatientRawDataCollectTaskEntity implements Serializable {
 
     public void initForCreate(int maxAttempts) {
         LocalDateTime now = DateTimeUtils.now();
-        this.status = "PENDING";
+        this.status = InfectionEventTaskStatus.PENDING.name();
         this.attemptCount = 0;
         this.maxAttempts = maxAttempts;
+        this.priority = this.priority == null ? 100 : this.priority;
         this.availableAt = now;
         this.createTime = now;
         this.updateTime = now;

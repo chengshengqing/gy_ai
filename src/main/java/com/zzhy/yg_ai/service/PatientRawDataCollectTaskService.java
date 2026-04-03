@@ -11,6 +11,8 @@ public interface PatientRawDataCollectTaskService extends IService<PatientRawDat
 
     List<PatientRawDataCollectTaskEntity> claimPendingTasks(int limit);
 
+    LocalDateTime getLatestSourceLastTime();
+
     int reclaimTimedOutRunningTasks();
 
     void markSuccess(Long taskId, String message);

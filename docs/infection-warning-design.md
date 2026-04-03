@@ -774,7 +774,8 @@ Refinement 完成后：
 当前代码中的一层事件抽取链路已经落成，实际顺序如下：
 
 ```text
-InfectionPipeline.processPendingEventData
+SummaryWarningScheduler.processPendingEventTasks
+    -> claim infection_event_task(EVENT_EXTRACT)
     -> PatientService.buildSummaryWindowJson(reqno, dataDate, 7)
     -> InfectionEvidenceBlockService.buildBlocks(rawData, summaryWindowJson)
         -> TimelineContextBlockBuilder
@@ -786,6 +787,7 @@ InfectionPipeline.processPendingEventData
         -> 对 primaryBlocks 逐块调用 WarningAgent
         -> EventNormalizer.normalize
         -> InfectionEventPoolService.saveNormalizedEvents
+    -> 如有新增事件，追加 infection_event_task(CASE_RECOMPUTE)
 ```
 
 各节点职责如下：
@@ -828,6 +830,8 @@ InfectionPipeline.processPendingEventData
 说明：
 
 - 当前链路属于“一层轻抽取层”
+- 当前候选层不使用 LLM 做是否入队判断
+- `ILLNESS_COURSE` 新增会直接进入 `EVENT_EXTRACT`
 - 第二层 LLM 法官/归因节点不在本链路内
 - 第二层用于做院感成立、医院获得性归因、跨事件综合裁决
 

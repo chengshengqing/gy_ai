@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,13 +15,14 @@ import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import com.zzhy.yg_ai.domain.enums.InfectionEventTriggerReasonCode;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
-import com.zzhy.yg_ai.mapper.PatientSummaryMapper;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.InfectionEventTaskService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
-import java.time.LocalDate;
+import com.zzhy.yg_ai.service.SummaryContextCacheService;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
@@ -40,16 +40,19 @@ class PatientServiceImplTest {
     private PatientRawDataMapper patientRawDataMapper;
 
     @Mock
-    private PatientSummaryMapper patientSummaryMapper;
-
-    @Mock
     private FilterTextUtils filterTextUtils;
 
     @Mock
     private InfectionDailyJobLogService infectionDailyJobLogService;
 
     @Mock
+    private InfectionEventTaskService infectionEventTaskService;
+
+    @Mock
     private PatientRawDataChangeTaskService patientRawDataChangeTaskService;
+
+    @Mock
+    private SummaryContextCacheService summaryContextCacheService;
 
     private PatientServiceImpl patientService;
 
@@ -58,51 +61,56 @@ class PatientServiceImplTest {
         InfectionMonitorProperties infectionMonitorProperties = new InfectionMonitorProperties();
         patientService = new PatientServiceImpl(
                 patientRawDataMapper,
-                patientSummaryMapper,
                 new ObjectMapper(),
                 filterTextUtils,
                 infectionMonitorProperties,
                 infectionDailyJobLogService,
-                patientRawDataChangeTaskService
+                infectionEventTaskService,
+                patientRawDataChangeTaskService,
+                summaryContextCacheService
         );
     }
 
     @Test
-    void listActiveReqnosUsesLatestLoadSuccessTimeAndNormalizesValues() {
+    void listActiveReqnosUsesLatestLoadSuccessTimeAndRetainsCurrentReqnoFilter() {
         LocalDateTime latestLoadSuccessTime = LocalDateTime.of(2026, 3, 29, 9, 0);
         when(infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD)).thenReturn(latestLoadSuccessTime);
         when(patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, 30, 200))
-                .thenReturn(List.of(" REQ-1 ", "", "REQ-2", "REQ-1", "   "));
+                .thenReturn(List.of("260300011", "REQ-2"));
 
         List<String> reqnos = patientService.listActiveReqnos();
 
-        assertEquals(List.of("REQ-1", "REQ-2"), reqnos);
+        assertEquals(List.of("260300011"), reqnos);
         verify(patientRawDataMapper).selectActiveReqnos(latestLoadSuccessTime, 30, 200);
     }
 
     @Test
-    void collectAndSaveRawDataResultForNewPatientInsertsRawDataAndAppendsChangeTasks() {
+    void collectAndSaveRawDataResultForNewPatientInsertsRawDataAndCreatesBothTaskTypes() {
         String reqno = "REQ-1001";
-        LocalDateTime loadSuccessTime = LocalDateTime.of(2026, 3, 29, 8, 0);
-        LocalDateTime inhosday = LocalDateTime.of(2026, 3, 28, 10, 30);
+        LocalDateTime sourceBatchTime = LocalDateTime.of(2026, 4, 3, 3, 0);
+        LocalDateTime inhosday = LocalDateTime.of(2026, 4, 2, 10, 30);
         PatientCourseData.PatInfor patInfor = new PatientCourseData.PatInfor();
         patInfor.setReqno(reqno);
         patInfor.setInhosday(inhosday);
         patInfor.setDisname("肺炎");
         patInfor.setAge("65");
 
+        PatientCourseData.PatIllnessCourse illnessCourse = new PatientCourseData.PatIllnessCourse();
+        illnessCourse.setIllnesscontent("今日发热，考虑感染");
+
         when(patientRawDataMapper.selectCount(any(QueryWrapper.class))).thenReturn(0L);
-        when(infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD)).thenReturn(loadSuccessTime);
+        when(infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD)).thenReturn(LocalDateTime.of(2026, 4, 3, 0, 0));
         when(patientRawDataMapper.selectPatInfor(reqno)).thenReturn(patInfor);
         when(patientRawDataMapper.selectOne(any(QueryWrapper.class))).thenReturn(null);
-        mockEmptyCourseQueries(reqno);
+        mockEmptyCourseQueries();
+        when(patientRawDataMapper.selectIllnessCourseByReqno(anyString(), any())).thenReturn(List.of(illnessCourse));
         when(patientRawDataMapper.insert(any(PatientRawDataEntity.class))).thenAnswer(invocation -> {
             PatientRawDataEntity entity = invocation.getArgument(0);
             entity.setId(101L);
             return 1;
         });
 
-        RawDataCollectResult result = patientService.collectAndSaveRawDataResult(reqno);
+        RawDataCollectResult result = patientService.collectAndSaveRawDataResult(reqno, null, sourceBatchTime);
 
         assertEquals("success", result.getStatus());
         assertEquals(1, result.getSavedDays());
@@ -112,7 +120,6 @@ class PatientServiceImplTest {
         verify(patientRawDataMapper).insert(rawDataCaptor.capture());
         PatientRawDataEntity inserted = rawDataCaptor.getValue();
         assertEquals(reqno, inserted.getReqno());
-        assertEquals(inhosday.toLocalDate(), inserted.getDataDate());
         assertNotNull(inserted.getLastTime());
         assertFalse(inserted.getDataJson().isBlank());
         assertFalse(inserted.getFilterDataJson().isBlank());
@@ -125,17 +132,27 @@ class PatientServiceImplTest {
         PatientRawDataChangeTaskEntity changeTask = changeTasks.get(0);
         assertEquals(101L, changeTask.getPatientRawDataId());
         assertEquals(reqno, changeTask.getReqno());
-        assertEquals(inhosday.toLocalDate(), changeTask.getDataDate());
         assertNotNull(changeTask.getRawDataLastTime());
+        assertEquals(sourceBatchTime, changeTask.getSourceBatchTime());
+
+        verify(infectionEventTaskService).upsertEventExtractTask(
+                101L,
+                reqno,
+                changeTask.getDataDate(),
+                changeTask.getRawDataLastTime(),
+                sourceBatchTime,
+                "FULL_PATIENT",
+                InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED.name(),
+                50
+        );
     }
 
-    private void mockEmptyCourseQueries(String reqno) {
+    private void mockEmptyCourseQueries() {
         when(patientRawDataMapper.selectDiagByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectBodySurfaceByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectLongDoctorAdviceByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectTemporaryDoctorAdviceByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectSgDoctorAdviceByReqno(anyString(), any())).thenReturn(Collections.emptyList());
-        when(patientRawDataMapper.selectIllnessCourseByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectTestSamByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectUseMedicineByReqno(anyString(), any())).thenReturn(Collections.emptyList());
         when(patientRawDataMapper.selectVideoResultByReqno(anyString(), any())).thenReturn(Collections.emptyList());

@@ -25,6 +25,7 @@ public class PatientRawDataChangeTaskEntity implements Serializable {
     private Integer attemptCount;
     private Integer maxAttempts;
     private LocalDateTime rawDataLastTime;
+    private LocalDateTime sourceBatchTime;
     private LocalDateTime availableAt;
     private LocalDateTime lastStartTime;
     private LocalDateTime lastFinishTime;

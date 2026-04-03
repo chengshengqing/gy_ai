@@ -29,7 +29,11 @@ public class PatientRawDataChangeTaskServiceImpl
     private final StructDataFormatProperties structDataFormatProperties;
 
     @Override
-    public void appendChange(Long patientRawDataId, String reqno, LocalDate dataDate, LocalDateTime rawDataLastTime) {
+    public void appendChange(Long patientRawDataId,
+                             String reqno,
+                             LocalDate dataDate,
+                             LocalDateTime rawDataLastTime,
+                             LocalDateTime sourceBatchTime) {
         if (patientRawDataId == null || !StringUtils.hasText(reqno) || rawDataLastTime == null) {
             return;
         }
@@ -41,6 +45,7 @@ public class PatientRawDataChangeTaskServiceImpl
         task.setReqno(reqno.trim());
         task.setDataDate(dataDate);
         task.setRawDataLastTime(rawDataLastTime);
+        task.setSourceBatchTime(sourceBatchTime);
         task.initForCreate(structDataFormatProperties.getMaxAttempts());
         saveIfAbsent(task);
     }
@@ -92,43 +97,7 @@ public class PatientRawDataChangeTaskServiceImpl
     }
 
     @Override
-    public void markStructSuccess(List<Long> taskIds, String message, boolean eventPending) {
-        if (taskIds == null || taskIds.isEmpty()) {
-            return;
-        }
-        LocalDateTime now = DateTimeUtils.now();
-        LambdaUpdateWrapper<PatientRawDataChangeTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.in(PatientRawDataChangeTaskEntity::getId, taskIds)
-                .set(PatientRawDataChangeTaskEntity::getStatus,
-                        eventPending ? PatientRawDataChangeTaskStatus.EVENT_PENDING.name()
-                                : PatientRawDataChangeTaskStatus.SUCCESS.name())
-                .set(PatientRawDataChangeTaskEntity::getAvailableAt, now)
-                .set(PatientRawDataChangeTaskEntity::getLastFinishTime, now)
-                .set(PatientRawDataChangeTaskEntity::getLastErrorMessage, message)
-                .set(PatientRawDataChangeTaskEntity::getUpdateTime, now);
-        if (eventPending) {
-            updateWrapper.set(PatientRawDataChangeTaskEntity::getAttemptCount, 0);
-        }
-        this.update(updateWrapper);
-    }
-
-    @Override
-    public void markStructFailed(List<Long> taskIds, String errorMessage) {
-        markFailed(taskIds, errorMessage, PatientRawDataChangeTaskStatus.STRUCT_FAILED.name());
-    }
-
-    @Override
-    public List<PatientRawDataChangeTaskEntity> claimPendingEventTasks(int patientLimit) {
-        return claimPendingTasks(patientLimit,
-                List.of(
-                        PatientRawDataChangeTaskStatus.EVENT_PENDING.name(),
-                        PatientRawDataChangeTaskStatus.EVENT_FAILED.name()
-                ),
-                PatientRawDataChangeTaskStatus.EVENT_RUNNING.name());
-    }
-
-    @Override
-    public void markEventSuccess(List<Long> taskIds, String message) {
+    public void markStructSuccess(List<Long> taskIds, String message) {
         if (taskIds == null || taskIds.isEmpty()) {
             return;
         }
@@ -136,6 +105,7 @@ public class PatientRawDataChangeTaskServiceImpl
         LambdaUpdateWrapper<PatientRawDataChangeTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.in(PatientRawDataChangeTaskEntity::getId, taskIds)
                 .set(PatientRawDataChangeTaskEntity::getStatus, PatientRawDataChangeTaskStatus.SUCCESS.name())
+                .set(PatientRawDataChangeTaskEntity::getAvailableAt, now)
                 .set(PatientRawDataChangeTaskEntity::getLastFinishTime, now)
                 .set(PatientRawDataChangeTaskEntity::getLastErrorMessage, message)
                 .set(PatientRawDataChangeTaskEntity::getUpdateTime, now);
@@ -143,8 +113,24 @@ public class PatientRawDataChangeTaskServiceImpl
     }
 
     @Override
-    public void markEventFailed(List<Long> taskIds, String errorMessage) {
-        markFailed(taskIds, errorMessage, PatientRawDataChangeTaskStatus.EVENT_FAILED.name());
+    public void markStructSkipped(List<Long> taskIds, String message) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return;
+        }
+        LocalDateTime now = DateTimeUtils.now();
+        LambdaUpdateWrapper<PatientRawDataChangeTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(PatientRawDataChangeTaskEntity::getId, taskIds)
+                .set(PatientRawDataChangeTaskEntity::getStatus, PatientRawDataChangeTaskStatus.SKIPPED.name())
+                .set(PatientRawDataChangeTaskEntity::getAvailableAt, now)
+                .set(PatientRawDataChangeTaskEntity::getLastFinishTime, now)
+                .set(PatientRawDataChangeTaskEntity::getLastErrorMessage, message)
+                .set(PatientRawDataChangeTaskEntity::getUpdateTime, now);
+        this.update(updateWrapper);
+    }
+
+    @Override
+    public void markStructFailed(List<Long> taskIds, String errorMessage) {
+        markFailed(taskIds, errorMessage, PatientRawDataChangeTaskStatus.STRUCT_FAILED.name());
     }
 
     @Override
@@ -164,6 +150,7 @@ public class PatientRawDataChangeTaskServiceImpl
             task.setReqno(row.getReqno().trim());
             task.setDataDate(row.getDataDate());
             task.setRawDataLastTime(row.getLastTime());
+            task.setSourceBatchTime(row.getLastTime());
             task.initForCreate(structDataFormatProperties.getMaxAttempts());
             tasks.add(task);
         }
@@ -261,8 +248,7 @@ public class PatientRawDataChangeTaskServiceImpl
 
     private String resolveFailedStatus(List<String> pendingStatuses) {
         for (String status : pendingStatuses) {
-            if (PatientRawDataChangeTaskStatus.STRUCT_FAILED.name().equals(status)
-                    || PatientRawDataChangeTaskStatus.EVENT_FAILED.name().equals(status)) {
+            if (PatientRawDataChangeTaskStatus.STRUCT_FAILED.name().equals(status)) {
                 return status;
             }
         }

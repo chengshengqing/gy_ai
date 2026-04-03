@@ -11,6 +11,7 @@
             attempt_count,
             max_attempts,
             raw_data_last_time,
+            source_batch_time,
             available_at,
             create_time,
             update_time
@@ -25,6 +26,7 @@
                 #{task.attemptCount},
                 #{task.maxAttempts},
                 #{task.rawDataLastTime},
+                #{task.sourceBatchTime},
                 #{task.availableAt},
                 #{task.createTime},
                 #{task.updateTime}

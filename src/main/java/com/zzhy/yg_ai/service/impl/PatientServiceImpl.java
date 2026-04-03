@@ -16,12 +16,14 @@ import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import com.zzhy.yg_ai.domain.enums.InfectionEventTriggerReasonCode;
 import com.zzhy.yg_ai.domain.enums.PatientCourseDataType;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
+import com.zzhy.yg_ai.service.InfectionEventTaskService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientService;
 import com.zzhy.yg_ai.service.SummaryContextCacheService;
@@ -54,6 +56,7 @@ public class PatientServiceImpl implements PatientService {
     private final FilterTextUtils filterTextUtils;
     private final InfectionMonitorProperties infectionMonitorProperties;
     private final InfectionDailyJobLogService infectionDailyJobLogService;
+    private final InfectionEventTaskService infectionEventTaskService;
     private final PatientRawDataChangeTaskService patientRawDataChangeTaskService;
     private final SummaryContextCacheService summaryContextCacheService;
 
@@ -88,12 +91,24 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
+    public LocalDateTime getLatestSourceBatchTime() {
+        return patientRawDataMapper.selectSourceLastTime();
+    }
+
+    @Override
     public String collectAndSaveRawData(String reqno) {
         return writeJson(collectAndSaveRawDataResult(reqno));
     }
 
     @Override
     public RawDataCollectResult collectAndSaveRawDataResult(String reqno) {
+        return collectAndSaveRawDataResult(reqno, null, null);
+    }
+
+    @Override
+    public RawDataCollectResult collectAndSaveRawDataResult(String reqno,
+                                                            LocalDateTime previousSourceLastTime,
+                                                            LocalDateTime sourceBatchTime) {
         RawDataCollectResult result = new RawDataCollectResult();
         result.setReqno(reqno);
         if (!StringUtils.hasText(reqno)) {
@@ -103,15 +118,17 @@ public class PatientServiceImpl implements PatientService {
         }
 
         boolean isNewPatient = !hasPatientRawData(reqno);
-        LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
-        EnumSet<PatientCourseDataType> changedTypes = detectChangedDataTypes(reqno, latestLoadSuccessTime, isNewPatient);
+        LocalDateTime lastSuccessfulLoadTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
+        LocalDateTime changeDetectSinceTime = previousSourceLastTime == null ? lastSuccessfulLoadTime : previousSourceLastTime;
+        LocalDateTime effectiveSourceBatchTime = sourceBatchTime == null ? DateTimeUtils.now() : sourceBatchTime;
+        EnumSet<PatientCourseDataType> changedTypes = detectChangedDataTypes(reqno, changeDetectSinceTime, isNewPatient);
         result.setChangeTypes(PatientCourseDataType.toCsv(changedTypes));
 
         int savedCount = 0;
         List<PatientRawDataChangeTaskEntity> changedTasks = new ArrayList<>();
         LocalDateTime now = DateTimeUtils.now();
         if (!isNewPatient) {
-            if (latestLoadSuccessTime == null) {
+            if (changeDetectSinceTime == null) {
                 result.setStatus("no_data");
                 result.setMessage("缺少上次成功采集时间，跳过本轮增量更新");
                 return result;
@@ -128,8 +145,8 @@ public class PatientServiceImpl implements PatientService {
                 : EnumSet.copyOf(changedTypes);
         PatientCourseData queriedCourseData = buildCourseData(
                 reqno,
-                isNewPatient ? null : latestLoadSuccessTime,
-                latestLoadSuccessTime,
+                isNewPatient ? null : changeDetectSinceTime,
+                effectiveSourceBatchTime,
                 requestedTypes
         );
         if (queriedCourseData.getPatInfor() == null) {
@@ -154,7 +171,9 @@ public class PatientServiceImpl implements PatientService {
                 queriedDayDataMap.put(fallbackDate, fallbackData);
             }
             for (DailyPatientRawData dailyData : queriedDayDataMap.values()) {
-                changedTasks.add(buildChangeTask(insertPatientRawData(reqno, dailyData, now, firstCourse)));
+                PatientRawDataEntity savedRow = insertPatientRawData(reqno, dailyData, now, firstCourse);
+                changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
+                routeEventTask(savedRow, requestedTypes, dailyData, effectiveSourceBatchTime);
                 savedCount++;
             }
         } else {
@@ -172,16 +191,20 @@ public class PatientServiceImpl implements PatientService {
                 PatientRawDataEntity existing = findPatientRawDataByReqnoAndDate(reqno, changedDay);
                 if (existing == null || !hasRequiredRawSections(existing.getDataJson(), changedTypes)) {
                     if (fullCourseData == null) {
-                        fullCourseData = buildCourseData(reqno, null, latestLoadSuccessTime, PatientCourseDataType.fullSnapshot());
+                        fullCourseData = buildCourseData(reqno, null, effectiveSourceBatchTime, PatientCourseDataType.fullSnapshot());
                         fullDailyDataMap.putAll(groupByDay(fullCourseData));
                     }
                     DailyPatientRawData fullDailyData = fullDailyDataMap.get(changedDay);
                     if (fullDailyData == null) {
                         continue;
                     }
-                    changedTasks.add(buildChangeTask(upsertPatientRawData(reqno, fullDailyData, now, firstCourse)));
+                    PatientRawDataEntity savedRow = upsertPatientRawData(reqno, fullDailyData, now, firstCourse);
+                    changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
+                    routeEventTask(savedRow, PatientCourseDataType.fullSnapshot(), fullDailyData, effectiveSourceBatchTime);
                 } else {
-                    changedTasks.add(buildChangeTask(mergeChangedRawData(existing, changedDailyData, changedTypes, now, firstCourse)));
+                    PatientRawDataEntity savedRow = mergeChangedRawData(existing, changedDailyData, changedTypes, now, firstCourse);
+                    changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
+                    routeEventTask(savedRow, changedTypes, changedDailyData, effectiveSourceBatchTime);
                 }
                 savedCount++;
             }
@@ -482,7 +505,8 @@ public class PatientServiceImpl implements PatientService {
         return existing;
     }
 
-    private PatientRawDataChangeTaskEntity buildChangeTask(PatientRawDataEntity rawDataEntity) {
+    private PatientRawDataChangeTaskEntity buildChangeTask(PatientRawDataEntity rawDataEntity,
+                                                           LocalDateTime sourceBatchTime) {
         if (rawDataEntity == null || rawDataEntity.getId() == null || !StringUtils.hasText(rawDataEntity.getReqno())
                 || rawDataEntity.getLastTime() == null) {
             return null;
@@ -492,8 +516,76 @@ public class PatientServiceImpl implements PatientService {
         task.setReqno(rawDataEntity.getReqno());
         task.setDataDate(rawDataEntity.getDataDate());
         task.setRawDataLastTime(rawDataEntity.getLastTime());
+        task.setSourceBatchTime(sourceBatchTime);
         task.setCreateTime(DateTimeUtils.now());
         return task;
+    }
+
+    private void routeEventTask(PatientRawDataEntity rawDataEntity,
+                                EnumSet<PatientCourseDataType> changedTypes,
+                                DailyPatientRawData dailyData,
+                                LocalDateTime sourceBatchTime) {
+        if (rawDataEntity == null || rawDataEntity.getId() == null || sourceBatchTime == null) {
+            return;
+        }
+        LinkedHashSet<InfectionEventTriggerReasonCode> reasonCodes = resolveEventTriggerReasonCodes(changedTypes, dailyData);
+        if (reasonCodes.isEmpty()) {
+            return;
+        }
+        int priority = reasonCodes.contains(InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED) ? 50 : 100;
+        infectionEventTaskService.upsertEventExtractTask(
+                rawDataEntity.getId(),
+                rawDataEntity.getReqno(),
+                rawDataEntity.getDataDate(),
+                rawDataEntity.getLastTime(),
+                sourceBatchTime,
+                PatientCourseDataType.toCsv(changedTypes),
+                InfectionEventTriggerReasonCode.toCsv(reasonCodes),
+                priority
+        );
+    }
+
+    private LinkedHashSet<InfectionEventTriggerReasonCode> resolveEventTriggerReasonCodes(EnumSet<PatientCourseDataType> changedTypes,
+                                                                                          DailyPatientRawData dailyData) {
+        LinkedHashSet<InfectionEventTriggerReasonCode> codes = new LinkedHashSet<>();
+        if (changedTypes == null || changedTypes.isEmpty()) {
+            return codes;
+        }
+        if (changedTypes.contains(PatientCourseDataType.FULL_PATIENT)) {
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED, dailyData == null ? null : dailyData.getPatIllnessCourseList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.LAB_RESULT_CHANGED, dailyData == null ? null : dailyData.getPatTestSamList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.MICROBE_CHANGED, dailyData == null ? null : dailyData.getPatTestList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.IMAGING_CHANGED, dailyData == null ? null : dailyData.getPatVideoResultList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.ANTIBIOTIC_OR_ORDER_CHANGED, dailyData == null ? null : dailyData.getPatUseMedicineList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.OPERATION_CHANGED, dailyData == null ? null : dailyData.getPatOpsCutInforList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.TRANSFER_CHANGED, dailyData == null ? null : dailyData.getPatTransferList());
+            appendReasonCodeWhenPresent(codes, InfectionEventTriggerReasonCode.VITAL_SIGN_CHANGED, dailyData == null ? null : dailyData.getPatBodySurfaceList());
+            return codes;
+        }
+
+        for (PatientCourseDataType changedType : changedTypes) {
+            switch (changedType) {
+                case ILLNESS_COURSE -> codes.add(InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED);
+                case LAB_TEST -> codes.add(InfectionEventTriggerReasonCode.LAB_RESULT_CHANGED);
+                case MICROBE -> codes.add(InfectionEventTriggerReasonCode.MICROBE_CHANGED);
+                case VIDEO_RESULT -> codes.add(InfectionEventTriggerReasonCode.IMAGING_CHANGED);
+                case USE_MEDICINE, DOCTOR_ADVICE -> codes.add(InfectionEventTriggerReasonCode.ANTIBIOTIC_OR_ORDER_CHANGED);
+                case OPERATION -> codes.add(InfectionEventTriggerReasonCode.OPERATION_CHANGED);
+                case TRANSFER -> codes.add(InfectionEventTriggerReasonCode.TRANSFER_CHANGED);
+                case BODY_SURFACE -> codes.add(InfectionEventTriggerReasonCode.VITAL_SIGN_CHANGED);
+                default -> {
+                }
+            }
+        }
+        return codes;
+    }
+
+    private void appendReasonCodeWhenPresent(LinkedHashSet<InfectionEventTriggerReasonCode> codes,
+                                             InfectionEventTriggerReasonCode code,
+                                             List<?> items) {
+        if (codes != null && code != null && items != null && !items.isEmpty()) {
+            codes.add(code);
+        }
     }
 
     private EnumSet<PatientCourseDataType> detectChangedDataTypes(String reqno,
