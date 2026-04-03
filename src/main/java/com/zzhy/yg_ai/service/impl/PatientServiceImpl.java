@@ -24,6 +24,7 @@ import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientService;
+import com.zzhy.yg_ai.service.SummaryContextCacheService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -54,6 +55,7 @@ public class PatientServiceImpl implements PatientService {
     private final InfectionMonitorProperties infectionMonitorProperties;
     private final InfectionDailyJobLogService infectionDailyJobLogService;
     private final PatientRawDataChangeTaskService patientRawDataChangeTaskService;
+    private final SummaryContextCacheService summaryContextCacheService;
 
     @Override
     public List<String> listActiveReqnos() {
@@ -239,11 +241,15 @@ public class PatientServiceImpl implements PatientService {
         if (id == null) {
             return;
         }
+        PatientRawDataEntity existing = patientRawDataMapper.selectById(id);
         PatientRawDataEntity update = new PatientRawDataEntity();
         update.setId(id);
         update.setStructDataJson(structDataJson);
         update.setEventJson(eventJson);
         patientRawDataMapper.updateById(update);
+        if (existing != null && StringUtils.hasText(existing.getReqno()) && eventJsonChanged(existing.getEventJson(), eventJson)) {
+            summaryContextCacheService.evictPatientSummaryContexts(existing.getReqno());
+        }
     }
 
     @Override
@@ -251,10 +257,14 @@ public class PatientServiceImpl implements PatientService {
         if (id == null) {
             return;
         }
+        PatientRawDataEntity existing = patientRawDataMapper.selectById(id);
         PatientRawDataEntity update = new PatientRawDataEntity();
         update.setId(id);
         update.setEventJson(eventJson);
         patientRawDataMapper.updateById(update);
+        if (existing != null && StringUtils.hasText(existing.getReqno()) && eventJsonChanged(existing.getEventJson(), eventJson)) {
+            summaryContextCacheService.evictPatientSummaryContexts(existing.getReqno());
+        }
     }
 
     @Override
@@ -270,32 +280,7 @@ public class PatientServiceImpl implements PatientService {
 
     @Override
     public String buildSummaryWindowJson(String reqno, LocalDate anchorDate, int windowDays) {
-        if (!StringUtils.hasText(reqno) || anchorDate == null) {
-            return null;
-        }
-        int effectiveWindowDays = windowDays <= 0 ? 7 : windowDays;
-        LocalDate windowStart = anchorDate.minusDays(effectiveWindowDays - 1L);
-        List<PatientRawDataEntity> rows = patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
-                .eq("reqno", reqno.trim())
-                .ge("data_date", windowStart)
-                .le("data_date", anchorDate)
-                .isNotNull("event_json")
-                .orderByAsc("data_date", "id"));
-
-        ObjectNode root = objectMapper.createObjectNode();
-        root.put("reqno", reqno.trim());
-        ArrayNode timeline = root.putArray("timeline");
-        for (PatientRawDataEntity row : rows) {
-            if (row == null || !StringUtils.hasText(row.getEventJson())) {
-                continue;
-            }
-            JsonNode eventNode = parseJsonQuietly(row.getEventJson());
-            if (eventNode != null && eventNode.isObject()) {
-                timeline.add(eventNode);
-            }
-        }
-
-        return writeJsonQuietly(root);
+        return summaryContextCacheService.getOrBuildEventExtractorContext(reqno, anchorDate, windowDays);
     }
 
     @Override
@@ -1009,6 +994,12 @@ public class PatientServiceImpl implements PatientService {
             log.error("JSON序列化失败", e);
             return "{\"status\":\"failed\",\"message\":\"JSON序列化失败\"}";
         }
+    }
+
+    private boolean eventJsonChanged(String previousEventJson, String currentEventJson) {
+        String previous = previousEventJson == null ? "" : previousEventJson.trim();
+        String current = currentEventJson == null ? "" : currentEventJson.trim();
+        return !previous.equals(current);
     }
 
     private String buildSemanticBlockJson(DailyPatientRawData dailyData) {

@@ -173,15 +173,235 @@
 
 - `filter_data_json`
 
-内容：
+当前纳入的结构化 section：
 
-- 检验
-- 生命体征
-- 影像
-- 医嘱
-- 诊断
-- 设备
-- 操作
+- `diagnosis`
+- `vital_signs`
+- `lab_results`
+- `imaging`
+- `doctor_orders`
+- `use_medicine`
+- `transfer`
+- `operation`
+
+说明：
+
+- 每个 `patient_raw_data` 仅生成 `1` 个 `StructuredFactBlock`
+- 不再按 section 拆成多个结构化事实 block
+- 对外为单 block，对内保留 section 边界
+- 当前无独立 `devices` section
+- 设备暴露主识别通道放在 `ClinicalTextBlock + MidSemanticBlock`
+- 若 `doctor_orders` 或 `operation` 中出现明确器械或暴露线索，可作为补充证据抽取
+
+### 7.1.1 payload 结构
+
+```json
+{
+  "section": "structured_fact_bundle",
+  "source": "filter_data_json",
+  "dataDate": "yyyy-MM-dd",
+  "data": {
+    "diagnosis": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    },
+    "vital_signs": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    },
+    "lab_results": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": {
+        "test_panels": [],
+        "microbe_panels": []
+      }
+    },
+    "imaging": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    },
+    "doctor_orders": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": {
+        "long_term": [],
+        "temporary": [],
+        "sg": []
+      }
+    },
+    "use_medicine": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    },
+    "transfer": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    },
+    "operation": {
+      "priority_facts": [],
+      "reference_facts": [],
+      "raw": []
+    }
+  }
+}
+```
+
+### 7.1.2 `priority_facts / reference_facts / raw` 设计
+
+每个 section 拆成三层：
+
+- `priority_facts`
+  优先给 LLM 阅读的高密度事实
+- `reference_facts`
+  少量对照或参考事实
+- `raw`
+  受限保留的 compact 原始事实
+
+设计目标不是做自由文本摘要，而是完成结构压缩和信息分层。
+
+生成原则：
+
+- `change-first`
+  优先本次新增或变更内容
+- `anomaly-first`
+  优先结构上已标记异常、阳性、非正常项
+- `schema-native`
+  只做字段投影，不做医学结论预判
+
+实现约束：
+
+- 不引入额外 LLM 预摘要步骤
+- 不做关键词硬编码医学判断
+- 保留原始 compact 结构，确保可回放、可审计
+
+当前第一版实现由于尚未直接接入 diff 上下文，`priority_facts` 先以“结构异常优先 + schema 投影”为主，后续可再补 `change-first`。
+
+### 7.1.3 临床优先级锚点
+
+`StructuredFactBlock` 的优先级判断，不允许只根据示例数据、文本长度、字段完整度或当前样本分布决定。
+
+后续所有 `priority_facts / reference_facts / raw` 的设计，必须优先服从真实医学场景下医生的判断习惯。
+
+本系统采用以下临床优先级锚点：
+
+- 微生物结果、影像结论，优先视为更接近病原学或感染灶证据
+- 常规实验室异常、生命体征异常，优先视为提示性或支持性证据
+- 医嘱、用药、手术、转科，更接近管理行为、风险背景或暴露线索，不应直接等同于感染成立
+- 单一发热、单一常规异常指标通常不应独立压过微生物或影像结论
+- 阴性微生物结果、影像未见感染灶、指标恢复正常等信息，允许作为反证或减弱感染怀疑的参考事实
+
+这组锚点的目标不是机械复刻某一条院感判定标准，而是让预警系统在输入组织和 LLM 阅读顺序上更接近临床医生的思维顺序。
+
+### 7.1.4 指南约束
+
+本系统在“证据优先级”和“事件抽取护栏”层面，优先参考以下医学与监测指南：
+
+- CDC NHSN Patient Safety Component Manual
+  作用：
+  - 作为院感监测事件窗口、客观要素、部位定义的监测参考
+  - 强调监测定义应依赖可追溯、可审计的客观要素
+- NICE Sepsis: Recognition, Diagnosis and Early Management
+  作用：
+  - 强调不能仅凭单一体征、单一生物标志物完成严重感染判断
+  - 强调需要结合感染源寻找、实验室检查和影像判断
+- ATS/IDSA HAP/VAP Guideline
+  作用：
+  - 强调微生物学取材和培养结果对医院获得性肺炎判断的重要性
+  - 强调 CRP/PCT 等生物标志物不能单独替代临床判断
+  - 强调抗菌药物使用更多是治疗管理线索，不应被误当成感染成立的直接硬证据
+
+落实到本项目的约束如下：
+
+- `lab_results.microbe_panels` 与 `imaging` 的优先级应高于普通 `doctor_orders`
+- `lab_results.test_panels` 和 `vital_signs` 应主要作为支持证据，而不是直接替代病原学或影像学证据
+- `doctor_orders / use_medicine / operation` 更适合作为“语义相关性待判断”的弱结构化输入，不应长期依赖纯结构排序
+- EventNormalizer 和 Prompt 的护栏，应允许反证存在，不得把所有阴性结果都当作无价值背景数据
+
+指南链接：
+
+- CDC NHSN Patient Safety Component Manual: https://stacks.cdc.gov/view/cdc/83964
+- NICE Sepsis Guideline: https://www.ncbi.nlm.nih.gov/books/NBK553314/
+- ATS/IDSA HAP/VAP Guideline: https://www.idsociety.org/practice-guideline/hap_vap/
+
+### 7.1.5 各 section 建议
+
+#### `diagnosis`
+
+- `priority_facts`
+  优先阅读的诊断事实
+- `reference_facts`
+  少量代表性诊断
+- `raw`
+  受限保留的诊断数组
+
+#### `vital_signs`
+
+- `priority_facts`
+  优先阅读的体征事实
+- `reference_facts`
+  少量代表性正常或对照记录
+- `raw`
+  受限保留的体征数组
+
+#### `lab_results`
+
+- `priority_facts`
+  优先阅读的检验与微生物事实，优先正向微生物结果与异常结果
+- `reference_facts`
+  少量对照或反证结果
+- `raw`
+  受限保留的普通检验面板与微生物面板
+
+#### `imaging`
+
+- `priority_facts`
+  优先阅读的影像结论
+- `reference_facts`
+  少量对照影像结论
+- `raw`
+  受限保留的影像数组
+
+#### `doctor_orders`
+
+- `priority_facts`
+  当前第一版允许为空，避免无任务导向的普通医嘱污染主输入
+- `reference_facts`
+  少量参考医嘱
+- `raw`
+  受限保留的 `long_term / temporary / sg`
+
+#### `use_medicine`
+
+- `priority_facts`
+  优先阅读的用药事实
+- `reference_facts`
+  少量参考用药
+- `raw`
+  受限保留的用药数组
+
+#### `transfer`
+
+- `priority_facts`
+  优先阅读的转科节点
+- `reference_facts`
+  少量参考转科事实
+- `raw`
+  受限保留的转科数组
+
+#### `operation`
+
+- `priority_facts`
+  优先阅读的手术事实
+- `reference_facts`
+  少量参考手术事实
+- `raw`
+  受限保留的手术数组
 
 ## 7.2 ClinicalTextBlock
 
@@ -197,6 +417,28 @@
 - 自由文本
 - 临床判断表达
 - 排除、怀疑、建议、否定等语义密集
+
+定位：
+
+- `ClinicalTextBlock` 主要补足结构化数据难以表达的“判断语义”
+- 重点抽取医生如何解释事实，而不是重复抽取普通数值结果
+
+优先抽取：
+
+- 支持感染的明确判断
+- 反对感染的明确判断
+- 待排、可疑、不能除外感染
+- 污染、定植、临床意义有限等解释
+- 感染来源、感染部位、归因线索
+- 器械、手术、侵入性操作相关归因线索
+- 临床动作的理由，例如“因发热送培养”“因考虑感染升级抗菌药”
+- 新发、加重、好转、持续等病情演变
+
+默认不重点抽取：
+
+- 与感染无关的流水账
+- 单纯重复结构化层已明确表达的普通检验值
+- 无判断意义的常规治疗描述
 
 ## 7.3 MidSemanticBlock
 
@@ -220,12 +462,137 @@
 
 来源：
 
-- 最近 7 天 `patient_raw_data.event_json` 现拼窗口 JSON
+- 最近窗口内 `patient_raw_data.event_json`
 
 作用：
 
-- 仅供 LLM 理解病程演进背景
+- 为第一层抽取提供“变化背景”，而不是完整时间轴复述
 - 不直接入主事件池
+
+### 7.4.1 recent_change_context
+
+第一阶段不再默认把完整 timeline JSON 直接传给第一层 LLM。
+
+改为使用：
+
+- `recent_change_context`
+
+建议结构：
+
+```json
+{
+  "reqno": "xxx",
+  "anchorDate": "2026-03-01",
+  "windowDays": 7,
+  "summaryType": "EVENT_EXTRACTOR_CONTEXT",
+  "changes": [
+    "2026-03-01 稽留流产确诊",
+    "2026-03-01 B超示宫腔残留伴无胎心",
+    "2026-03-01 警惕感染风险"
+  ]
+}
+```
+
+设计原则：
+
+- 第一版不引入额外 LLM 总结
+- 基于最近窗口内 `event_json` 做确定性压缩
+- 只保留少量关键变化
+- 优先保留：
+  - 新发事件
+  - 升级事件
+  - 明确支持证据
+  - 明确反证
+  - 暴露/操作关键节点
+
+### 7.4.2 SummaryContext 缓存
+
+新增：
+
+- `SummaryContextCacheService`
+
+第一阶段设计：
+
+- Redis 缓存 `recent_change_context`
+- 当前只支持：
+  - `SummaryContextType.EVENT_EXTRACTOR_CONTEXT`
+- key 形如：
+
+```text
+yg_ai:infection:summary_context:{summaryType}:{reqno}:{anchorDate}:{windowDays}
+```
+
+缓存策略：
+
+- cache miss 时不调用 LLM
+- 直接基于窗口内 `event_json` 生成确定性小摘要
+
+失效策略：
+
+- 只要患者任一 `event_json` 发生变化
+- 先按患者粒度失效该患者所有 summary context 缓存
+
+## 7.5 StructuredFact 枚举定义
+
+### `source_section`
+
+固定枚举：
+
+- `diagnosis`
+- `vital_signs`
+- `lab_results`
+- `imaging`
+- `doctor_orders`
+- `use_medicine`
+- `transfer`
+- `operation`
+
+### `evidence_tier`
+
+- `hard`
+- `moderate`
+- `weak`
+
+定义：
+
+- `hard`
+  强客观证据
+- `moderate`
+  中等支持证据
+- `weak`
+  弱支持、弱反驳或筛查性证据
+
+### `evidence_role`
+
+- `support`
+- `against`
+- `risk_only`
+- `background`
+
+定义：
+
+- `support`
+  支持感染判断
+- `against`
+  反对感染判断
+- `risk_only`
+  只表示风险或暴露，不表示感染已发生
+- `background`
+  背景信息，不参与强判断
+
+## 7.6 StructuredFact 证据层级建议
+
+| source_section | 典型内容 | 默认 tier | 默认 role | 说明 |
+| --- | --- | --- | --- | --- |
+| `lab_results` `microbe_panels` | 培养阳性、病原检出 | `hard` | `support` | 污染或定植可降级或转 `against` |
+| `imaging` | 明确感染灶 | `hard` / `moderate` | `support` | “明确感染灶”优先 `hard` |
+| `lab_results` `test_panels` | WBC/CRP/PCT 异常 | `moderate` | `support` | 单项轻度异常可降 `weak` |
+| `use_medicine` | 抗菌药启动或升级 | `moderate` | `support` | 预防性用药可降级 |
+| `doctor_orders` | 抗感染医嘱、送检医嘱 | `moderate` / `weak` | `support` / `risk_only` | 普通医嘱为 `background` |
+| `operation` | 手术、围术期用药 | `moderate` | `risk_only` | 单独不表示感染成立 |
+| `vital_signs` | 发热、心率快等 | `weak` / `moderate` | `support` | 单次发热通常不应 `hard` |
+| `diagnosis` | 感染相关诊断 | `weak` / `moderate` | `support` | 不建议直接 `hard` |
+| `transfer` | 转入高风险科室 | `weak` | `risk_only` | 仅作背景风险变化 |
 
 ## 8. 统一 LLM 事件抽取器
 
@@ -262,12 +629,246 @@
 - 这里不要求一次把所有医学逻辑都抽干净
 - 第一阶段重点是得到稳定、可规范化、可回放的标准事件输出
 
-## 8.1 统一事件输出 Schema
+## 8.1 StructuredFactRefinementService
+
+为避免 `doctor_orders / use_medicine / operation` 长期处于“纯结构排序噪声高”与“完全静音”之间摇摆，增加一个轻量语义上浮层：
+
+- `StructuredFactRefinementService`
+
+设计目标：
+
+- 不直接替代最终事件抽取
+- 只对弱结构化 section 做“院感相关性”轻判断
+- 把高相关项上浮回 `priority_facts`
+- 保留低相关项在 `reference_facts / raw`
+
+### 8.1.1 适用 section
+
+- `doctor_orders`
+- `use_medicine`
+- `operation`
+
+必要时后续可扩展：
+
+- `transfer`
+
+不优先纳入该层的 section：
+
+- `lab_results`
+- `imaging`
+- `vital_signs`
+
+原因：
+
+- 这些 section 已具备较强结构化或结论化特征，更适合直接进入最终事件抽取层
+
+### 8.1.2 链路位置
+
+建议插入位置：
+
+```text
+StructuredFactBlockBuilder
+    -> StructuredFactRefinementService
+    -> LlmEventExtractor
+    -> EventNormalizer
+```
+
+职责边界：
+
+- Builder 负责结构压缩、去重、分层
+- Refinement 负责弱结构化事实的院感相关性分类
+- Final Extractor 负责最终事件抽取、证据层级与事件类型输出
+
+### 8.1.3 输入
+
+对每个弱结构化 section，输入：
+
+- `priority_facts`
+- `reference_facts`
+- 受限 `raw`
+- 当前 `reqno`
+- `dataDate`
+- 可选 `timelineContext`
+
+第一版建议：
+
+- 主输入使用 `reference_facts + raw`
+- `timelineContext` 只作为弱辅助
+
+### 8.1.4 输出
+
+Refinement 层不直接输出最终事件，只输出“是否值得上浮”的分类结果。
+
+建议输出 schema：
+
+```json
+{
+  "items": [
+    {
+      "source_section": "doctor_orders",
+      "source_text": "血培养",
+      "infection_relevance": "high|medium|low",
+      "suggested_role": "support|risk_only|background",
+      "promotion": "promote|keep_reference|drop",
+      "reason": "送检行为与感染评估直接相关"
+    }
+  ]
+}
+```
+
+字段含义：
+
+- `infection_relevance`
+  只判断与院感任务的相关性，不判断最终事件类型
+- `suggested_role`
+  只提供方向建议，不直接入池
+- `promotion`
+  决定该条是否回填到 `priority_facts`
+- `reason`
+  仅用于调试和回放
+
+### 8.1.5 Prompt 目标
+
+该层 Prompt 必须是轻任务，不允许承担最终事件裁决。
+
+应聚焦：
+
+- 这条事实是否与院感判断直接相关
+- 它更像支持证据、风险背景，还是普通背景
+- 是否值得提升到最终事件抽取层的主视野
+
+不应要求：
+
+- 输出完整 `event_type / event_subtype`
+- 输出最终 `evidence_tier`
+- 进行复杂跨 section 综合判断
+
+### 8.1.6 回填策略
+
+Refinement 完成后：
+
+- `promotion=promote` 的项，回填到对应 section 的 `priority_facts`
+- `promotion=keep_reference` 的项，留在 `reference_facts`
+- `promotion=drop` 的项，不进入主输入，但可保留在 `raw`
+
+这样可以避免：
+
+- `doctor_orders` 长期全静音
+- 普通生理盐水、无关筛查医嘱污染主优先层
+- 把第一层 LLM 变成不可逆的强裁剪器
+
+### 8.1.7 设计原则
+
+该层判断必须继续服从“医生视角”的真实临床优先级：
+
+- 微生物和影像仍然高于管理行为线索
+- 医嘱和用药更接近临床意图与暴露背景
+- 手术更多是风险背景，不应轻易直接上浮为感染成立证据
+
+因此，Refinement 的职责不是“代替医生下结论”，而是：
+
+- 让弱结构化事实是否值得进入主视野，更接近医生的阅读顺序
+
+### 8.1.8 当前实际事件抽取链路
+
+当前代码中的一层事件抽取链路已经落成，实际顺序如下：
+
+```text
+InfectionPipeline.processPendingEventData
+    -> PatientService.buildSummaryWindowJson(reqno, dataDate, 7)
+    -> InfectionEvidenceBlockService.buildBlocks(rawData, summaryWindowJson)
+        -> TimelineContextBlockBuilder
+        -> StructuredFactBlockBuilder
+        -> StructuredFactRefinementService
+        -> ClinicalTextBlockBuilder
+        -> MidSemanticBlockBuilder
+    -> LlmEventExtractorService.extractAndSave(buildResult)
+        -> 对 primaryBlocks 逐块调用 WarningAgent
+        -> EventNormalizer.normalize
+        -> InfectionEventPoolService.saveNormalizedEvents
+```
+
+各节点职责如下：
+
+- `PatientService.buildSummaryWindowJson`
+  - 不再返回完整 timeline
+  - 当前返回基于最近窗口 `event_json` 的确定性 `recent_change_context`
+  - 结果通过 Redis 缓存
+
+- `TimelineContextBlockBuilder`
+  - 将 `recent_change_context` 包装成单个 context block
+  - 仅作为第一层抽取的弱背景
+
+- `StructuredFactBlockBuilder`
+  - 从 `filter_data_json` 构建单个 `StructuredFactBlock`
+  - 输出 `priority_facts / reference_facts / raw`
+
+- `StructuredFactRefinementService`
+  - 仅对 `doctor_orders / use_medicine / operation` 做轻量语义上浮
+  - 不直接输出事件
+  - 只决定是否把候选上浮回 `priority_facts`
+
+- `ClinicalTextBlockBuilder`
+  - 每条病程文书构建一个 `ClinicalTextBlock`
+  - 当前不再依赖完整 timeline
+
+- `LlmEventExtractorService`
+  - 对 `primaryBlocks` 逐块抽取
+  - `STRUCTURED_FACT` 和 `MID_SEMANTIC` 继续使用 `timelineContext`
+  - `CLINICAL_TEXT` 改为使用：
+    - `blockPayload`
+    - `structuredContext`
+    - `recentChangeContext`
+    - `timelineContext = null`
+
+- `EventNormalizer`
+  - 负责枚举校验、字段校验、组合规则校验、`source_text` 溯源校验
+  - 当前仍是第一层抽取的最后一道稳定器
+
+说明：
+
+- 当前链路属于“一层轻抽取层”
+- 第二层 LLM 法官/归因节点不在本链路内
+- 第二层用于做院感成立、医院获得性归因、跨事件综合裁决
+
+### 8.1.9 当前可改进点
+
+结合当前样本回放，现阶段链路的主要改进点如下：
+
+1. `STRUCTURED_FACT`
+   - 已基本完成从“全量结构化输入”向“分层输入”的收敛
+   - 后续重点不是继续放大 prompt，而是继续校正 `priority_facts` 的任务相关性
+
+2. `CLINICAL_TEXT`
+   - 当前已经从“广泛误报”收敛到“少量固定误标”
+   - 该层现阶段应停止继续扩写 prompt
+   - 后续少量顽固误标，优先交给第二层法官节点做最终裁决
+
+3. `recent_change_context`
+   - 当前已经替代完整 timeline，方向正确
+   - 后续可继续提升摘要质量，但不建议重新回退为长时间轴背景
+
+4. `EventNormalizer`
+   - 当前仍有进一步承接低风险纠偏的空间
+   - 但应只处理“明显错误输出”，不应替代第二层法官做语义裁决
+
+5. 第二层法官节点
+   - 后续最值得投入的能力不再是一层 prompt 微调
+   - 而是构建“跨 block、跨事件、跨时间”的裁决层
+   - 该层负责：
+     - 院感成立与否
+     - 医院获得性归因
+     - 污染 / 定植 / 真感染区分
+     - 弱支持事件的收敛或驳回
+
+## 8.2 统一事件输出 Schema
 
 所有 LLM 抽取都应输出同一结构：
 
 ```json
 {
+  "status": "success|skipped",
+  "confidence": 0.0,
   "events": [
     {
       "event_time": "2026-01-24 09:25:55",
@@ -282,7 +883,10 @@
       "negation_flag": false,
       "uncertainty_flag": true,
       "clinical_meaning": "infection_uncertain",
-      "source_text": "患者自诉未取中段尿，考虑污染所致"
+      "source_section": "diagnosis|vital_signs|lab_results|imaging|doctor_orders|use_medicine|transfer|operation|null",
+      "source_text": "患者自诉未取中段尿，考虑污染所致",
+      "evidence_tier": "hard|moderate|weak",
+      "evidence_role": "support|against|risk_only|background"
     }
   ]
 }
@@ -295,7 +899,7 @@
 - 枚举受控
 - 可被 `EventNormalizer` 稳定处理
 
-## 8.2 4 个 Block Builder
+## 8.3 4 个 Block Builder
 
 第一阶段只实现 4 个 block builder，不做大量零散 extractor。
 
@@ -307,9 +911,11 @@
 
 规则：
 
-- 除 `PatInfor`
-- 除 `patIllnessCourseList`
-- 聚焦结构化事实部分
+- 每个 `patient_raw_data` 仅生成一个 `StructuredFactBlock`
+- 不再按 section 拆成多个结构化事实 block
+- payload 内部保留 section 边界
+- 使用 `priority_facts / reference_facts / raw` 提供分层输入
+- 保留 compact 原始结构，供 LLM 回看与溯源
 
 输入示例：
 
@@ -326,6 +932,7 @@
 输出：
 
 - `List<EvidenceBlock>`
+  其中结构化事实列表长度固定为 `1`
 
 ### `ClinicalTextBlockBuilder`
 
@@ -359,7 +966,7 @@
 - 只供 LLM 使用
 - 不直接落事件池
 
-## 8.3 Prompt 规划
+## 8.4 Prompt 规划
 
 Prompt 统一放入：
 
@@ -374,7 +981,9 @@ Prompt 统一放入：
 
 输入：
 
-- 检验、影像、生命体征、医嘱等结构化块
+- 当天结构化硬事实总包
+- 内含 `diagnosis / vital_signs / lab_results / imaging / doctor_orders / use_medicine / transfer / operation`
+- `timelineContext` 仅作辅助背景
 
 输出：
 
@@ -384,18 +993,76 @@ Prompt 统一放入：
 
 - `filter_data_json` 的结构化部分
 
+关键要求：
+
+- 必须输出 `source_section`
+- 必须输出 `evidence_tier`
+- 必须输出 `evidence_role`
+- 结构化事实抽取必须优先遵循“微生物/影像优先、普通实验室与生命体征次之、医嘱/用药/手术/转科作为辅助线索”的临床顺序
+- 当前层只负责事实抽取，不负责“院感成立/医院获得性归因”最终裁决
+- 为降低小模型负担，StructuredFact Prompt 采用“短规则 + 默认映射”：
+  1. 当前层只做事实抽取，不做院感归因
+  2. 固定判断顺序：`source_section -> event_type -> event_subtype -> body_site -> clinical_meaning/evidence_role`
+  3. 不允许为了贴合语义而跨 `source_section` 改写 `event_type`
+  4. 拿不准时优先跳过，不要强行解释
+- `lab_results`
+  - 微生物结果可直接抽取
+  - 一般异常结果优先 `lab_abnormal`
+  - 普通凝血、生化、电解质、局部镜检非特异性异常，不得仅因“异常”就直接输出 `infection_support`
+  - 若保留但不直接支持感染，优先：
+    - `clinical_meaning=baseline_problem`
+    - `evidence_role=background`
+    - `infection_related=false`
+- `imaging`
+  - 支持感染时可用 `imaging_infection_hint`
+  - 反证时优先 `event_subtype=null`
+- `doctor_orders / use_medicine / operation`
+  - 默认更接近 `risk_only / background`
+  - 只有明确与感染评估、抗感染处理、侵入性暴露相关时才输出
+- `STRUCTURED_FACT` 中一般不要使用 `infection_positive_statement / infection_negative_statement`
+- `body_site` 必须保守填写：只有部位证据明确时才填具体部位；局部样本不自动等于感染部位；拿不准时优先 `unknown`
+- `source_text` 必须来自 `blockPayload`
+- 不得仅凭 `timelineContext` 产出事件
+- 已有完成结果的微生物检查，不要再输出 `culture_ordered`
+- `culture_ordered` 仅用于“已送检但尚无结果”的事实
+- 影像结果若不支持感染，不要使用 `imaging_infection_hint`
+- 对影像反证，可使用 `event_type=imaging`、`event_subtype=null`、`evidence_role=against`
+
 ### Prompt B：临床文本块抽取
 
 输入：
 
 - `pat_illnessCourse` 中某条文书全文
+- 当前 `StructuredFactBlock` 的高密度摘要
+- `recent_change_context`
 
 输出：
 
-- `note` 事件
 - `assessment` 事件
 - `consult` 事件
-- `procedure / device / symptom` 事件
+- `procedure / device` 事件
+- 必要时少量 `note` 事件
+
+关键要求：
+
+- 文本层重点抽“判断语义”，不是“客观数值事实”
+- 优先抽：
+  - `infection_positive_statement`
+  - `infection_negative_statement`
+  - `contamination_statement / contamination_possible`
+  - `colonization_statement / colonization_possible`
+  - `device_exposure`
+  - `procedure_exposure`
+- 重点保留：
+  - 否定
+  - 怀疑
+  - 污染/定植解释
+  - 感染来源/部位线索
+  - 器械/手术相关归因线索
+  - 临床动作的理由
+  - 新发/加重/好转
+- 不要重复抽取结构化层已经明确表达的普通检验值、普通影像结果、普通医嘱事实
+- 没有明确感染相关判断语义时，优先 `skipped`
 
 ### Prompt C：中间层语义块抽取
 
@@ -431,13 +1098,21 @@ LLM 输出不能直接入库，必须经过标准化。
 
 职责：
 
+- 输出结构校验
 - 时间标准化
-- 枚举校验
-- 默认值填充
+- 字段枚举校验
+- 跨字段一致性校验
+- `source_text` 溯源校验
 - `event_key` 生成
 - 幂等去重
 - 非法输出兜底
 - 源数据引用补齐
+
+不承担的职责：
+
+- 不根据 `sourceRef` 猜 `eventType`
+- 不根据 block 类型猜 `eventSubtype`
+- 不做自由语义纠偏
 
 建议标准化后的事件最少包含：
 
@@ -457,32 +1132,91 @@ LLM 输出不能直接入库，必须经过标准化。
 
 ## 9.1 LLM 护栏与规范化要求
 
-第一阶段必须实现 4 个护栏：
+第一阶段必须实现以下护栏：
 
 ### 护栏 1：块类型固定
 
 - 不允许把整份 JSON 直接扔给 LLM
 - 必须按 EvidenceBlock 分块送入
+- `StructuredFactBlock` 固定为单总包模式
 
 ### 护栏 2：输出 Schema 强约束
 
 - 必须严格 JSON
 - 字段固定
 - 枚举固定
+- 结构化事实块必须输出 `source_section / evidence_tier / evidence_role`
 
-### 护栏 3：低置信度回退
+### 护栏 3：timeline 只作辅助背景
 
-当某块置信度较低时：
+- 第一层默认不再使用完整 timeline JSON
+- 第一层若需要背景，只使用极短 `recent_change_context`
+- `recent_change_context` 只能帮助判断新发、升级、时间关系
+- 不允许仅凭背景摘要产出事件
+- `source_text` 必须来自主 block payload 或主文本
 
-- 原文 `note` 事件照样入池
-- 语义事件可不落库或标记为 `uncertain`
+### 护栏 4：严格规范化校验
 
-### 护栏 4：原始事实优先
+- 非法 JSON 整体拒绝
+- 非法事件类型整条拒绝
+- `source_section` 与 `event_type` 不匹配时拒绝
+- `source_text` 无法在对应 section 中命中时拒绝
 
-如果结构化事实与文本语义冲突：
+### 护栏 5：原始结构化事实优先
 
+- 如果结构化事实与文本语义冲突：
 - 原始结构化事实不丢
 - 语义事件只作为补充层
+
+## 9.2 EventNormalizer v2 字段校验矩阵
+
+| 字段 | 必填 | 规则 | 动作 | 拒绝条件 |
+| --- | --- | --- | --- | --- |
+| `status` | 是 | `success` / `skipped` | 小写化 | 非法拒绝整个响应 |
+| `confidence` | 是 | `0~1` 数字 | 转 decimal | 非法拒绝整个响应 |
+| `events` | 是 | 数组 | 允许空数组 | 非数组拒绝整个响应 |
+| `event_time` | 否 | 合法时间或空 | 标准化 | 非法可置空 |
+| `event_type` | 是 | 枚举 | 小写化、少量别名修正 | 非法拒绝该事件 |
+| `event_subtype` | 建议是 | 枚举或空 | 小写化、少量别名修正 | 非法拒绝该事件 |
+| `body_site` | 是 | 枚举 | 小写化 | 非法拒绝该事件 |
+| `event_name` | 是 | 非空短文本 | trim | 空值拒绝该事件 |
+| `event_value` | 否 | 文本 / 数字 / `null` | 保留 | 无 |
+| `event_unit` | 否 | 文本 / `null` | trim | 无 |
+| `abnormal_flag` | 否 | 固定集合 | 小写化 | 非法可置空 |
+| `infection_related` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
+| `negation_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
+| `uncertainty_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
+| `clinical_meaning` | 是 | 枚举 | 小写化、少量别名修正 | 非法拒绝该事件 |
+| `source_section` | STRUCTURED_FACT 必填 | 固定 8 值，其它 block 可为 `null` | 小写化 | 非法拒绝该事件 |
+| `source_text` | 是 | 非空且必须来自对应 section 或 block payload | trim + 溯源校验 | 命中失败拒绝该事件 |
+| `evidence_tier` | 是 | `hard` / `moderate` / `weak` | 小写化 | 非法拒绝该事件 |
+| `evidence_role` | 是 | `support` / `against` / `risk_only` / `background` | 小写化 | 非法拒绝该事件 |
+
+## 9.3 EventNormalizer v2 组合校验规则
+
+| 规则编号 | 规则 | 处理 |
+| --- | --- | --- |
+| `R1` | `status=skipped` 时 `events` 必须为空 | 否则拒绝整个响应 |
+| `R2` | `source_text` 必须能在 `blockPayload[source_section]` 中命中；非结构化 block 需能在主 payload 命中 | 否则拒绝该事件 |
+| `R3` | `source_text` 不能只在 `timelineContext` 中命中 | 否则拒绝该事件 |
+| `R4` | `source_section=diagnosis` 时 `event_type` 只能是 `diagnosis` | 否则拒绝该事件 |
+| `R5` | `source_section=vital_signs` 时 `event_type` 只能是 `vital_sign` | 否则拒绝该事件 |
+| `R6` | `source_section=lab_results` 时 `event_type` 只能是 `lab_result` / `lab_panel` / `microbiology` | 否则拒绝该事件 |
+| `R7` | `source_section=imaging` 时 `event_type` 只能是 `imaging` | 否则拒绝该事件 |
+| `R8` | `source_section=doctor_orders` 时 `event_type` 只能是 `order` / `device` / `procedure` | 否则拒绝该事件 |
+| `R9` | `source_section=use_medicine` 时 `event_type` 只能是 `order` | 否则拒绝该事件 |
+| `R10` | `source_section=transfer` 时 `event_type` 只能是 `problem` 或 `assessment` | 否则拒绝该事件 |
+| `R11` | `source_section=operation` 时 `event_type` 只能是 `procedure` 或 `order` | 否则拒绝该事件 |
+| `R12` | `event_subtype=device_exposure` 时 `event_type` 必须是 `device` | 否则拒绝该事件 |
+| `R13` | `event_subtype=procedure_exposure` 时 `event_type` 必须是 `procedure` | 否则拒绝该事件 |
+| `R14` | `event_subtype=lab_abnormal` 时 `event_type` 必须是 `lab_result` 或 `lab_panel` | 否则拒绝该事件 |
+| `R15` | `event_subtype=culture_positive` 时 `event_type` 必须是 `microbiology` | 否则拒绝该事件 |
+| `R16` | `evidence_role=background` 时 `infection_related` 必须为 `false` | 否则拒绝该事件 |
+| `R17` | `source_section=vital_signs` 时 `evidence_tier` 不允许 `hard` | 否则拒绝该事件 |
+| `R18` | `source_section=diagnosis` 时 `evidence_tier` 不允许 `hard` | 否则拒绝该事件 |
+| `R19` | `source_section=transfer` 时 `evidence_role` 不允许 `support` | 否则拒绝该事件 |
+| `R20` | `source_section=operation` 且 `evidence_role=support` 时，需有明确感染相关 `source_text` | 否则拒绝该事件 |
+| `R21` | 完全重复事件键出现多次 | 去重保留一条 |
 
 ## 10. 事件池设计
 

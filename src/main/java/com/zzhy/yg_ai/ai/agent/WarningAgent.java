@@ -21,4 +21,13 @@ public class WarningAgent extends AbstractAgent {
         ChatResponse response = super.callModelByPrompt(prompt);
         return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
     }
+
+    public String callStructuredFactRefinement(String systemPrompt, String inputJson) {
+        Prompt prompt = new Prompt(List.of(
+                new SystemMessage(systemPrompt),
+                new UserMessage(inputJson)
+        ));
+        ChatResponse response = super.callModelByPrompt(prompt);
+        return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
+    }
 }

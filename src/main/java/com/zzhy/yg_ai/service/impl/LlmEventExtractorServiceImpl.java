@@ -52,11 +52,14 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         EvidenceBlock timelineContext = safeBuildResult.timelineContextBlocks().isEmpty()
                 ? null
                 : safeBuildResult.timelineContextBlocks().get(0);
+        EvidenceBlock structuredFactContext = safeBuildResult.structuredFactBlocks().isEmpty()
+                ? null
+                : safeBuildResult.structuredFactBlocks().get(0);
 
         List<NormalizedInfectionEvent> allNormalizedEvents = new ArrayList<>();
         List<InfectionEventPoolEntity> allPersistedEvents = new ArrayList<>();
         for (EvidenceBlock block : primaryBlocks) {
-            LlmBlockExtractionResult blockResult = extractSingleBlock(block, timelineContext);
+            LlmBlockExtractionResult blockResult = extractSingleBlock(block, structuredFactContext, timelineContext);
             allNormalizedEvents.addAll(blockResult.normalizedEvents());
             allPersistedEvents.addAll(blockResult.persistedEvents());
         }
@@ -69,9 +72,11 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         );
     }
 
-    private LlmBlockExtractionResult extractSingleBlock(EvidenceBlock block, EvidenceBlock timelineContext) {
+    private LlmBlockExtractionResult extractSingleBlock(EvidenceBlock block,
+                                                       EvidenceBlock structuredFactContext,
+                                                       EvidenceBlock timelineContext) {
         String promptVersion = WarningAgentPrompt.EVENT_EXTRACTOR_PROMPT_VERSION;
-        String inputPayload = buildInputPayload(block, timelineContext);
+        String inputPayload = buildInputPayload(block, structuredFactContext, timelineContext);
         InfectionLlmNodeRunEntity runEntity = buildPendingRun(block, promptVersion, inputPayload);
         infectionLlmNodeRunService.createPendingRun(runEntity);
         long startedAt = System.currentTimeMillis();
@@ -121,7 +126,9 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         return entity;
     }
 
-    private String buildInputPayload(EvidenceBlock block, EvidenceBlock timelineContext) {
+    private String buildInputPayload(EvidenceBlock block,
+                                     EvidenceBlock structuredFactContext,
+                                     EvidenceBlock timelineContext) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("reqno", block.reqno());
         root.put("rawDataId", block.rawDataId());
@@ -131,12 +138,90 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         root.put("sourceRef", block.sourceRef());
         root.put("title", block.title());
         root.set("blockPayload", parseJson(block.payloadJson()));
-        if (timelineContext != null) {
+        if (block.blockType() == com.zzhy.yg_ai.domain.enums.EvidenceBlockType.CLINICAL_TEXT) {
+            root.set("structuredContext", buildStructuredContext(structuredFactContext));
+            if (timelineContext != null) {
+                root.set("recentChangeContext", buildRecentChangeContext(timelineContext));
+            } else {
+                root.putNull("recentChangeContext");
+            }
+            root.putNull("timelineContext");
+        } else if (timelineContext != null) {
             root.set("timelineContext", parseJson(timelineContext.payloadJson()));
         } else {
             root.putNull("timelineContext");
         }
         return writeJson(root);
+    }
+
+    private JsonNode buildStructuredContext(EvidenceBlock structuredFactContext) {
+        ObjectNode result = objectMapper.createObjectNode();
+        if (structuredFactContext == null) {
+            return result;
+        }
+        JsonNode payload = parseJson(structuredFactContext.payloadJson());
+        JsonNode dataNode = payload.path("data");
+        if (!dataNode.isObject()) {
+            return result;
+        }
+        dataNode.fields().forEachRemaining(entry -> {
+            if ("diagnosis".equals(entry.getKey()) || "vital_signs".equals(entry.getKey()) || "transfer".equals(entry.getKey())) {
+                return;
+            }
+            JsonNode sectionNode = entry.getValue();
+            if (!sectionNode.isObject()) {
+                return;
+            }
+            ObjectNode sectionSummary = objectMapper.createObjectNode();
+            ArrayNode priorityFacts = limitTextArray(sectionNode.path("priority_facts"), 4);
+            ArrayNode referenceFacts = limitTextArray(sectionNode.path("reference_facts"), 2);
+            if (!priorityFacts.isEmpty()) {
+                sectionSummary.set("priority_facts", priorityFacts);
+            }
+            if (!referenceFacts.isEmpty()) {
+                sectionSummary.set("reference_facts", referenceFacts);
+            }
+            if (!sectionSummary.isEmpty()) {
+                result.set(entry.getKey(), sectionSummary);
+            }
+        });
+        return result;
+    }
+
+    private JsonNode buildRecentChangeContext(EvidenceBlock timelineContext) {
+        JsonNode parsed = parseJson(timelineContext.payloadJson());
+        ObjectNode result = objectMapper.createObjectNode();
+        JsonNode dataNode = parsed.path("data");
+        JsonNode changesNode = dataNode.path("changes");
+        if (changesNode.isArray()) {
+            result.set("changes", limitTextArray(changesNode, 5));
+            return result;
+        }
+        JsonNode directChanges = parsed.path("changes");
+        if (directChanges.isArray()) {
+            result.set("changes", limitTextArray(directChanges, 5));
+            return result;
+        }
+        result.set("changes", objectMapper.createArrayNode());
+        return result;
+    }
+
+    private ArrayNode limitTextArray(JsonNode node, int limit) {
+        ArrayNode result = objectMapper.createArrayNode();
+        if (node == null || !node.isArray() || limit <= 0) {
+            return result;
+        }
+        int count = 0;
+        for (JsonNode item : node) {
+            if (item != null && item.isTextual() && !item.asText("").isBlank()) {
+                result.add(item.asText().trim());
+                count++;
+            }
+            if (count >= limit) {
+                break;
+            }
+        }
+        return result;
     }
 
     private JsonNode parseJson(String json) {
