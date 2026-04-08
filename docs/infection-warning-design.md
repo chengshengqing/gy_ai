@@ -1043,9 +1043,7 @@ Prompt 统一放入：
 输出：
 
 - `assessment` 事件
-- `consult` 事件
 - `procedure / device` 事件
-- 必要时少量 `note` 事件
 
 关键要求：
 
@@ -1190,7 +1188,7 @@ LLM 输出不能直接入库，必须经过标准化。
 | `infection_related` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `negation_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `uncertainty_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
-| `clinical_meaning` | 是 | 枚举 | 小写化、少量别名修正 | 非法拒绝该事件 |
+| `clinical_meaning` | 是 | `infection_support / infection_against / infection_uncertain / screening / baseline_problem` | 小写化、少量别名修正 | 非法拒绝该事件 |
 | `source_section` | STRUCTURED_FACT 必填 | 固定 8 值，其它 block 可为 `null` | 小写化 | 非法拒绝该事件 |
 | `source_text` | 是 | 非空且必须来自对应 section 或 block payload | trim + 溯源校验 | 命中失败拒绝该事件 |
 | `evidence_tier` | 是 | `hard` / `moderate` / `weak` | 小写化 | 非法拒绝该事件 |
@@ -1289,14 +1287,75 @@ LLM 输出不能直接入库，必须经过标准化。
 
 建议第一阶段不要设计成大而全的多 Agent 系统，而是从“单一职责法官节点”开始。
 
+当前实现状态：
+
+- 已新增 `infection_case_snapshot` 表结构草案
+- 已新增 `InfectionEvidencePacket` / `JudgeDecisionResult` 模型
+- 已新增 `InfectionEvidencePacketBuilder` / `InfectionJudgeService`
+- 已将第二层最小执行链接入 `CASE_RECOMPUTE`
+- 已新增 `infection_alert_result` 最小结果表草案
+
+当前第二层状态是：
+
+- 调度已接线
+- snapshot / packet / result 已回写
+- 法官节点已切换为单节点 LLM 裁决
+- 当法官输出非法或调用失败时，使用确定性 fallback 保底
+- 当前仍缺：
+  - 更细的 nosocomial 裁决
+  - 结果 diff 生成
+  - 多节点拆分裁决
+
+当前法官节点的已落地约束：
+
+- 只允许基于 `InfectionEvidencePacket` 裁决
+- 输出中的 `newSupportingKeys / newAgainstKeys / newRiskKeys / dismissedKeys`
+  必须引用 packet 中真实存在的 `event_key`
+- 非法枚举值、缺失关键字段、非法时间会触发 fallback
+- fallback 只给出保守的 `no_risk / candidate` 结果，不直接生成激进 warning
+
 ## 12.1 基础判断节点
 
-建议优先实现：
+当前已收敛为“确定性预处理 + LLM 法官裁决”两段式。
 
-- 新发性判断
-- 48 小时后新发判断
-- 术后 / 器械暴露关联判断
-- 感染极性判断
+### 12.1.1 确定性基础判断预处理
+
+以下 4 个基础判断不再交给第二层 LLM 计算，而是在 `InfectionEvidencePacketBuilder` 组包阶段确定性计算，并写入 `InfectionEvidencePacket.precomputed`：
+
+- `newOnsetFlag`
+- `after48hFlag`
+- `procedureRelatedFlag`
+- `deviceRelatedFlag`
+
+当前规则：
+
+- `newOnsetFlag`
+  - 基于 `decisionBuckets.newGroupIds` 中新增支持证据组/风险证据组判断
+- `after48hFlag`
+  - 基于可信入院时间与关键事件时间比较
+  - 当前可信入院时间来源：`filter_data_json.admission_time`
+  - 无法解析时输出 `unknown`
+- `procedureRelatedFlag`
+  - 当前第一版按“存在 `procedure_exposure` 风险背景 + 存在支持证据”判断
+- `deviceRelatedFlag`
+  - 当前第一版按“存在 `device_exposure` 风险背景 + 存在支持证据”判断
+
+这样做的目的：
+
+- 把时间关系、新旧比较、暴露存在性这类结构逻辑从 27B 模型中拿出来
+- 降低第二层 prompt 复杂度
+- 降低法官节点的输出漂移和 fallback 率
+
+### 12.1.2 第二层法官语义裁决
+
+当前第二层 LLM 法官只负责以下语义裁决字段：
+
+- `infectionPolarity`
+- `decisionStatus`
+- `warningLevel`
+- `primarySite`
+- `nosocomialLikelihood`
+- `decisionReason`
 
 ## 12.2 第二阶段复杂判断节点
 
@@ -1318,6 +1377,39 @@ LLM 输出不能直接入库，必须经过标准化。
 
 - 法官节点输入应是“硬事实证据包”
 - 不应再直接吃原始大 JSON
+- 不应早于事件入池介入
+- 不应等待“当天全部数据结束”后才运行
+
+### 12.4 介入时机
+
+法官节点的合理介入点是：
+
+1. `EVENT_EXTRACT` 已完成
+2. 新事件已写入 `infection_event_pool`
+3. 命中 `CASE_RECOMPUTE` 触发条件
+4. 患者级防抖窗口结束，或达到最大等待阈值
+
+不采用：
+
+- 每落一条事件立即裁决
+- 等自然日结束后统一裁决
+
+建议的第一版调度参数：
+
+- `high` 强触发：`5` 分钟防抖
+- `normal` 普通触发：`10` 分钟防抖
+- `max_wait`：`30` 分钟强制执行
+
+当前代码已落地的第一版行为：
+
+- `CASE_RECOMPUTE` 任务已改成患者级 `merge_key`
+- 已写入：
+  - `first_triggered_at`
+  - `last_event_at`
+  - `debounce_until`
+  - `trigger_priority`
+  - `event_pool_version_at_enqueue`
+- 当前强/弱触发仍主要依赖任务优先级映射，后续可再细化
 
 ## 13. 硬事实证据包设计
 
@@ -1333,18 +1425,112 @@ LLM 输出不能直接入库，必须经过标准化。
 
 建议内容：
 
-- 当前活跃事件
-- 新增关键事件
-- 已排除事件
-- 时间线背景
-- 手术 / 器械暴露信息
-- 检验 / 影像 / 体征摘要
+- `eventCatalog`
+- `evidenceGroups`
+- `decisionBuckets`
+- `backgroundSummary`
+- `recentChanges`
+- `judgeContext`
+- `precomputed`
+
+其中：
+
+- `eventCatalog`
+  - 法官可见的原子事件目录，每条事件只出现一次
+- `evidenceGroups`
+  - 同类证据折叠后的证据簇
+- `decisionBuckets`
+  - 只保存 `new/support/against/risk` 的 group 引用，不再重复展开事件对象
+- `backgroundSummary`
+  - `background` 事件统计摘要，不再把全部弱背景明细直接送给法官
+- `recentChanges` 使用小型变化摘要，不再使用完整 timeline
+- `judgeContext` 只保留少量聚合背景：
+  - `recentOperations`
+  - `recentDevices`
+  - `recentAntibiotics`
+  - `majorSites`
+- `precomputed` 当前包括：
+  - `newOnsetFlag`
+  - `after48hFlag`
+  - `procedureRelatedFlag`
+  - `deviceRelatedFlag`
+  - `precomputeReasonJson`
 
 作用：
 
 - 作为法官节点统一输入
 - 降低 Prompt 不稳定性
 - 便于调试与回放
+
+### 13.1 当前模型结构
+
+当前已落地模型：
+
+- `InfectionEvidencePacket`
+- `JudgeCatalogEvent`
+- `JudgeEvidenceGroup`
+- `JudgeDecisionBuckets`
+- `JudgeBackgroundSummary`
+- `InfectionRecentChanges`
+- `InfectionJudgeContext`
+- `InfectionJudgePrecompute`
+- `JudgeDecisionResult`
+
+### 13.1.1 当前压缩策略
+
+当前代码已切换为“单份事件目录 + 证据簇 + 引用桶”：
+
+- 原子事件只在 `eventCatalog` 中出现一次
+- `evidenceGroups` 负责折叠同类证据
+- `decisionBuckets` 只保存 group 引用
+- `background` 事件降级为 `backgroundSummary`
+
+这样做的目标：
+
+- 减少法官输入重复
+- 保留所有原子事件的追溯关系
+- 降低长 `source_text` 和多数组重复展开造成的 token 膨胀
+
+第一版字段收敛目标：
+
+- 法官只看“与裁决有关的事件”
+- 不再重新抽取原始事实
+- 不再默认回读原始大 JSON
+- 不再要求 LLM 计算 48 小时、新发、procedure/device 关联这类结构逻辑
+
+### 13.2 快照表
+
+当前已规划快照表：
+
+- `infection_case_snapshot`
+
+最小字段集：
+
+- `reqno`
+- `case_state`
+- `warning_level`
+- `primary_site`
+- `nosocomial_likelihood`
+- `current_new_onset_flag`
+- `current_after_48h_flag`
+- `current_procedure_related_flag`
+- `current_device_related_flag`
+- `current_infection_polarity`
+- `active_event_keys_json`
+- `active_risk_keys_json`
+- `active_against_keys_json`
+- `last_judge_time`
+- `last_result_version`
+- `last_event_pool_version`
+- `last_candidate_since`
+- `last_warning_since`
+- `judge_debounce_until`
+
+作用：
+
+- 支持法官节点做增量裁决
+- 支持 `CASE_RECOMPUTE` 防抖与最大等待控制
+- 支持状态迁移，而不是每次全量重建
 
 ## 14. 触发局部重算策略
 
@@ -1365,6 +1551,42 @@ LLM 输出不能直接入库，必须经过标准化。
 - 与感染无关的重复数据
 - 非关键字段修订
 - 纯背景摘要变化
+
+### 14.1 第一版触发分级
+
+强触发：
+
+- `microbiology.culture_positive`
+- 明确感染灶影像
+- 明确 `infection_positive_statement`
+- 明确 `infection_negative_statement`
+- `device_exposure`
+- `procedure_exposure`
+- `antibiotic_upgraded`
+
+普通触发：
+
+- 一般 `lab_abnormal`
+- 一般 `antibiotic_started`
+- 一般 `risk_only`
+- 一般文本判断语义
+
+### 14.2 第一版任务合并规则
+
+`CASE_RECOMPUTE` 应按患者合并，而不是按单条事件重复建任务。
+
+推荐 `merge_key`：
+
+- `CASE_RECOMPUTE:{reqno}`
+
+目标：
+
+- 同一患者同一时间窗只保留一条有效重算任务
+- 新触发只刷新：
+  - `last_event_at`
+  - `debounce_until`
+  - `trigger_priority`
+  - `event_pool_version_at_enqueue`
 
 ## 15. 结果输出设计
 
@@ -1484,7 +1706,7 @@ LLM 输出不能直接入库，必须经过标准化。
   - 临床文本
   - 中间层语义
   - 摘要上下文
-- LLM 返回非法 JSON 时，写入 `infection_llm_node_run` 错误记录，并保底入 `note` 事件
+- LLM 返回非法 JSON 时，写入 `infection_llm_node_run` 错误记录，并保底入 `assessment` 事件
 - 低置信度时，语义事件能正确标记或跳过
 - 窗口 JSON 不直接落入事件池，只生成上下文对象
 

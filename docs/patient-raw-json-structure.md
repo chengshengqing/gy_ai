@@ -40,6 +40,8 @@
 {
   "reqno": "住院号/就诊流水号",
   "dataDate": "yyyy-MM-dd",
+  "admission_time": "yyyy-MM-dd HH:mm",
+  "patient_summary": "患者入院时间：2026-04-01，性别：女，年龄：40岁",
   "pat_diagInfor": [],
   "pat_bodySurface": [],
   "pat_doctorAdvice_long": [],
@@ -58,7 +60,7 @@
 说明：
 
 - `data_json` 只保存原始采集块，不做规则压缩
-- 当前 `patInfor` 不写入 `data_json`
+- 当前 `patInfor` 完整对象不写入 `data_json`，只额外写入顶层字段 `admission_time`、`patient_summary`
 - `otherInfo` 也不写入 `data_json`
 
 ### 3.2 各原始块字段
@@ -277,6 +279,8 @@
 {
   "reqno": "住院号/就诊流水号",
   "dataDate": "yyyy-MM-dd",
+  "admission_time": "yyyy-MM-dd HH:mm",
+  "patient_summary": "患者入院时间：2026-04-01，性别：女，年龄：40岁",
   "patient_info": {},
   "diagnosis": [],
   "vital_signs": [],
@@ -299,6 +303,28 @@
 - 用药、转科、手术信息当前也会进入 `filter_data_json`，但以 compact 事实块形式保存，不再直接暴露原始 `pat_*` 结构
 
 ### 4.2 顶层字段说明
+
+#### `admission_time`
+
+```json
+"2026-04-01 08:30"
+```
+
+说明：
+
+- 由 `patInfor.inhosday` 直接格式化得到
+- 当前单独拆出，便于后续按入院时间做计算
+
+#### `patient_summary`
+
+```json
+"患者入院时间：2026-04-01，性别：女，年龄：40岁"
+```
+
+说明：
+
+- 由 `patInfor.inhosday`、`patInfor.sex`、`patInfor.age` 拼接得到
+- 当前用于顶层直接展示，与 `dataDate` 处于同一层级
 
 #### `patient_info`
 

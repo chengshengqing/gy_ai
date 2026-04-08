@@ -1,7 +1,6 @@
 package com.zzhy.yg_ai.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -83,17 +82,5 @@ class InfectionEventPoolServiceImplTest {
         assertEquals(99L, updated.getId());
         assertEquals(InfectionEventStatus.ACTIVE.code(), updated.getStatus());
         assertNotNull(updated.getUpdatedAt());
-    }
-
-    @Test
-    void markSupersededMarksRowInactive() {
-        infectionEventPoolService.markSuperseded(55L);
-
-        ArgumentCaptor<InfectionEventPoolEntity> captor = ArgumentCaptor.forClass(InfectionEventPoolEntity.class);
-        verify(infectionEventPoolMapper).updateById(captor.capture());
-        InfectionEventPoolEntity updated = captor.getValue();
-        assertEquals(55L, updated.getId());
-        assertEquals(InfectionEventStatus.SUPERSEDED.code(), updated.getStatus());
-        assertFalse(updated.getIsActive());
     }
 }

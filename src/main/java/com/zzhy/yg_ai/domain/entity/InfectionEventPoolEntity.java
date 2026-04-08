@@ -13,7 +13,7 @@ import lombok.Data;
 
 /**
  * 院感标准化事件池。
- * 当前阶段先提供数据骨架，不接入现有主流程写入。
+ * 当前阶段采用按 event_key 维护最新态的写入模型。
  */
 @Data
 @TableName("infection_event_pool")

@@ -29,6 +29,11 @@ public class InfectionEventTaskEntity implements Serializable {
     private String triggerReasonCodes;
     private Integer priority;
     private String mergeKey;
+    private LocalDateTime firstTriggeredAt;
+    private LocalDateTime lastEventAt;
+    private LocalDateTime debounceUntil;
+    private String triggerPriority;
+    private Long eventPoolVersionAtEnqueue;
     private Integer attemptCount;
     private Integer maxAttempts;
     private LocalDateTime availableAt;
@@ -45,6 +50,9 @@ public class InfectionEventTaskEntity implements Serializable {
         this.maxAttempts = maxAttempts;
         this.priority = this.priority == null ? 100 : this.priority;
         this.availableAt = now;
+        this.firstTriggeredAt = this.firstTriggeredAt == null ? now : this.firstTriggeredAt;
+        this.lastEventAt = this.lastEventAt == null ? now : this.lastEventAt;
+        this.debounceUntil = this.debounceUntil == null ? now : this.debounceUntil;
         this.createTime = now;
         this.updateTime = now;
     }

@@ -47,4 +47,5 @@ public enum InfectionEventSubtype {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unsupported InfectionEventSubtype code: " + code));
     }
+
 }

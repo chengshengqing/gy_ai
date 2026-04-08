@@ -50,9 +50,9 @@
 当前字段边界补充：
 
 - `data_json`
-  只保存原始采集块，包含 `pat_diagInfor`、`pat_bodySurface`、`pat_doctorAdvice_*`、`pat_illnessCourse`、`pat_testSam`、`pat_useMedicine`、`pat_videoResult`、`pat_transfer`、`pat_opsCutInfor`、`pat_test`
+  只保存原始采集块，包含顶层字段 `admission_time`、`patient_summary`，以及 `pat_diagInfor`、`pat_bodySurface`、`pat_doctorAdvice_*`、`pat_illnessCourse`、`pat_testSam`、`pat_useMedicine`、`pat_videoResult`、`pat_transfer`、`pat_opsCutInfor`、`pat_test`
 - `filter_data_json`
-  保存规则处理后的事实块，当前包含 `patient_info`、`diagnosis`、`vital_signs`、`lab_results`、`imaging`、`doctor_orders`、`use_medicine`、`transfer`、`operation`、`clinical_notes`、过滤后的 `pat_illnessCourse`
+  保存规则处理后的事实块，当前包含顶层字段 `admission_time`、`patient_summary`，以及 `patient_info`、`diagnosis`、`vital_signs`、`lab_results`、`imaging`、`doctor_orders`、`use_medicine`、`transfer`、`operation`、`clinical_notes`、过滤后的 `pat_illnessCourse`
 - `struct_data_json`
   保存单日结构化中间结果，不再重复存放单日摘要内容
 - `event_json`
@@ -177,7 +177,14 @@
 当前实现补充：
 
 - `EVENT_EXTRACT` 的 `merge_key` 使用 `patient_raw_data_id + raw_data_last_time`
-- `CASE_RECOMPUTE` 的 `merge_key` 使用 `reqno + time_bucket`
+- `CASE_RECOMPUTE` 的 `merge_key` 已改为患者级：
+  - `CASE_RECOMPUTE:{reqno}`
+- `CASE_RECOMPUTE` 已新增防抖字段：
+  - `first_triggered_at`
+  - `last_event_at`
+  - `debounce_until`
+  - `trigger_priority`
+  - `event_pool_version_at_enqueue`
 - 候选层不再额外调用 LLM，只按变更来源写入 `trigger_reason_codes`
 - `ILLNESS_COURSE` 新增会直接路由到 `EVENT_EXTRACT`
 
@@ -255,48 +262,22 @@ infection_llm_node_run
 
 ## 4.1 表职责
 
-这是院感预警分析的核心中枢表。
+`infection_event_pool` 是院感事件抽取链路的标准化事件池。
 
-作用：
+当前阶段采用“最新态事件池”设计：
 
-- 保存从每日快照中提取出的标准化事件
-- 让后续分析围绕事件而不是原始 JSON 展开
-- 作为状态快照和法官节点的主输入
+- 按 `event_key` 幂等写入
+- 同一 `event_key` 命中时原地更新
+- 当前不维护事件版本链
+- 当前不把 `superseded` 作为主流程能力
 
-## 4.1.1 需求文档优先字段
+它承担的职责是：
 
-如果按你最新需求文档落库，建议优先采用以下字段命名：
+- 保存标准化后的事件
+- 作为病例级法官节点的主输入
+- 作为病例快照与预警结果的上游事实层
 
-- `id`
-- `reqno`
-- `data_date`
-- `source_raw_id`
-- `event_key`
-- `parent_event_key`
-- `event_time`
-- `event_date`
-- `event_type`
-- `event_subtype`
-- `body_site`
-- `event_name`
-- `event_value`
-- `event_unit`
-- `abnormal_flag`
-- `infection_related`
-- `negation_flag`
-- `uncertainty_flag`
-- `severity_level`
-- `clinical_meaning`
-- `source_layer`
-- `source_module`
-- `source_path`
-- `source_text`
-- `status`
-- `payload_json`
-- `create_time`
-- `update_time`
-
-## 4.2 建议主字段
+## 4.2 Canonical Schema
 
 ### 主键与关联字段
 
@@ -349,46 +330,46 @@ infection_llm_node_run
 - `created_at`
 - `updated_at`
 
-## 4.3 字段说明建议
-
-### `event_key`
-
-用途：
-
-- 做幂等
-- 做去重
-- 做版本比较
-
-生成建议：
-
-- `reqno + event_type + normalized_time + normalized_source + normalized_content_hash`
-
-需求文档中的稳定规则建议：
-
-- `reqno + "|" + data_date + "|" + source_layer + "|" + source_module + "|" + business_key`
+### Canonical 枚举定义
 
 ### `source_type`
 
-建议枚举：
-
-- `structured_fact`
-- `clinical_text`
-- `mid_semantic`
-- `manual_patch`
-
-需求文档里对应字段名为：
-
-- `source_layer`
-
-第一版建议值：
+当前标准值：
 
 - `raw`
 - `mid`
 - `summary`
+- `manual_patch`
+
+说明：
+
+- `source_type` 表示落库事件的来源层级
+- 不使用 `structured_fact`、`clinical_text`、`mid_semantic` 这类 block 概念作为落库值
 
 ### `event_type`
 
-建议第一阶段先控制在有限集合：
+当前标准值：
+
+- `diagnosis`
+- `vital_sign`
+- `lab_panel`
+- `lab_result`
+- `microbiology`
+- `imaging`
+- `order`
+- `device`
+- `procedure`
+- `assessment`
+- `problem`
+
+说明：
+
+- `event_type` 是一级事件类型
+- 只描述事实类别，不承载细粒度临床语义
+
+### `event_subtype`
+
+当前标准值：
 
 - `fever`
 - `lab_abnormal`
@@ -402,103 +383,166 @@ infection_llm_node_run
 - `infection_positive_statement`
 - `infection_negative_statement`
 - `contamination_statement`
+- `contamination_possible`
 - `colonization_statement`
+- `colonization_possible`
 
-需求文档中对一级大类的要求更偏“事实类别”，第一版至少要支持：
+说明：
 
-- `diagnosis`
-- `vital_sign`
-- `lab_panel`
-- `lab_result`
-- `microbiology`
-- `imaging`
-- `order`
-- `device`
-- `procedure`
-- `note`
-- `assessment`
-- `consult`
-- `problem`
+- `event_subtype` 是二级事件类型
+- 只描述“这是什么事件”，不描述最终推理方向
 
-建议做法：
+### `clinical_meaning`
 
-- `event_type` 使用一级大类枚举
-- `event_subtype` 使用受控二级枚举
+当前标准值：
+
+- `infection_support`
+- `infection_against`
+- `infection_uncertain`
+- `screening`
+- `baseline_problem`
+
+说明：
+
+- `clinical_meaning` 只描述事件对感染判断的语义含义
+- 不再承载 `device_exposure`、`procedure_exposure` 这类暴露概念
+
+### `body_site`
+
+当前标准值：
+
+- `urinary`
+- `respiratory`
+- `upper_respiratory`
+- `lower_respiratory`
+- `pleural`
+- `cardiac_valve`
+- `myocardial_pericardial`
+- `mediastinum`
+- `vascular`
+- `bloodstream`
+- `blood`
+- `gastrointestinal`
+- `abdominal`
+- `intra_abdominal`
+- `central_nervous_system`
+- `surgical_site`
+- `superficial_incision`
+- `deep_incision`
+- `organ_space`
+- `skin_soft_tissue`
+- `burn`
+- `joint`
+- `bone_joint`
+- `genital`
+- `eye_ear_oral`
+- `systemic`
+- `unknown`
+- `other`
+
+### `abnormal_flag`
+
+当前标准值：
+
+- `high`
+- `low`
+- `positive`
+- `negative`
+- `abnormal`
+- `normal`
+
+说明：
+
+- 只用于表达原始检验或结果文本中的异常标记
+- 允许为空
+- 不替代 `clinical_meaning` 或 `evidence_role`
 
 ### `status`
 
-建议枚举：
+当前标准值：
 
 - `active`
 - `revoked`
 - `superseded`
 - `invalid`
 
-## 4.4 索引建议
+说明：
 
-- `idx_reqno_event_time`
-- `idx_reqno_event_type`
-- `idx_event_key`
-- `idx_reqno_active_status`
-- `idx_raw_data_id`
+- 当前写路径主用 `active`
+- 其余状态保留为扩展值，不作为当前主流程能力
 
-如果严格按需求文档落库，索引建议调整为：
+## 4.3 Implementation Notes
+
+### `event_key`
+
+用途：
+
+- 幂等写入
+- 去重
+- 作为病例快照版本比较的基础键
+
+当前实现规则：
+
+- `reqno + "|" + data_date + "|" + source_type + "|" + source_module + "|" + short_hash(business_key)`
+
+其中 `business_key` 当前由以下字段组合：
+
+- `source_section`
+- `event_type`
+- `event_subtype`
+- `event_time`
+- `site`
+- `title`
+- `content`
+
+### `event_category`
+
+当前标准值：
+
+- `fact`
+- `text`
+- `semantic`
+- `context`
+
+说明：
+
+- `fact` 对应 `STRUCTURED_FACT`
+- `text` 对应 `CLINICAL_TEXT`
+- `semantic` 对应 `MID_SEMANTIC`
+- `context` 对应 `TIMELINE_CONTEXT`
+
+### `attributes_json`
+
+当前固定承载的扩展字段包括：
+
+- `event_value`
+- `event_unit`
+- `abnormal_flag`
+- `infection_related`
+- `negation_flag`
+- `uncertainty_flag`
+- `clinical_meaning`
+- `evidence_tier`
+- `evidence_role`
+- `source_section`
+
+## 4.4 Future Evolution
+
+当前不做：
+
+- 事件版本链
+- `superseded` 驱动的主流程状态迁移
+- 追加式历史事件审计表
+
+如果未来需要事件生命周期审计，应单独升级 `infection_event_pool` 为版本表，而不是继续在当前最新态模型上叠加伪版本字段语义。
+
+## 4.5 索引建议
 
 - `uk_infection_event_pool_event_key`
-- `idx_infection_event_pool_reqno_date`
-- `idx_infection_event_pool_reqno_type`
 - `idx_infection_event_pool_reqno_time`
-
-## 4.5 关键枚举补充
-
-### `body_site`
-
-需求文档要求第一版至少支持：
-
-- `urinary`
-- `respiratory`
-- `bloodstream`
-- `surgical_site`
-- `abdominal`
-- `joint`
-- `systemic`
-- `unknown`
-
-并继续补齐更细粒度部位，例如：
-
-- 上呼吸道
-- 下呼吸道
-- 胸膜腔
-- 心脏瓣膜
-- 心肌或心包
-- 纵隔
-- 动静脉
-- 血液
-- 胃肠道
-- 腹（盆）腔内组织
-- 中枢神经系统
-- 泌尿道
-- 表浅切口
-- 深部切口
-- 器官/腔隙
-- 皮肤软组织
-- 烧伤部位
-- 骨和关节
-- 生殖系统
-- 眼/耳/口腔
-- 其他
-
-### `clinical_meaning`
-
-需求文档建议至少支持：
-
-- `infection_support`
-- `infection_against`
-- `infection_uncertain`
-- `device_exposure`
-- `procedure_exposure`
-- `screening`
-- `baseline_problem`
+- `idx_infection_event_pool_reqno_type`
+- `idx_infection_event_pool_reqno_active`
+- `idx_infection_event_pool_raw_data_id`
 
 ## 5. `infection_llm_node_run`
 
@@ -573,22 +617,129 @@ infection_llm_node_run
 - `created_at`
 - `updated_at`
 
-## 5.3 `node_type` 建议枚举
+## 5.3 `node_type` 当前枚举
 
-- `event_extractor`
-- `new_onset_judge`
-- `after_48h_judge`
-- `procedure_association_judge`
-- `infection_polarity_judge`
-- `site_attribution_judge`
-- `severity_judge`
-- `explanation_generator`
-- `final_audit_planning_only`
+当前代码中的正式取值为：
+
+- `EVENT_EXTRACTOR`
+- `STRUCTURED_FACT_REFINEMENT`
+- `CASE_JUDGE`
+- `NEW_ONSET_JUDGE`
+- `AFTER_48H_JUDGE`
+- `PROCEDURE_ASSOCIATION_JUDGE`
+- `INFECTION_POLARITY_JUDGE`
+- `SITE_ATTRIBUTION_JUDGE`
+- `SEVERITY_JUDGE`
+- `EXPLANATION_GENERATOR`
+- `FINAL_AUDIT_PLANNING_ONLY`
 
 说明：
 
-- `final_audit_planning_only` 仅作为预留枚举
+- 当前已实际落地的节点为：
+  - `EVENT_EXTRACTOR`
+  - `STRUCTURED_FACT_REFINEMENT`
+  - `CASE_JUDGE`
+- `FINAL_AUDIT_PLANNING_ONLY` 仅作为预留枚举
 - 当前阶段不实际运行
+
+## 5.4 `normalized_output_payload` 当前结构
+
+该字段当前统一承载：
+
+- `stats`
+- 节点级结果对象
+- 可选错误信息
+
+### `EVENT_EXTRACTOR`
+
+当前结构：
+
+```json
+{
+  "stats": {
+    "raw_event_count": 3,
+    "normalized_event_count": 2,
+    "rejected_event_count": 1,
+    "persisted_event_count": 2
+  },
+  "events": [
+    {
+      "eventKey": "..."
+    }
+  ],
+  "error_message": "..."
+}
+```
+
+说明：
+
+- `raw_event_count` 表示 LLM 原始输出中 `events` 数组长度
+- `normalized_event_count` 表示通过 `EventNormalizer` 的事件数
+- `rejected_event_count` 表示 `raw - normalized`
+- `persisted_event_count` 表示真正写入 `infection_event_pool` 的事件数
+- 失败时 `events` 为空，并额外记录 `error_message`
+
+### `STRUCTURED_FACT_REFINEMENT`
+
+当前结构：
+
+```json
+{
+  "stats": {
+    "raw_section_count": 1,
+    "raw_candidate_count": 4,
+    "promoted_candidate_count": 1,
+    "kept_reference_count": 1,
+    "dropped_candidate_count": 2,
+    "changed_section_count": 1
+  },
+  "refinements": [
+    "doctor_orders"
+  ],
+  "error_message": "..."
+}
+```
+
+说明：
+
+- `raw_section_count` 表示本次参与 refinement 的 section 数
+- `raw_candidate_count` 表示全部 candidate 数
+- `promoted_candidate_count / kept_reference_count / dropped_candidate_count` 表示模型返回的动作数量
+- `changed_section_count` 表示真正发生 `priority_facts/reference_facts` 变更的 section 数
+
+### `CASE_JUDGE`
+
+当前结构：
+
+```json
+{
+  "stats": {
+    "raw_group_count": 5,
+    "support_group_count": 2,
+    "against_group_count": 1,
+    "risk_group_count": 1,
+    "new_group_count": 2,
+    "referenced_key_count": 8,
+    "selected_supporting_key_count": 2,
+    "selected_against_key_count": 1,
+    "selected_risk_key_count": 1,
+    "dismissed_key_count": 0,
+    "fallback_used": false
+  },
+  "decision": {
+    "decisionStatus": "candidate"
+  },
+  "error_message": "..."
+}
+```
+
+说明：
+
+- `raw_group_count` 表示法官输入中的 `evidenceGroups` 数
+- `support_group_count / against_group_count / risk_group_count / new_group_count` 来自 `decisionBuckets`
+- `referenced_key_count` 表示法官可引用的合法 `eventKey` 数
+- `selected_*_key_count` 与 `dismissed_key_count` 表示法官实际输出采用的 key 数
+- `fallback_used=true` 表示本次法官调用失败，最终写入的是确定性 fallback 结果
 
 ## 6. `infection_case_snapshot`
 
@@ -621,76 +772,61 @@ infection_llm_node_run
 
 ## 6.2 建议主字段
 
-### 主键与关联字段
+### 当前最小落地字段
 
 - `id`
 - `reqno`
-- `latest_alert_result_id`
-
-### 当前状态字段
-
-- `current_status`
-- `watch_flag`
-- `triggered_flag`
-- `current_risk_level`
-- `current_suspected_site`
-- `current_stage`
-
-### 当前证据摘要字段
-
-- `active_event_count`
-- `key_event_summary`
-- `supporting_evidence_json`
-- `excluding_evidence_json`
-
-### 时间字段
-
-- `last_event_time`
-- `last_analysis_time`
-- `last_snapshot_date`
-
-### 版本字段
-
+- `case_state`
+- `warning_level`
+- `primary_site`
+- `nosocomial_likelihood`
+- `current_new_onset_flag`
+- `current_after_48h_flag`
+- `current_procedure_related_flag`
+- `current_device_related_flag`
+- `current_infection_polarity`
+- `active_event_keys_json`
+- `active_risk_keys_json`
+- `active_against_keys_json`
+- `last_judge_time`
 - `last_result_version`
-- `last_result_change_type`
-
-### 审计字段
-
+- `last_event_pool_version`
+- `last_candidate_since`
+- `last_warning_since`
+- `judge_debounce_until`
 - `created_at`
 - `updated_at`
 
-## 6.3 `current_status` 建议枚举
+说明：
 
-- `idle`
-- `watch`
-- `triggered`
-- `suppressed`
+- 当前代码已按这组最小字段落地
+- 其目标是先支撑：
+  - 患者级防抖
+  - 增量裁决
+  - 当前态维护
+- 更丰富的展示字段后续可再扩展
+
+## 6.3 当前受控值
+
+### `case_state`
+
+- `no_risk`
+- `candidate`
+- `warning`
 - `resolved`
 
-## 6.4 `last_result_change_type` 建议枚举
-
-- `new`
-- `upgraded`
-- `downgraded`
-- `unchanged`
-- `resolved`
-
-需求文档中对快照表的受控值更明确，建议同步提供：
-
-### `overall_status`
+### `warning_level`
 
 - `none`
-- `watch`
-- `triggered`
-- `excluded`
-- `resolved`
-
-### `overall_risk_level`
-
-- `high`
-- `medium`
 - `low`
-- `none`
+- `medium`
+- `high`
+
+### `nosocomial_likelihood`
+
+- `low`
+- `medium`
+- `high`
 
 ## 7. `infection_alert_result`
 
@@ -757,6 +893,36 @@ infection_llm_node_run
 
 - `main_judge_node_run_id`
 - `status`
+
+## 7.3 当前最小落地字段
+
+当前代码已先落最小版本：
+
+- `id`
+- `reqno`
+- `data_date`
+- `result_version`
+- `alert_status`
+- `overall_risk_level`
+- `primary_site`
+- `new_onset_flag`
+- `after_48h_flag`
+- `procedure_related_flag`
+- `device_related_flag`
+- `infection_polarity`
+- `result_json`
+- `diff_json`
+- `source_snapshot_id`
+- `create_time`
+
+说明：
+
+- `result_json` 当前保存法官节点完整输出
+- `diff_json` 当前仍是占位，用于先保留 packet/差异上下文
+- 后续可再扩展：
+  - `main_judge_node_run_id`
+  - `doctor_readable_explanation`
+  - 更细的 diff 结构
 
 ### 审计字段
 
@@ -849,6 +1015,16 @@ infection_llm_node_run
 - `NormalizedInfectionEvent`
 - `InfectionEvidencePacket`
 - `InfectionJudgeResult`
+
+当前补充：
+
+- `InfectionEvidencePacket` 已改为法官压缩输入模型
+- 不再在 packet 中重复展开 `newEvents / activeEvents / supportingEvidence / againstEvidence / riskContext`
+- 当前 packet 主结构为：
+  - `eventCatalog`
+  - `evidenceGroups`
+  - `decisionBuckets`
+  - `backgroundSummary`
 
 ## 11. Mapper / Service 落地建议
 

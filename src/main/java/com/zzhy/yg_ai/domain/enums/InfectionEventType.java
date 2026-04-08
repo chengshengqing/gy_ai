@@ -12,9 +12,7 @@ public enum InfectionEventType {
     ORDER("order", "医嘱"),
     DEVICE("device", "器械"),
     PROCEDURE("procedure", "操作"),
-    NOTE("note", "文书原文"),
     ASSESSMENT("assessment", "临床判断"),
-    CONSULT("consult", "会诊意见"),
     PROBLEM("problem", "问题列表");
 
     private final String code;
@@ -39,4 +37,5 @@ public enum InfectionEventType {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unsupported InfectionEventType code: " + code));
     }
+
 }

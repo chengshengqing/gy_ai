@@ -1,6 +1,8 @@
 package com.zzhy.yg_ai.ai.prompt;
 
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
+import com.zzhy.yg_ai.domain.enums.InfectionSourceSection;
+import com.zzhy.yg_ai.domain.schema.InfectionEventSchema;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -8,6 +10,7 @@ public class WarningAgentPrompt {
 
     public static final String EVENT_EXTRACTOR_PROMPT_VERSION = "infection-event-extractor-v2";
     public static final String STRUCTURED_FACT_REFINEMENT_PROMPT_VERSION = "structured-fact-refinement-v1";
+    public static final String CASE_JUDGE_PROMPT_VERSION = "infection-case-judge-v1";
 
     private static final String COMMON_RULES = """
             你是院感预警事件抽取器。
@@ -21,21 +24,21 @@ public class WarningAgentPrompt {
               "events": [
                 {
                   "event_time": "yyyy-MM-dd HH:mm:ss.SSS",
-                  "event_type": "diagnosis|vital_sign|lab_panel|lab_result|microbiology|imaging|order|device|procedure|note|assessment|consult|problem",
-                  "event_subtype": "fever|lab_abnormal|culture_ordered|culture_positive|antibiotic_started|antibiotic_upgraded|procedure_exposure|device_exposure|imaging_infection_hint|infection_positive_statement|infection_negative_statement|contamination_statement|contamination_possible|colonization_statement|colonization_possible",
-                  "body_site": "urinary|respiratory|upper_respiratory|lower_respiratory|pleural|cardiac_valve|myocardial_pericardial|mediastinum|vascular|bloodstream|blood|gastrointestinal|abdominal|intra_abdominal|central_nervous_system|surgical_site|superficial_incision|deep_incision|organ_space|skin_soft_tissue|burn|joint|bone_joint|genital|eye_ear_oral|systemic|unknown|other",
+                  "event_type": "%s",
+                  "event_subtype": "%s",
+                  "body_site": "%s",
                   "event_name": "简短事件名",
                   "event_value": null,
                   "event_unit": null,
-                  "abnormal_flag": null,
+                  "abnormal_flag": "%s|null",
                   "infection_related": true,
                   "negation_flag": false,
                   "uncertainty_flag": false,
-                  "clinical_meaning": "infection_support|infection_against|infection_uncertain|device_exposure|procedure_exposure|screening|baseline_problem",
-                  "source_section": "diagnosis|vital_signs|lab_results|imaging|doctor_orders|use_medicine|transfer|operation|null",
+                  "clinical_meaning": "%s",
+                  "source_section": "%s",
                   "source_text": "支持该事件的原文",
-                  "evidence_tier": "hard|moderate|weak",
-                  "evidence_role": "support|against|risk_only|background"
+                  "evidence_tier": "%s",
+                  "evidence_role": "%s"
                 }
               ]
             }
@@ -50,7 +53,16 @@ public class WarningAgentPrompt {
             7. evidence_tier 表示证据硬度，不表示最终风险高低。
             8. evidence_role 表示证据方向，不表示事件类型。
             9. clinical_meaning 与 evidence_role 应保持语义一致，不要出现互相冲突
-            """;
+            """.formatted(
+            InfectionEventSchema.joinEventTypes(),
+            InfectionEventSchema.joinEventSubtypes(),
+            InfectionEventSchema.joinBodySites(),
+            InfectionEventSchema.joinAbnormalFlags(),
+            InfectionEventSchema.joinClinicalMeanings(),
+            InfectionEventSchema.joinSourceSections(true),
+            InfectionEventSchema.joinEvidenceTiers(),
+            InfectionEventSchema.joinEvidenceRoles()
+    );
 
     private static final String STRUCTURED_FACT_RULES = """
             当前 block_type=STRUCTURED_FACT。
@@ -179,7 +191,10 @@ public class WarningAgentPrompt {
             - risk/risk_alerts/risk_candidates 中的器械暴露、操作暴露、感染风险
 
             source_section 可为 null。
-            对纯风险项，可使用 event_type=problem 或 assessment，并将 clinical_meaning 设为 device_exposure / procedure_exposure / infection_uncertain。
+            对纯风险项：
+            - 明确器械暴露时，优先 event_type=device、event_subtype=device_exposure、evidence_role=risk_only
+            - 明确操作暴露时，优先 event_type=procedure、event_subtype=procedure_exposure、evidence_role=risk_only
+            - 仅有模糊感染风险、但无明确暴露类型时，可使用 event_type=problem 或 assessment，并将 clinical_meaning 设为 infection_uncertain
             """;
 
     private static final String STRUCTURED_FACT_REFINEMENT_COMMON_RULES = """
@@ -199,7 +214,7 @@ public class WarningAgentPrompt {
             {
               "items": [
                 {
-                  "source_section": "doctor_orders|use_medicine|operation",
+                  "source_section": "%s",
                   "candidate_id": "doctor_orders:c1",
                   "infection_relevance": "high|medium|low",
                   "suggested_role": "support|risk_only|background",
@@ -221,23 +236,115 @@ public class WarningAgentPrompt {
                - keep_reference：保留参考，但不应进入主视野
                - drop：当前对院感判断价值很低
             8. 要优先让真正和院感判断直接相关的候选进入主视野，不要让普通补液、低相关筛查、无关背景动作占据 promote。
-            """;
+            """.formatted(InfectionEventSchema.joinRefinementSourceSections());
 
     private static final String STRUCTURED_FACT_REFINEMENT_SECTION_RULES = """
             section 级约束：
 
-            1. source_section=doctor_orders
+            1. source_section=%s
                - 感染相关送检、抗感染相关关键医嘱、侵入性操作或暴露线索，可考虑 promote
                - 普通补液、与当前院感判断无关的常规筛查、低相关检查申请，通常不应 promote
 
-            2. source_section=use_medicine
+            2. source_section=%s
                - 抗菌药启动、升级、更换、围术期抗感染用药，可考虑 promote
                - 普通维持治疗、与感染判断关系弱的常规用药，通常不应 promote
 
-            3. source_section=operation
+            3. source_section=%s
                - 手术信息通常更接近风险背景，而不是感染成立证据
                - 只有与感染风险、暴露、切口、围术期感染评估直接相关的事实，才考虑 promote
                - 否则通常应 keep_reference 或 drop
+            """.formatted(
+            InfectionSourceSection.DOCTOR_ORDERS.code(),
+            InfectionSourceSection.USE_MEDICINE.code(),
+            InfectionSourceSection.OPERATION.code()
+    );
+
+    private static final String CASE_JUDGE_RULES = """
+            你是院感预警法官节点。
+            任务：基于 InfectionEvidencePacket 做病例级裁决，不重新抽取原始事实。
+
+            只允许依据 packet 中这 8 部分做判断：
+            - caseState
+            - eventCatalog
+            - evidenceGroups
+            - decisionBuckets
+            - backgroundSummary
+            - recentChanges
+            - judgeContext
+            - precomputed
+
+            precomputed 已由系统确定性计算完成：
+            - newOnsetFlag
+            - after48hFlag
+            - procedureRelatedFlag
+            - deviceRelatedFlag
+            你不得重新计算这些字段，也不要输出这些字段。
+
+            固定判断顺序：
+            1. infectionPolarity：当前更偏 support / against / uncertain
+            2. decisionStatus：no_risk / candidate / warning / resolved
+            3. warningLevel
+            4. primarySite
+            5. nosocomialLikelihood
+
+            决策速记：
+            - no_risk：当前没有足够风险或支持证据
+            - candidate：已有风险或部分支持证据，但还不足以正式预警
+            - warning：支持证据已经较稳定，且需要正式预警
+            - resolved：之前存在风险或预警，但当前已被反证覆盖或明显解除
+
+            医学优先级：
+            1. 微生物阳性、明确感染灶影像，优先视为强支持证据。
+            2. 手术、器械、送检、操作通常只作为风险背景证据，不得单独推出感染成立。
+            3. 普通实验室异常、弱诊断标签通常只作为支持背景。
+            4. 明确反证可压制弱支持证据，但不能机械否定强支持证据。
+            5. “医院获得性”判断必须结合 precomputed.after48hFlag、暴露背景、事件演变，不得仅凭单个感染标签得出。
+
+            输出约束：
+            1. evidenceGroups 是主裁决对象；decisionBuckets 给出 group 的方向标签；eventCatalog 只用于查询真实 event_key。
+            2. newSupportingKeys / newAgainstKeys / newRiskKeys / dismissedKeys 只能填写 packet 中真实存在的 event_key。
+               优先使用 evidenceGroup 的 representativeEventKey；只有必要时才返回同组内其他 event_key。
+            3. backgroundSummary 只作弱背景，不得把 background 统计直接当作强支持或强反证。
+            4. primarySite 只有证据明确时填写具体部位，否则填 unknown。
+            5. 若证据不足以正式 warning，优先 candidate，不要轻易 warning。
+            6. 若当前无新增有效证据且当前无活跃风险，可输出 no_risk 或 resolved。
+            7. 必须输出 infectionPolarity，且只能是 support|against|uncertain。
+
+            阅读顺序：
+            1. decisionBuckets.newGroupIds
+            2. decisionBuckets.supportGroupIds / againstGroupIds / riskGroupIds
+            3. evidenceGroups
+            4. judgeContext / recentChanges
+            5. precomputed
+
+            压缩包理解方式：
+            - eventCatalog：原子事件目录，每条事件只出现一次
+            - evidenceGroups：同类证据折叠后的证据簇
+            - decisionBuckets：证据簇方向标签
+            - backgroundSummary：弱背景摘要，不展开全部明细
+
+            输出必须严格为 JSON：
+            {
+              "infectionPolarity": "support|against|uncertain",
+              "decisionStatus": "no_risk|candidate|warning|resolved",
+              "warningLevel": "none|low|medium|high",
+              "primarySite": "urinary|respiratory|genital|abdominal|bloodstream|unknown",
+              "nosocomialLikelihood": "low|medium|high",
+              "decisionReason": "简短、具体、可复核",
+              "newSupportingKeys": [],
+              "newAgainstKeys": [],
+              "newRiskKeys": [],
+              "dismissedKeys": [],
+              "requiresFollowUp": true,
+              "nextSuggestedJudgeAt": "yyyy-MM-dd HH:mm:ss.SSS",
+              "resultVersion": 0
+            }
+
+            护栏：
+            1. 不得编造 packet 中不存在的证据。
+            2. 不得把风险背景证据单独视为感染已成立。
+            3. 不得把单个弱异常或单个弱诊断标签直接升级为 warning。
+            4. 不确定时优先 candidate，不要轻易 warning。
             """;
 
     public static String buildEventExtractorPrompt(EvidenceBlockType blockType) {
@@ -254,6 +361,10 @@ public class WarningAgentPrompt {
 
     public static String buildStructuredFactRefinementPrompt() {
         return STRUCTURED_FACT_REFINEMENT_COMMON_RULES + "\n" + STRUCTURED_FACT_REFINEMENT_SECTION_RULES;
+    }
+
+    public static String buildCaseJudgePrompt() {
+        return CASE_JUDGE_RULES;
     }
 
 }

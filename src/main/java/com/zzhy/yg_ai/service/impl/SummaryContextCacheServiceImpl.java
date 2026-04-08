@@ -6,14 +6,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.common.InfectionRedisKeys;
+import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.enums.SummaryContextType;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
 import com.zzhy.yg_ai.service.SummaryContextCacheService;
 import java.time.LocalDate;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +26,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class SummaryContextCacheServiceImpl implements SummaryContextCacheService {
 
+    private static final int DEFAULT_WINDOW_DAYS = 7;
     private static final int MAX_CHANGE_ITEMS = 8;
     private static final int MAX_FUSION_SENTENCES = 4;
     private static final int MAX_LINE_LENGTH = 48;
@@ -35,24 +35,17 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
     private final StringRedisTemplate stringRedisTemplate;
     private final PatientRawDataMapper patientRawDataMapper;
     private final ObjectMapper objectMapper;
+    private final InfectionMonitorProperties infectionMonitorProperties;
 
     @Override
-    public String getOrBuildEventExtractorContext(String reqno, LocalDate anchorDate, int windowDays) {
+    public String getOrBuildEventExtractorContext(String reqno, LocalDate anchorDate) {
         if (!StringUtils.hasText(reqno) || anchorDate == null) {
             return null;
         }
-        int effectiveWindowDays = windowDays <= 0 ? 7 : windowDays;
-        String cacheKey = InfectionRedisKeys.summaryContext(
-                SummaryContextType.EVENT_EXTRACTOR_CONTEXT,
-                reqno,
-                anchorDate,
-                effectiveWindowDays);
+        String cacheKey = InfectionRedisKeys.patientSummaryContext(SummaryContextType.EVENT_EXTRACTOR_CONTEXT, reqno);
         String cached = stringRedisTemplate.opsForValue().get(cacheKey);
-        if (StringUtils.hasText(cached)) {
-            return cached;
-        }
-        String summary = buildEventExtractorContext(reqno, anchorDate, effectiveWindowDays);
-        if (StringUtils.hasText(summary)) {
+        String summary = buildSummary(reqno.trim(), anchorDate, cached);
+        if (StringUtils.hasText(summary) && shouldRefreshCache(cached, anchorDate)) {
             stringRedisTemplate.opsForValue().set(cacheKey, summary);
         }
         return summary;
@@ -70,44 +63,106 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
         stringRedisTemplate.delete(keys);
     }
 
-    private String buildEventExtractorContext(String reqno, LocalDate anchorDate, int windowDays) {
+    private String buildSummary(String reqno, LocalDate anchorDate, String cached) {
+        int windowDays = resolveWindowDays();
         LocalDate windowStart = anchorDate.minusDays(windowDays - 1L);
-        List<PatientRawDataEntity> rows = patientRawDataMapper.selectList(new QueryWrapper<PatientRawDataEntity>()
-                .eq("reqno", reqno.trim())
-                .ge("data_date", windowStart)
-                .le("data_date", anchorDate)
-                .isNotNull("event_json")
-                .orderByAsc("data_date", "id"));
+        JsonNode eventNode = parseJsonQuietly(findDailyEventJson(reqno, anchorDate));
 
         ObjectNode root = objectMapper.createObjectNode();
-        root.put("reqno", reqno.trim());
+        root.put("reqno", reqno);
         root.put("anchorDate", anchorDate.toString());
         root.put("windowDays", windowDays);
         root.put("summaryType", SummaryContextType.EVENT_EXTRACTOR_CONTEXT.name());
+        if (eventNode != null) {
+            root.set("event_json", eventNode.deepCopy());
+        }
+
         ArrayNode changes = root.putArray("changes");
         Set<String> seen = new LinkedHashSet<>();
+        appendCachedChanges(cached, windowStart, anchorDate, seen, changes);
+        collectEventSummaryLines(anchorDate, eventNode, seen, changes);
+        return writeJsonQuietly(root);
+    }
 
-        for (PatientRawDataEntity row : rows) {
-            if (row == null || !StringUtils.hasText(row.getEventJson())) {
+    private int resolveWindowDays() {
+        return infectionMonitorProperties.getSummaryWindowDays() > 0
+                ? infectionMonitorProperties.getSummaryWindowDays()
+                : DEFAULT_WINDOW_DAYS;
+    }
+
+    private String findDailyEventJson(String reqno, LocalDate anchorDate) {
+        PatientRawDataEntity row = patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno)
+                .eq("data_date", anchorDate)
+                .isNotNull("event_json")
+                .orderByDesc("id")
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+        return row == null ? null : row.getEventJson();
+    }
+
+    private void appendCachedChanges(String cached,
+                                     LocalDate windowStart,
+                                     LocalDate anchorDate,
+                                     Set<String> seen,
+                                     ArrayNode changes) {
+        JsonNode cachedNode = parseJsonQuietly(cached);
+        JsonNode cachedChanges = cachedNode == null ? null : cachedNode.path("changes");
+        if (cachedChanges == null || !cachedChanges.isArray()) {
+            return;
+        }
+        for (JsonNode item : cachedChanges) {
+            if (item == null || !item.isTextual()) {
                 continue;
             }
-            JsonNode eventNode = parseJsonQuietly(row.getEventJson());
-            if (eventNode == null || !eventNode.isObject()) {
+            String line = item.asText("");
+            LocalDate lineDate = extractLineDate(line);
+            if (lineDate != null && (lineDate.isBefore(windowStart) || lineDate.isAfter(anchorDate))) {
                 continue;
             }
-            collectEventSummaryLines(row.getDataDate(), eventNode, seen, changes);
+            appendIfUseful(null, line, seen, changes);
             if (changes.size() >= MAX_CHANGE_ITEMS) {
-                break;
+                return;
             }
         }
-        return writeJsonQuietly(root);
+    }
+
+    private boolean shouldRefreshCache(String cached, LocalDate anchorDate) {
+        LocalDate cachedAnchorDate = readAnchorDate(parseJsonQuietly(cached));
+        return cachedAnchorDate == null || !anchorDate.isBefore(cachedAnchorDate);
+    }
+
+    private LocalDate readAnchorDate(JsonNode cachedNode) {
+        if (cachedNode == null || !cachedNode.isObject()) {
+            return null;
+        }
+        String text = cachedNode.path("anchorDate").asText("");
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (Exception e) {
+            log.warn("解析摘要缓存 anchorDate 失败, anchorDate={}", text, e);
+            return null;
+        }
+    }
+
+    private LocalDate extractLineDate(String line) {
+        if (!StringUtils.hasText(line) || line.length() < 10) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(line.substring(0, 10));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void collectEventSummaryLines(LocalDate dataDate,
                                           JsonNode eventNode,
                                           Set<String> seen,
                                           ArrayNode changes) {
-        if (changes.size() >= MAX_CHANGE_ITEMS) {
+        if (eventNode == null || !eventNode.isObject() || changes.size() >= MAX_CHANGE_ITEMS) {
             return;
         }
         JsonNode eventsNode = eventNode.path("events");
@@ -151,10 +206,7 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
         return StringUtils.hasText(joined) ? joined : null;
     }
 
-    private void appendIfUseful(LocalDate dataDate,
-                                String line,
-                                Set<String> seen,
-                                ArrayNode changes) {
+    private void appendIfUseful(LocalDate dataDate, String line, Set<String> seen, ArrayNode changes) {
         if (!StringUtils.hasText(line) || changes.size() >= MAX_CHANGE_ITEMS) {
             return;
         }
@@ -169,9 +221,8 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
                 || lowered.contains("daily_fusion")) {
             return;
         }
-        String normalizedLine = (dataDate == null ? "" : dataDate + " ") + compact;
-        String dedupeKey = normalizedLine.toLowerCase(Locale.ROOT);
-        if (!seen.add(dedupeKey)) {
+        String normalizedLine = dataDate == null ? compact : dataDate + " " + compact;
+        if (!seen.add(normalizedLine.toLowerCase(Locale.ROOT))) {
             return;
         }
         changes.add(normalizedLine);
@@ -181,9 +232,6 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
                                      JsonNode eventNode,
                                      Set<String> seen,
                                      ArrayNode changes) {
-        if (eventNode == null || !eventNode.isObject() || changes.size() >= MAX_CHANGE_ITEMS) {
-            return;
-        }
         JsonNode fusionNode = pickFlatDailyFusion(eventNode);
         if (fusionNode == null || !fusionNode.isObject()) {
             return;
@@ -193,35 +241,20 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
         appendFusionArray(dataDate, fusionNode.path("major_actions"), seen, changes);
         appendFusionArray(dataDate, fusionNode.path("risk_flags"), seen, changes);
         appendFusionArray(dataDate, fusionNode.path("next_focus_24h"), seen, changes);
-        if (changes.size() >= MAX_CHANGE_ITEMS) {
-            return;
-        }
         String fusionText = summarizeFusionProblems(fusionNode.path("problem_list"));
-        if (!StringUtils.hasText(fusionText)) {
+        if (!StringUtils.hasText(fusionText) || changes.size() >= MAX_CHANGE_ITEMS) {
             return;
         }
-        String[] sentences = fusionText.split("[。；;！!？?\\n]+");
         int added = 0;
-        for (String sentence : sentences) {
-            String normalized = normalizeLine(sentence);
-            if (!StringUtils.hasText(normalized)) {
-                continue;
-            }
-            appendIfUseful(dataDate, normalized, seen, changes);
-            if (changes.size() >= MAX_CHANGE_ITEMS) {
-                return;
-            }
-            added++;
-            if (added >= MAX_FUSION_SENTENCES) {
+        for (String sentence : fusionText.split("[。；;！!？?\\n]+")) {
+            appendIfUseful(dataDate, sentence, seen, changes);
+            if (changes.size() >= MAX_CHANGE_ITEMS || ++added >= MAX_FUSION_SENTENCES) {
                 return;
             }
         }
     }
 
-    private void appendFusionArray(LocalDate dataDate,
-                                   JsonNode node,
-                                   Set<String> seen,
-                                   ArrayNode changes) {
+    private void appendFusionArray(LocalDate dataDate, JsonNode node, Set<String> seen, ArrayNode changes) {
         if (node == null || !node.isArray() || changes.size() >= MAX_CHANGE_ITEMS) {
             return;
         }
@@ -247,13 +280,11 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
             if (item == null || !item.isObject()) {
                 continue;
             }
-            String name = firstNonBlank(
-                    item.path("problem_name").asText(""),
-                    item.path("problem_key").asText("")
+            String line = joinNonBlank(
+                    firstNonBlank(item.path("problem_name").asText(""), item.path("problem_key").asText("")),
+                    item.path("certainty").asText(""),
+                    item.path("status").asText("")
             );
-            String certainty = item.path("certainty").asText("");
-            String status = item.path("status").asText("");
-            String line = joinNonBlank(name, certainty, status);
             if (!StringUtils.hasText(line)) {
                 continue;
             }
@@ -261,8 +292,7 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
                 builder.append('；');
             }
             builder.append(line);
-            count++;
-            if (count >= MAX_FUSION_LIST_ITEMS) {
+            if (++count >= MAX_FUSION_LIST_ITEMS) {
                 break;
             }
         }
@@ -271,10 +301,7 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
 
     private JsonNode pickFlatDailyFusion(JsonNode timelineNode) {
         JsonNode current = timelineNode;
-        for (int i = 0; i < 4; i++) {
-            if (current == null || !current.isObject()) {
-                break;
-            }
+        for (int i = 0; i < 4 && current != null && current.isObject(); i++) {
             if (current.has("day_summary")
                     || current.has("problem_list")
                     || current.has("key_evidence")
@@ -284,33 +311,23 @@ public class SummaryContextCacheServiceImpl implements SummaryContextCacheServic
                 return current;
             }
             JsonNode next = current.path("daily_fusion");
-            if (next.isMissingNode() || next.isNull() || !next.isObject()) {
+            if (!next.isObject()) {
                 break;
             }
             current = next;
         }
-        return current != null && current.isObject() ? current : null;
+        return null;
     }
 
     private String normalizeLine(String line) {
         if (!StringUtils.hasText(line)) {
             return null;
         }
-        String compact = line
-                .replace('\r', ' ')
-                .replace('\n', ' ')
-                .replaceAll("\\s+", " ")
-                .trim();
-        if (!StringUtils.hasText(compact)) {
+        String compact = line.replace('\r', ' ').replace('\n', ' ').replaceAll("\\s+", " ").trim();
+        if (!StringUtils.hasText(compact) || compact.matches("\\d{4}-\\d{2}-\\d{2}")) {
             return null;
         }
-        if (compact.matches("\\d{4}-\\d{2}-\\d{2}")) {
-            return null;
-        }
-        if (compact.length() > MAX_LINE_LENGTH) {
-            return compact.substring(0, MAX_LINE_LENGTH);
-        }
-        return compact;
+        return compact.length() > MAX_LINE_LENGTH ? compact.substring(0, MAX_LINE_LENGTH) : compact;
     }
 
     private JsonNode parseJsonQuietly(String json) {

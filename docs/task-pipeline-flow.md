@@ -20,7 +20,20 @@
 说明：
 
 - `executeClassify()` 仍是独立链路，不在本文档范围内。
-- `processPendingCaseTasks()` 当前已落地任务表与调度框架，但法官节点还是占位实现。
+- `processPendingCaseTasks()` 当前已落地任务表、调度框架和最小执行链。
+- 第二层基础骨架已新增：
+  - `infection_case_snapshot`
+  - `InfectionEvidencePacketBuilder`
+  - `InfectionJudgeService`
+- 当前 `CASE_RECOMPUTE` 已接入：
+  - 事件池版本检查
+  - 患者级防抖延后
+  - `InfectionEvidencePacket` 构造
+  - `InfectionJudgeService`
+  - `infection_case_snapshot` 回写
+  - `infection_alert_result` 最小结果落库
+- 当前法官节点已切换为 LLM 调用，并保留确定性 fallback。
+- 但结果分层、diff 计算、nosocomial 细化裁决仍未完成。
 
 ## 2. 任务表
 
@@ -177,8 +190,35 @@
 流程：
 
 1. claim `infection_event_task` 中 `task_type=CASE_RECOMPUTE`
-2. 当前版本先作为病例级重算占位任务执行
-3. 后续会在此处接入法官节点、快照更新和结果版本输出
+2. 当前版本已具备最小病例级重算执行链
+3. 下一阶段将在此处接入：
+   - 真正的 LLM 法官 prompt
+   - 更细的 trigger/debounce 策略
+   - 结果 diff 计算
+   - 更完整的 nosocomial 裁决
+
+目标链路：
+
+1. 读取 `infection_case_snapshot`
+2. 比较 `last_event_pool_version`
+3. 若仍在防抖窗口内，则延后
+4. 构造 `InfectionEvidencePacket`
+   - 包含确定性 `precomputed`
+   - 当前已预计算：
+     - `newOnsetFlag`
+     - `after48hFlag`
+     - `procedureRelatedFlag`
+     - `deviceRelatedFlag`
+5. 调用法官节点（当前为单节点 LLM 裁决，失败时 fallback）
+   - 法官只负责：
+     - `infectionPolarity`
+     - `decisionStatus`
+     - `warningLevel`
+     - `primarySite`
+     - `nosocomialLikelihood`
+6. 更新 `infection_case_snapshot`
+7. 写 `infection_alert_result`
+8. 标记 `CASE_RECOMPUTE` 成功
 
 ### 3.6 结构化
 

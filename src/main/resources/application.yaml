@@ -70,6 +70,7 @@ infection:
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}
     running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
     recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:30}
+    summary-window-days: ${YG_AI_MONITOR_SUMMARY_WINDOW_DAYS:7}
     debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
     debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
   format:

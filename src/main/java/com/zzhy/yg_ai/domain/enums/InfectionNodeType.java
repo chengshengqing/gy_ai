@@ -2,6 +2,8 @@ package com.zzhy.yg_ai.domain.enums;
 
 public enum InfectionNodeType {
     EVENT_EXTRACTOR,
+    STRUCTURED_FACT_REFINEMENT,
+    CASE_JUDGE,
     NEW_ONSET_JUDGE,
     AFTER_48H_JUDGE,
     PROCEDURE_ASSOCIATION_JUDGE,

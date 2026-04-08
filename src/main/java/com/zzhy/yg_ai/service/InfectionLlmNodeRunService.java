@@ -16,6 +16,7 @@ public interface InfectionLlmNodeRunService extends IService<InfectionLlmNodeRun
 
     void markFailed(Long id,
                     String outputPayload,
+                    String normalizedOutputPayload,
                     String errorCode,
                     String errorMessage,
                     Long latencyMs);

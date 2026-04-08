@@ -18,6 +18,7 @@ public class InfectionMonitorProperties {
     private int retryDelaySeconds = 300;
     private int runningTimeoutSeconds = 1800;
     private int recentAdmissionDays = 30;
+    private int summaryWindowDays = 7;
     private boolean debugMode = false;
     private List<String> debugReqnos = new ArrayList<>();
 }

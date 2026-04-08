@@ -31,6 +31,10 @@ public interface PatientService {
 
     PatientRawDataEntity getRawDataById(Long id);
 
+    PatientRawDataEntity getFirstRawDataByReqno(String reqno);
+
+    PatientRawDataEntity getRawDataByReqnoAndDate(String reqno, LocalDate dataDate);
+
     /**
      * 查询待格式化结构数据（struct_data_json 为空）。
      */
@@ -47,7 +51,7 @@ public interface PatientService {
 
     void saveEventJson(Long id, String eventJson);
 
-    String buildSummaryWindowJson(String reqno, LocalDate anchorDate, int windowDays);
+    String buildSummaryWindowJson(String reqno, LocalDate anchorDate);
 
     String getInhosdateRaw(String reqno);
 

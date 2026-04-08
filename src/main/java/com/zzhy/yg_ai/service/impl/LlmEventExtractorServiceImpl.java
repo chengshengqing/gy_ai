@@ -10,6 +10,7 @@ import com.zzhy.yg_ai.domain.entity.InfectionEventPoolEntity;
 import com.zzhy.yg_ai.domain.entity.InfectionLlmNodeRunEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionExtractorType;
 import com.zzhy.yg_ai.domain.enums.InfectionNodeType;
+import com.zzhy.yg_ai.domain.enums.InfectionSourceSection;
 import com.zzhy.yg_ai.domain.model.EvidenceBlock;
 import com.zzhy.yg_ai.domain.model.EvidenceBlockBuildResult;
 import com.zzhy.yg_ai.domain.model.LlmEventExtractorResult;
@@ -40,12 +41,12 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
     private final ObjectMapper objectMapper;
 
     @Override
-    public LlmEventExtractorResult extractAndSave(EvidenceBlockBuildResult blockBuildResult) {
+    public LlmEventExtractorResult extractAndSave(EvidenceBlockBuildResult blockBuildResult, List<EvidenceBlock> primaryBlocks) {
         EvidenceBlockBuildResult safeBuildResult = blockBuildResult == null
                 ? new EvidenceBlockBuildResult(null, null, null, null)
                 : blockBuildResult;
-        List<EvidenceBlock> primaryBlocks = safeBuildResult.primaryBlocks();
-        if (primaryBlocks.isEmpty()) {
+        List<EvidenceBlock> effectivePrimaryBlocks = primaryBlocks == null ? List.of() : List.copyOf(primaryBlocks);
+        if (effectivePrimaryBlocks.isEmpty()) {
             return new LlmEventExtractorResult(null, List.of(), List.of(), 0);
         }
 
@@ -58,7 +59,7 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
 
         List<NormalizedInfectionEvent> allNormalizedEvents = new ArrayList<>();
         List<InfectionEventPoolEntity> allPersistedEvents = new ArrayList<>();
-        for (EvidenceBlock block : primaryBlocks) {
+        for (EvidenceBlock block : effectivePrimaryBlocks) {
             LlmBlockExtractionResult blockResult = extractSingleBlock(block, structuredFactContext, timelineContext);
             allNormalizedEvents.addAll(blockResult.normalizedEvents());
             allPersistedEvents.addAll(blockResult.persistedEvents());
@@ -68,7 +69,7 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
                 buildAggregatedEventJson(allNormalizedEvents),
                 allNormalizedEvents,
                 allPersistedEvents,
-                primaryBlocks.size()
+                effectivePrimaryBlocks.size()
         );
     }
 
@@ -80,9 +81,12 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         InfectionLlmNodeRunEntity runEntity = buildPendingRun(block, promptVersion, inputPayload);
         infectionLlmNodeRunService.createPendingRun(runEntity);
         long startedAt = System.currentTimeMillis();
+        String rawOutput = null;
+        int rawEventCount = 0;
         try {
             String prompt = WarningAgentPrompt.buildEventExtractorPrompt(block.blockType());
-            String rawOutput = warningAgent.callEventExtractor(prompt, inputPayload);
+            rawOutput = warningAgent.callEventExtractor(prompt, inputPayload);
+            rawEventCount = countRawEvents(rawOutput);
             BigDecimal confidence = extractConfidence(rawOutput);
             List<NormalizedInfectionEvent> normalizedEvents = eventNormalizerService.normalize(
                     block,
@@ -96,7 +100,11 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
             infectionLlmNodeRunService.markSuccess(
                     runEntity.getId(),
                     rawOutput,
-                    writeJson(normalizedEvents),
+                    buildExtractionRunPayload(rawEventCount, normalizedEvents.size(),
+                            Math.max(0, rawEventCount - normalizedEvents.size()),
+                            persistedEvents.size(),
+                            normalizedEvents,
+                            null),
                     confidence,
                     System.currentTimeMillis() - startedAt
             );
@@ -104,7 +112,8 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         } catch (Exception e) {
             infectionLlmNodeRunService.markFailed(
                     runEntity.getId(),
-                    null,
+                    rawOutput,
+                    buildExtractionRunPayload(rawEventCount, 0, rawEventCount, 0, List.of(), e.getMessage()),
                     "EVENT_EXTRACT_FAILED",
                     e.getMessage(),
                     System.currentTimeMillis() - startedAt
@@ -165,7 +174,9 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
             return result;
         }
         dataNode.fields().forEachRemaining(entry -> {
-            if ("diagnosis".equals(entry.getKey()) || "vital_signs".equals(entry.getKey()) || "transfer".equals(entry.getKey())) {
+            if (InfectionSourceSection.DIAGNOSIS.code().equals(entry.getKey())
+                    || InfectionSourceSection.VITAL_SIGNS.code().equals(entry.getKey())
+                    || InfectionSourceSection.TRANSFER.code().equals(entry.getKey())) {
                 return;
             }
             JsonNode sectionNode = entry.getValue();
@@ -254,6 +265,39 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         ObjectNode root = objectMapper.createObjectNode();
         ArrayNode events = objectMapper.valueToTree(normalizedEvents == null ? List.of() : normalizedEvents);
         root.set("events", events);
+        return writeJson(root);
+    }
+
+    private int countRawEvents(String rawOutput) {
+        if (rawOutput == null || rawOutput.isBlank()) {
+            return 0;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(rawOutput);
+            JsonNode events = root.path("events");
+            return events.isArray() ? events.size() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String buildExtractionRunPayload(int rawEventCount,
+                                             int normalizedEventCount,
+                                             int rejectedEventCount,
+                                             int persistedEventCount,
+                                             List<NormalizedInfectionEvent> normalizedEvents,
+                                             String errorMessage) {
+        ObjectNode root = objectMapper.createObjectNode();
+        ObjectNode stats = objectMapper.createObjectNode();
+        stats.put("raw_event_count", Math.max(0, rawEventCount));
+        stats.put("normalized_event_count", Math.max(0, normalizedEventCount));
+        stats.put("rejected_event_count", Math.max(0, rejectedEventCount));
+        stats.put("persisted_event_count", Math.max(0, persistedEventCount));
+        root.set("stats", stats);
+        root.set("events", objectMapper.valueToTree(normalizedEvents == null ? List.of() : normalizedEvents));
+        if (errorMessage != null && !errorMessage.isBlank()) {
+            root.put("error_message", errorMessage);
+        }
         return writeJson(root);
     }
 

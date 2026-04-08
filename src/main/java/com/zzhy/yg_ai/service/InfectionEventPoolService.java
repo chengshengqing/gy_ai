@@ -17,5 +17,5 @@ public interface InfectionEventPoolService extends IService<InfectionEventPoolEn
 
     List<InfectionEventPoolEntity> listActiveEvents(String reqno);
 
-    void markSuperseded(Long id);
+    Long getLatestActiveEventVersion(String reqno);
 }

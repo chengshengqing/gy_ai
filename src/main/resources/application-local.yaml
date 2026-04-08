@@ -26,10 +26,10 @@ infection:
     worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:4}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:3}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:60}
-    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:32}
+    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:180}
     running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
-    debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
-    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
+    debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:true}
+    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:2601247612}
   format:
     batch-size: ${YG_AI_FORMAT_BATCH_SIZE:3}
     worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:4}

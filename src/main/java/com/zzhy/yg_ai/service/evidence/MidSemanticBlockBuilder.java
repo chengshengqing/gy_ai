@@ -9,8 +9,11 @@ import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
 import com.zzhy.yg_ai.domain.enums.InfectionSourceType;
 import com.zzhy.yg_ai.domain.model.EvidenceBlock;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 @Component
 public class MidSemanticBlockBuilder extends AbstractEvidenceBlockBuilder {
@@ -42,7 +45,7 @@ public class MidSemanticBlockBuilder extends AbstractEvidenceBlockBuilder {
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("section", fieldName);
         payload.put("source", "struct_data_json");
-        payload.set("data", section.deepCopy());
+        payload.set("data", dedupeNode(section));
         result.add(createBlock(rawData,
                 EvidenceBlockType.MID_SEMANTIC,
                 InfectionSourceType.MID,
@@ -82,16 +85,55 @@ public class MidSemanticBlockBuilder extends AbstractEvidenceBlockBuilder {
             return;
         }
         if (node.isArray()) {
-            node.forEach(item -> collected.add(item.deepCopy()));
+            appendUnique(collected, node);
             return;
         }
         if (node.isObject()) {
-            collected.add(node.deepCopy());
+            appendUnique(collected, node);
             return;
         }
         ObjectNode item = objectMapper.createObjectNode();
         item.put("field", fieldName);
         item.put("value", node.asText(""));
-        collected.add(item);
+        appendUnique(collected, item);
+    }
+
+    private JsonNode dedupeNode(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return objectMapper.createArrayNode();
+        }
+        if (!node.isArray()) {
+            return node.deepCopy();
+        }
+        ArrayNode result = objectMapper.createArrayNode();
+        appendUnique(result, node);
+        return result;
+    }
+
+    private void appendUnique(ArrayNode target, JsonNode source) {
+        if (source == null || source.isMissingNode() || source.isNull()) {
+            return;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        target.forEach(item -> seen.add(signature(item)));
+        if (source.isArray()) {
+            source.forEach(item -> appendOne(target, item, seen));
+            return;
+        }
+        appendOne(target, source, seen);
+    }
+
+    private void appendOne(ArrayNode target, JsonNode node, Set<String> seen) {
+        if (!hasMeaningfulContent(node)) {
+            return;
+        }
+        String signature = signature(node);
+        if (StringUtils.hasText(signature) && seen.add(signature)) {
+            target.add(node.deepCopy());
+        }
+    }
+
+    private String signature(JsonNode node) {
+        return node == null ? "" : node.toString().replaceAll("\\s+", "");
     }
 }

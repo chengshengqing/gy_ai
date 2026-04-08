@@ -28,6 +28,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -126,7 +127,7 @@ class LlmEventExtractorServiceImplTest {
         persisted.setReqno("REQ-9101");
         when(infectionEventPoolService.saveNormalizedEvents(any())).thenReturn(List.of(persisted));
 
-        LlmEventExtractorResult result = llmEventExtractorService.extractAndSave(buildResult);
+        LlmEventExtractorResult result = llmEventExtractorService.extractAndSave(buildResult, List.of(primaryBlock));
 
         assertEquals(1, result.processedBlockCount());
         assertEquals(1, result.normalizedEvents().size());
@@ -144,14 +145,20 @@ class LlmEventExtractorServiceImplTest {
                 eq(new BigDecimal("0.77"))
         );
         verify(infectionEventPoolService).saveNormalizedEvents(List.of(normalized));
-        verify(infectionLlmNodeRunService).markSuccess(eq(9001L), any(), any(), eq(new BigDecimal("0.77")), any());
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+        verify(infectionLlmNodeRunService).markSuccess(eq(9001L), any(), payloadCaptor.capture(), eq(new BigDecimal("0.77")), any());
+        JsonNode stats = objectMapper.readTree(payloadCaptor.getValue()).path("stats");
+        assertEquals(1, stats.path("raw_event_count").asInt());
+        assertEquals(1, stats.path("normalized_event_count").asInt());
+        assertEquals(0, stats.path("rejected_event_count").asInt());
+        assertEquals(1, stats.path("persisted_event_count").asInt());
     }
 
     @Test
     void extractAndSaveReturnsEmptyWhenNoPrimaryBlock() {
         EvidenceBlockBuildResult buildResult = new EvidenceBlockBuildResult(List.of(), List.of(), List.of(), List.of());
 
-        LlmEventExtractorResult result = llmEventExtractorService.extractAndSave(buildResult);
+        LlmEventExtractorResult result = llmEventExtractorService.extractAndSave(buildResult, List.of());
 
         assertEquals(0, result.processedBlockCount());
         assertTrue(result.normalizedEvents().isEmpty());

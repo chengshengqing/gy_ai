@@ -81,16 +81,17 @@ public class InfectionEventPoolServiceImpl
     }
 
     @Override
-    public void markSuperseded(Long id) {
-        if (id == null) {
-            return;
+    public Long getLatestActiveEventVersion(String reqno) {
+        if (!StringUtils.hasText(reqno)) {
+            return 0L;
         }
-        InfectionEventPoolEntity entity = new InfectionEventPoolEntity();
-        entity.setId(id);
-        entity.setStatus(InfectionEventStatus.SUPERSEDED.code());
-        entity.setIsActive(Boolean.FALSE);
-        entity.touch();
-        this.updateById(entity);
+        InfectionEventPoolEntity latest = this.baseMapper.selectOne(new QueryWrapper<InfectionEventPoolEntity>()
+                .eq("reqno", reqno.trim())
+                .eq("status", InfectionEventStatus.ACTIVE.code())
+                .eq("is_active", true)
+                .orderByDesc("id")
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+        return latest == null || latest.getId() == null ? 0L : latest.getId();
     }
 
     private void validateRequiredFields(InfectionEventPoolEntity entity) {

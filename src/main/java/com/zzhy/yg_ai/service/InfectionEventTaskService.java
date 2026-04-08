@@ -33,4 +33,6 @@ public interface InfectionEventTaskService extends IService<InfectionEventTaskEn
     void markSkipped(List<Long> taskIds, String message);
 
     void markFailed(List<Long> taskIds, String errorMessage);
+
+    void reschedule(List<Long> taskIds, LocalDateTime availableAt, String message);
 }

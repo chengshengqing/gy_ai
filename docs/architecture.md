@@ -136,6 +136,7 @@
 
 - `data_json` 只保存原始采集块，不做规则加工
 - `filter_data_json` 保存规则处理后的可读事实块
+- `data_json` 与 `filter_data_json` 当前都额外包含顶层字段 `admission_time`、`patient_summary`
 - `struct_data_json` 保存 LLM 结构化结果
 - `event_json` 保存单日时间轴摘要，是时间线展示和窗口上下文的直接来源
 - 字段级结构说明见 `docs/patient-raw-json-structure.md`

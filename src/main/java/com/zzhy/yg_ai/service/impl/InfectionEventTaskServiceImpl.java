@@ -8,7 +8,9 @@ import com.zzhy.yg_ai.config.StructDataFormatProperties;
 import com.zzhy.yg_ai.domain.entity.InfectionEventTaskEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionEventTaskStatus;
 import com.zzhy.yg_ai.domain.enums.InfectionEventTaskType;
+import com.zzhy.yg_ai.domain.enums.InfectionTriggerPriority;
 import com.zzhy.yg_ai.mapper.InfectionEventTaskMapper;
+import com.zzhy.yg_ai.service.InfectionEventPoolService;
 import com.zzhy.yg_ai.service.InfectionEventTaskService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -25,9 +27,11 @@ public class InfectionEventTaskServiceImpl
         extends ServiceImpl<InfectionEventTaskMapper, InfectionEventTaskEntity>
         implements InfectionEventTaskService {
 
-    private static final int DEFAULT_CASE_BUCKET_MINUTES = 30;
+    private static final int CASE_HIGH_DEBOUNCE_MINUTES = 5;
+    private static final int CASE_NORMAL_DEBOUNCE_MINUTES = 10;
 
     private final StructDataFormatProperties structDataFormatProperties;
+    private final InfectionEventPoolService infectionEventPoolService;
 
     @Override
     public void upsertEventExtractTask(Long patientRawDataId,
@@ -88,9 +92,12 @@ public class InfectionEventTaskServiceImpl
         if (!StringUtils.hasText(reqno) || sourceBatchTime == null) {
             return;
         }
-        int effectiveBucketMinutes = bucketMinutes <= 0 ? DEFAULT_CASE_BUCKET_MINUTES : bucketMinutes;
-        String mergeKey = buildCaseMergeKey(reqno, sourceBatchTime, effectiveBucketMinutes);
+        String mergeKey = buildCaseMergeKey(reqno);
         InfectionEventTaskEntity existing = findByTaskTypeAndMergeKey(InfectionEventTaskType.CASE_RECOMPUTE, mergeKey);
+        LocalDateTime now = DateTimeUtils.now();
+        String triggerPriority = resolveTriggerPriority(priority);
+        LocalDateTime debounceUntil = now.plusMinutes(resolveDebounceMinutes(triggerPriority));
+        Long latestEventPoolVersion = infectionEventPoolService.getLatestActiveEventVersion(reqno.trim());
         if (existing == null) {
             InfectionEventTaskEntity task = new InfectionEventTaskEntity();
             task.setTaskType(InfectionEventTaskType.CASE_RECOMPUTE.name());
@@ -101,21 +108,30 @@ public class InfectionEventTaskServiceImpl
             task.setSourceBatchTime(sourceBatchTime);
             task.setPriority(priority);
             task.setMergeKey(mergeKey);
+            task.setFirstTriggeredAt(now);
+            task.setLastEventAt(now);
+            task.setDebounceUntil(debounceUntil);
+            task.setTriggerPriority(triggerPriority);
+            task.setEventPoolVersionAtEnqueue(latestEventPoolVersion);
             task.initForCreate(structDataFormatProperties.getMaxAttempts());
+            task.setAvailableAt(debounceUntil);
             save(task);
             return;
         }
 
-        LocalDateTime now = DateTimeUtils.now();
         LambdaUpdateWrapper<InfectionEventTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(InfectionEventTaskEntity::getId, existing.getId())
                 .set(InfectionEventTaskEntity::getPriority, Math.min(safePriority(existing.getPriority()), safePriority(priority)))
                 .set(InfectionEventTaskEntity::getSourceBatchTime, sourceBatchTime)
+                .set(InfectionEventTaskEntity::getLastEventAt, now)
+                .set(InfectionEventTaskEntity::getDebounceUntil, debounceUntil)
+                .set(InfectionEventTaskEntity::getTriggerPriority, upgradeTriggerPriority(existing.getTriggerPriority(), triggerPriority))
+                .set(InfectionEventTaskEntity::getEventPoolVersionAtEnqueue, latestEventPoolVersion)
                 .set(InfectionEventTaskEntity::getUpdateTime, now);
         if (!InfectionEventTaskStatus.RUNNING.name().equals(existing.getStatus())
                 && !InfectionEventTaskStatus.SUCCESS.name().equals(existing.getStatus())) {
             updateWrapper.set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.PENDING.name())
-                    .set(InfectionEventTaskEntity::getAvailableAt, now)
+                    .set(InfectionEventTaskEntity::getAvailableAt, debounceUntil)
                     .set(InfectionEventTaskEntity::getLastErrorMessage, null);
         }
         this.update(updateWrapper);
@@ -184,6 +200,22 @@ public class InfectionEventTaskServiceImpl
         updateFinishedTasks(taskIds, InfectionEventTaskStatus.FAILED, errorMessage, true);
     }
 
+    @Override
+    public void reschedule(List<Long> taskIds, LocalDateTime availableAt, String message) {
+        if (taskIds == null || taskIds.isEmpty() || availableAt == null) {
+            return;
+        }
+        LocalDateTime now = DateTimeUtils.now();
+        LambdaUpdateWrapper<InfectionEventTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(InfectionEventTaskEntity::getId, taskIds)
+                .set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.PENDING.name())
+                .set(InfectionEventTaskEntity::getAvailableAt, availableAt)
+                .set(InfectionEventTaskEntity::getDebounceUntil, availableAt)
+                .set(InfectionEventTaskEntity::getLastErrorMessage, message)
+                .set(InfectionEventTaskEntity::getUpdateTime, now);
+        this.update(updateWrapper);
+    }
+
     private InfectionEventTaskEntity findByTaskTypeAndMergeKey(InfectionEventTaskType taskType, String mergeKey) {
         if (taskType == null || !StringUtils.hasText(mergeKey)) {
             return null;
@@ -238,11 +270,8 @@ public class InfectionEventTaskServiceImpl
         return "raw:" + patientRawDataId + ":" + rawDataLastTime.truncatedTo(ChronoUnit.SECONDS);
     }
 
-    private String buildCaseMergeKey(String reqno, LocalDateTime sourceBatchTime, int bucketMinutes) {
-        LocalDateTime bucketStart = sourceBatchTime
-                .truncatedTo(ChronoUnit.MINUTES)
-                .minusMinutes(sourceBatchTime.getMinute() % Math.max(1, bucketMinutes));
-        return "case:" + reqno.trim() + ":" + bucketStart;
+    private String buildCaseMergeKey(String reqno) {
+        return "CASE_RECOMPUTE:" + reqno.trim();
     }
 
     private int safePriority(Integer priority) {
@@ -267,5 +296,20 @@ public class InfectionEventTaskServiceImpl
             }
         }
         return ordered.isEmpty() ? null : String.join(",", ordered);
+    }
+
+    private String resolveTriggerPriority(int priority) {
+        return priority <= 10 ? InfectionTriggerPriority.HIGH.code() : InfectionTriggerPriority.NORMAL.code();
+    }
+
+    private int resolveDebounceMinutes(String triggerPriority) {
+        InfectionTriggerPriority tp = InfectionTriggerPriority.fromCodeOrDefault(triggerPriority, InfectionTriggerPriority.NORMAL);
+        return tp == InfectionTriggerPriority.HIGH ? CASE_HIGH_DEBOUNCE_MINUTES : CASE_NORMAL_DEBOUNCE_MINUTES;
+    }
+
+    private String upgradeTriggerPriority(String existing, String incoming) {
+        InfectionTriggerPriority existingTp = InfectionTriggerPriority.fromCodeOrDefault(existing, InfectionTriggerPriority.NORMAL);
+        InfectionTriggerPriority incomingTp = InfectionTriggerPriority.fromCodeOrDefault(incoming, InfectionTriggerPriority.NORMAL);
+        return InfectionTriggerPriority.upgrade(existingTp, incomingTp).code();
     }
 }

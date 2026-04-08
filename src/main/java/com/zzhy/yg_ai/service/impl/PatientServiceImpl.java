@@ -80,8 +80,8 @@ public class PatientServiceImpl implements PatientService {
         List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
 
         activeReqnos = activeReqnos.stream()
-                .filter(reqno -> "260300011".equals(reqno))
-//                .filter(reqno -> "260300124".equals(reqno))
+//                .filter(reqno -> "260300011".equals(reqno))
+                .filter(reqno -> "260300124".equals(reqno))
                 .collect(Collectors.toList());
 
         if (!debugReqnos.isEmpty()) {
@@ -228,6 +228,25 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
+    public PatientRawDataEntity getFirstRawDataByReqno(String reqno) {
+        if (!StringUtils.hasText(reqno)) {
+            return null;
+        }
+        return patientRawDataMapper.selectOne(new QueryWrapper<PatientRawDataEntity>()
+                .eq("reqno", reqno.trim())
+                .orderByAsc("data_date", "id")
+                .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
+    }
+
+    @Override
+    public PatientRawDataEntity getRawDataByReqnoAndDate(String reqno, LocalDate dataDate) {
+        if (!StringUtils.hasText(reqno) || dataDate == null) {
+            return null;
+        }
+        return findPatientRawDataByReqnoAndDate(reqno.trim(), dataDate);
+    }
+
+    @Override
     public List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate) {
         if (!StringUtils.hasText(reqno)) {
             return Collections.emptyList();
@@ -302,8 +321,8 @@ public class PatientServiceImpl implements PatientService {
     }
 
     @Override
-    public String buildSummaryWindowJson(String reqno, LocalDate anchorDate, int windowDays) {
-        return summaryContextCacheService.getOrBuildEventExtractorContext(reqno, anchorDate, windowDays);
+    public String buildSummaryWindowJson(String reqno, LocalDate anchorDate) {
+        return summaryContextCacheService.getOrBuildEventExtractorContext(reqno, anchorDate);
     }
 
     @Override
@@ -450,6 +469,8 @@ public class PatientServiceImpl implements PatientService {
         otherInfo.setSourceLastTime(sourceLastTime);
         otherInfo.setDataStartTime(lastTime);
         data.setOtherInfo(otherInfo);
+
+
         return data;
     }
 
@@ -655,6 +676,8 @@ public class PatientServiceImpl implements PatientService {
             if (existing.getDataDate() != null) {
                 root.put("dataDate", existing.getDataDate().toString());
             }
+            root.put("admission_time", buildAdmissionTime(changedDailyData.getPatInfor()));
+            root.put("patient_summary", buildPatientSummary(changedDailyData.getPatInfor()));
 
             for (PatientCourseDataType changedType : changedTypes) {
                 switch (changedType) {
@@ -1099,6 +1122,8 @@ public class PatientServiceImpl implements PatientService {
             Map<String, Object> raw = new LinkedHashMap<>();
             raw.put("reqno", dailyData.getReqno());
             raw.put("dataDate", dailyData.getDataDate() == null ? null : dailyData.getDataDate().toString());
+            raw.put("admission_time", buildAdmissionTime(dailyData.getPatInfor()));
+            raw.put("patient_summary", buildPatientSummary(dailyData.getPatInfor()));
             raw.put("pat_diagInfor", dailyData.getPatDiagInforList());
             raw.put("pat_bodySurface", dailyData.getPatBodySurfaceList());
             raw.put("pat_doctorAdvice_long", dailyData.getLongDoctorAdviceList());
@@ -1123,6 +1148,8 @@ public class PatientServiceImpl implements PatientService {
             Map<String, Object> filtered = new LinkedHashMap<>();
             filtered.put("reqno", dailyData.getReqno());
             filtered.put("dataDate", dailyData.getDataDate() == null ? null : dailyData.getDataDate().toString());
+            filtered.put("admission_time", buildAdmissionTime(dailyData.getPatInfor()));
+            filtered.put("patient_summary", buildPatientSummary(dailyData.getPatInfor()));
             filtered.put("patient_info", buildPatientInfo(dailyData.getPatInfor()));
             filtered.put("diagnosis", buildDiagnosis(dailyData.getPatDiagInforList()));
             filtered.put("vital_signs", buildVitalSigns(dailyData.getPatBodySurfaceList()));
@@ -1154,6 +1181,8 @@ public class PatientServiceImpl implements PatientService {
             ObjectNode filterRoot = parseObjectNode(existingFilterDataJson);
             filterRoot.put("reqno", rawRoot.path("reqno").asText(""));
             filterRoot.put("dataDate", rawRoot.path("dataDate").asText(""));
+            filterRoot.put("admission_time", rawRoot.path("admission_time").asText(""));
+            filterRoot.put("patient_summary", rawRoot.path("patient_summary").asText(""));
 
             if (filterRoot.path("patient_info").isMissingNode() || filterRoot.path("patient_info").isNull()) {
                 filterRoot.set("patient_info", objectMapper.createObjectNode());
@@ -1204,6 +1233,8 @@ public class PatientServiceImpl implements PatientService {
             Map<String, Object> filtered = new LinkedHashMap<>();
             filtered.put("reqno", rawRoot.path("reqno").asText(""));
             filtered.put("dataDate", rawRoot.path("dataDate").asText(""));
+            filtered.put("admission_time", rawRoot.path("admission_time").asText(""));
+            filtered.put("patient_summary", rawRoot.path("patient_summary").asText(""));
             filtered.put("patient_info", new LinkedHashMap<>());
             filtered.put("diagnosis", buildDiagnosis(
                     readList(rawRoot, "pat_diagInfor", new TypeReference<List<PatientCourseData.PatDiagInfor>>() {})));
@@ -1274,9 +1305,43 @@ public class PatientServiceImpl implements PatientService {
         }
         patientInfo.put("sex", patInfor.getSex());
         patientInfo.put("age", parseAgeNumber(patInfor.getAge()));
-        patientInfo.put("admission_time", formatDateTime(patInfor.getInhosday(), "yyyy-MM-dd HH:mm"));
+        patientInfo.put("admission_time", buildAdmissionTime(patInfor));
         patientInfo.put("department", patInfor.getDisname());
         return patientInfo;
+    }
+
+    private String buildAdmissionTime(PatientCourseData.PatInfor patInfor) {
+        if (patInfor == null) {
+            return null;
+        }
+        return formatDateTime(patInfor.getInhosday(), "yyyy-MM-dd HH:mm");
+    }
+
+    private String buildPatientSummary(PatientCourseData.PatInfor patInfor) {
+        if (patInfor == null) {
+            return null;
+        }
+        List<String> parts = new ArrayList<>();
+        String admissionDate = formatDateTime(patInfor.getInhosday(), "yyyy-MM-dd");
+        if (StringUtils.hasText(admissionDate)) {
+            parts.add("患者入院时间：" + admissionDate);
+        }
+        if (StringUtils.hasText(patInfor.getSex())) {
+            parts.add("性别：" + patInfor.getSex().trim());
+        }
+        String displayAge = formatDisplayAge(patInfor.getAge());
+        if (StringUtils.hasText(displayAge)) {
+            parts.add("年龄：" + displayAge);
+        }
+        return parts.isEmpty() ? null : String.join("，", parts);
+    }
+
+    private String formatDisplayAge(String ageText) {
+        if (!StringUtils.hasText(ageText)) {
+            return null;
+        }
+        String trimmedAge = ageText.trim();
+        return trimmedAge.matches("\\d+") ? trimmedAge + "岁" : trimmedAge;
     }
 
     private List<String> buildDiagnosis(List<PatientCourseData.PatDiagInfor> diagList) {

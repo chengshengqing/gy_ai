@@ -1,12 +1,11 @@
 package com.zzhy.yg_ai.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
-import com.zzhy.yg_ai.domain.enums.InfectionCertainty;
 import com.zzhy.yg_ai.domain.enums.InfectionEventStatus;
 import com.zzhy.yg_ai.domain.enums.InfectionEventType;
 import com.zzhy.yg_ai.domain.enums.InfectionExtractorType;
@@ -32,7 +31,7 @@ class EventNormalizerServiceImplTest {
     }
 
     @Test
-    void normalizeMapsExtractorOutputIntoStableNormalizedEvents() throws Exception {
+    void normalizeAcceptsValidClinicalTextEvent() throws Exception {
         EvidenceBlock block = new EvidenceBlock(
                 "block-1",
                 "REQ-9001",
@@ -42,25 +41,36 @@ class EventNormalizerServiceImplTest {
                 InfectionSourceType.RAW,
                 "pat_illnessCourse.N-1",
                 "日常病程记录",
-                "{\"note\":\"今日发热\"}",
+                """
+                {
+                  "note_text":"患者发热咳嗽，考虑呼吸道感染，建议继续观察。"
+                }
+                """,
                 false
         );
 
         List<NormalizedInfectionEvent> events = eventNormalizerService.normalize(block, """
                 {
+                  "status": "success",
+                  "confidence": 0.82,
                   "events": [
                     {
                       "event_time": "2026-03-30 09:25:55",
                       "event_type": "assessment",
-                      "event_subtype": "contamination_possible",
-                      "body_site": "urinary",
-                      "event_name": "考虑污染",
+                      "event_subtype": "infection_positive_statement",
+                      "body_site": "respiratory",
+                      "event_name": "考虑呼吸道感染",
+                      "event_value": null,
+                      "event_unit": null,
                       "abnormal_flag": null,
                       "infection_related": true,
                       "negation_flag": false,
-                      "uncertainty_flag": true,
-                      "clinical_meaning": "infection_uncertain",
-                      "source_text": "患者自诉未取中段尿，考虑污染所致"
+                      "uncertainty_flag": false,
+                      "clinical_meaning": "infection_support",
+                      "source_section": null,
+                      "source_text": "考虑呼吸道感染",
+                      "evidence_tier": "moderate",
+                      "evidence_role": "support"
                     }
                   ]
                 }
@@ -70,71 +80,114 @@ class EventNormalizerServiceImplTest {
         NormalizedInfectionEvent event = events.get(0);
         assertEquals("REQ-9001", event.getReqno());
         assertEquals(InfectionEventType.ASSESSMENT.code(), event.getEventType());
-        assertEquals("contamination_possible", event.getEventSubtype());
-        assertEquals("urinary", event.getSite());
-        assertEquals(InfectionPolarity.NEUTRAL.code(), event.getPolarity());
-        assertEquals(InfectionCertainty.POSSIBLE.code(), event.getCertainty());
+        assertEquals("infection_positive_statement", event.getEventSubtype());
+        assertEquals("respiratory", event.getSite());
+        assertEquals(InfectionPolarity.POSITIVE.code(), event.getPolarity());
         assertEquals(InfectionEventStatus.ACTIVE.code(), event.getStatus());
-        assertEquals("raw", event.getSourceType());
-        assertTrue(event.getEventKey().startsWith("REQ-9001|2026-03-30|raw|pat_illnessCourse|"));
 
         JsonNode attributes = objectMapper.readTree(event.getAttributesJson());
-        assertEquals("infection_uncertain", attributes.path("clinical_meaning").asText());
-        JsonNode evidence = objectMapper.readTree(event.getEvidenceJson());
-        assertEquals("block-1", evidence.path("block_key").asText());
-        assertTrue(evidence.path("source_text").asText().contains("考虑污染"));
+        assertEquals("infection_support", attributes.path("clinical_meaning").asText());
+        assertEquals("support", attributes.path("evidence_role").asText());
     }
 
     @Test
-    void normalizeInfersEventTypeForStructuredFactAndSkipsContextBlocks() {
-        EvidenceBlock structuredBlock = new EvidenceBlock(
-                "block-2",
-                "REQ-9002",
-                322L,
+    void normalizeThrowsWhenExtractorOutputIsInvalidJson() {
+        EvidenceBlock block = buildClinicalTextBlock("{\"note_text\":\"考虑呼吸道感染\"}");
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
+                eventNormalizerService.normalize(
+                        block,
+                        "{\"status\":\"success\"",
+                        InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                        "v1",
+                        "gpt-test",
+                        new BigDecimal("0.80")
+                ));
+
+        assertEquals("EventNormalizer failed to parse extractor output JSON", exception.getMessage());
+    }
+
+    @Test
+    void normalizeThrowsWhenSuccessResponseHasEmptyEvents() {
+        EvidenceBlock block = buildClinicalTextBlock("{\"note_text\":\"考虑呼吸道感染\"}");
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
+                eventNormalizerService.normalize(
+                        block,
+                        """
+                        {
+                          "status": "success",
+                          "confidence": 0.81,
+                          "events": []
+                        }
+                        """,
+                        InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                        "v1",
+                        "gpt-test",
+                        new BigDecimal("0.81")
+                ));
+
+        assertEquals("EventNormalizer success response must contain events", exception.getMessage());
+    }
+
+    @Test
+    void normalizeThrowsWhenAllEventsAreRejected() {
+        EvidenceBlock block = buildClinicalTextBlock("""
+                {
+                  "note_text":"患者发热咳嗽，考虑呼吸道感染，建议继续观察。"
+                }
+                """);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () ->
+                eventNormalizerService.normalize(
+                        block,
+                        """
+                        {
+                          "status": "success",
+                          "confidence": 0.76,
+                          "events": [
+                            {
+                              "event_time": "2026-03-30 09:25:55",
+                              "event_type": "assessment",
+                              "event_subtype": "infection_positive_statement",
+                              "body_site": "respiratory",
+                              "event_name": "考虑呼吸道感染",
+                              "event_value": null,
+                              "event_unit": null,
+                              "abnormal_flag": null,
+                              "infection_related": true,
+                              "negation_flag": false,
+                              "uncertainty_flag": false,
+                              "clinical_meaning": "infection_support",
+                              "source_section": null,
+                              "source_text": "与当前文本无关的来源句子",
+                              "evidence_tier": "moderate",
+                              "evidence_role": "support"
+                            }
+                          ]
+                        }
+                        """,
+                        InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                        "v1",
+                        "gpt-test",
+                        new BigDecimal("0.76")
+                ));
+
+        assertEquals("EventNormalizer rejected all extracted events", exception.getMessage());
+    }
+
+    private EvidenceBlock buildClinicalTextBlock(String payloadJson) {
+        return new EvidenceBlock(
+                "block-1",
+                "REQ-9001",
+                321L,
                 LocalDate.of(2026, 3, 30),
-                EvidenceBlockType.STRUCTURED_FACT,
+                EvidenceBlockType.CLINICAL_TEXT,
                 InfectionSourceType.RAW,
-                "filter_data_json.lab_results",
-                "lab_results",
-                "{}",
+                "pat_illnessCourse.N-1",
+                "日常病程记录",
+                payloadJson,
                 false
         );
-        List<NormalizedInfectionEvent> factEvents = eventNormalizerService.normalize(structuredBlock, """
-                {
-                  "events": [
-                    {
-                      "event_time": "2026-03-30",
-                      "event_type": "",
-                      "event_subtype": "lab_abnormal",
-                      "body_site": "unknown",
-                      "event_name": "WBC升高",
-                      "infection_related": true,
-                      "negation_flag": false,
-                      "uncertainty_flag": false,
-                      "source_text": "WBC 14.8"
-                    }
-                  ]
-                }
-                """, InfectionExtractorType.LLM_EVENT_EXTRACTOR, "v1", "gpt-test", new BigDecimal("0.95"));
-        assertEquals(1, factEvents.size());
-        assertEquals(InfectionEventType.LAB_RESULT.code(), factEvents.get(0).getEventType());
-        assertEquals(Boolean.TRUE, factEvents.get(0).getIsHardFact());
-
-        EvidenceBlock contextBlock = new EvidenceBlock(
-                "block-3",
-                "REQ-9003",
-                323L,
-                LocalDate.of(2026, 3, 30),
-                EvidenceBlockType.TIMELINE_CONTEXT,
-                InfectionSourceType.SUMMARY,
-                "summary_json",
-                "timeline_context",
-                "{}",
-                true
-        );
-        List<NormalizedInfectionEvent> contextEvents = eventNormalizerService.normalize(contextBlock, """
-                {"events":[{"event_type":"note"}]}
-                """, InfectionExtractorType.LLM_EVENT_EXTRACTOR, "v1", "gpt-test", new BigDecimal("0.95"));
-        assertTrue(contextEvents.isEmpty());
     }
 }

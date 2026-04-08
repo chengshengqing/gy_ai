@@ -6,8 +6,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.agent.WarningAgent;
 import com.zzhy.yg_ai.ai.prompt.WarningAgentPrompt;
+import com.zzhy.yg_ai.domain.entity.InfectionLlmNodeRunEntity;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
+import com.zzhy.yg_ai.domain.enums.InfectionNodeType;
+import com.zzhy.yg_ai.domain.schema.InfectionEventSchema;
 import com.zzhy.yg_ai.domain.model.EvidenceBlock;
+import com.zzhy.yg_ai.service.InfectionLlmNodeRunService;
 import com.zzhy.yg_ai.service.StructuredFactRefinementService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -16,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,16 +31,12 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class StructuredFactRefinementServiceImpl implements StructuredFactRefinementService {
 
-    private static final List<String> TARGET_SECTIONS = List.of(
-            "doctor_orders",
-            "use_medicine",
-            "operation"
-    );
-
     private static final int MAX_CANDIDATES = 12;
     private static final int MAX_LEAF_VALUES = 8;
+    private static final String MODEL_NAME = "warning-agent-chat-model";
 
     private final WarningAgent warningAgent;
+    private final InfectionLlmNodeRunService infectionLlmNodeRunService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -56,7 +57,7 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
             JsonNode timelineNode = timelineContextBlock == null ? null : parseJson(timelineContextBlock.payloadJson());
             LinkedHashMap<String, SectionContext> sectionContexts = new LinkedHashMap<>();
             ArrayNode sectionsInput = objectMapper.createArrayNode();
-            for (String sectionName : TARGET_SECTIONS) {
+            for (String sectionName : InfectionEventSchema.refinementSourceSectionCodes()) {
                 JsonNode sectionNode = data.path(sectionName);
                 if (!(sectionNode instanceof ObjectNode section)) {
                     continue;
@@ -71,12 +72,13 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
             if (sectionContexts.isEmpty()) {
                 return structuredFactBlock;
             }
-            BatchRefinement batchRefinement = refineBatch(
+            String inputPayload = buildRefinementInput(
                     structuredFactBlock.reqno(),
                     structuredFactBlock.dataDate() == null ? null : structuredFactBlock.dataDate().toString(),
                     sectionsInput,
-                    timelineNode,
-                    sectionContexts);
+                    timelineNode
+            );
+            BatchRefinement batchRefinement = refineBatch(structuredFactBlock, inputPayload, sectionContexts);
             if (batchRefinement == null || !batchRefinement.changed()) {
                 return structuredFactBlock;
             }
@@ -106,14 +108,119 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
         }
     }
 
-    private BatchRefinement refineBatch(String reqno,
-                                        String dataDate,
-                                        ArrayNode sectionsInput,
-                                        JsonNode timelineNode,
+    private BatchRefinement refineBatch(EvidenceBlock structuredFactBlock,
+                                        String inputPayload,
                                         Map<String, SectionContext> sectionContexts) {
-        if (sectionsInput.isEmpty()) {
+        if (sectionContexts.isEmpty()) {
             return null;
         }
+        InfectionLlmNodeRunEntity runEntity = buildPendingRun(structuredFactBlock, inputPayload);
+        infectionLlmNodeRunService.createPendingRun(runEntity);
+        long startedAt = System.currentTimeMillis();
+        String prompt = WarningAgentPrompt.buildStructuredFactRefinementPrompt();
+        String rawOutput = null;
+        try {
+            rawOutput = warningAgent.callStructuredFactRefinement(prompt, inputPayload);
+            JsonNode root = parseJson(rawOutput);
+            JsonNode items = root.path("items");
+            if (!items.isArray()) {
+                throw new IllegalStateException("StructuredFact refinement response items must be an array");
+            }
+
+            Map<String, Set<String>> promoteIdsBySection = new LinkedHashMap<>();
+            Map<String, Set<String>> keepIdsBySection = new LinkedHashMap<>();
+            Map<String, Set<String>> dropIdsBySection = new LinkedHashMap<>();
+            for (JsonNode item : items) {
+                String sourceSection = item.path("source_section").asText("");
+                String candidateId = item.path("candidate_id").asText("");
+                SectionContext context = sectionContexts.get(sourceSection);
+                if (!StringUtils.hasText(sourceSection)
+                        || !StringUtils.hasText(candidateId)
+                        || context == null
+                        || !context.candidates().containsKey(candidateId)) {
+                    continue;
+                }
+                String promotion = item.path("promotion").asText("").trim().toLowerCase(Locale.ROOT);
+                if ("promote".equals(promotion)) {
+                    promoteIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
+                } else if ("keep_reference".equals(promotion)) {
+                    keepIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
+                } else if ("drop".equals(promotion)) {
+                    dropIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
+                }
+            }
+
+            if (promoteIdsBySection.isEmpty() && keepIdsBySection.isEmpty() && dropIdsBySection.isEmpty()) {
+                infectionLlmNodeRunService.markSuccess(
+                        runEntity.getId(),
+                        rawOutput,
+                        buildRefinementRunPayload(sectionContexts, Map.of(), Map.of(), Map.of(), Map.of(), null),
+                        null,
+                        System.currentTimeMillis() - startedAt
+                );
+                return null;
+            }
+
+            boolean changed = false;
+            Map<String, SectionRefinement> refinements = new LinkedHashMap<>();
+            for (Map.Entry<String, SectionContext> entry : sectionContexts.entrySet()) {
+                String sectionName = entry.getKey();
+                SectionContext context = entry.getValue();
+                SectionRefinement refinement = applyRefinement(
+                        context.section(),
+                        context.candidates(),
+                        promoteIdsBySection.getOrDefault(sectionName, Set.of()),
+                        keepIdsBySection.getOrDefault(sectionName, Set.of()),
+                        dropIdsBySection.getOrDefault(sectionName, Set.of())
+                );
+                if (refinement != null && refinement.changed()) {
+                    refinements.put(sectionName, refinement);
+                    changed = true;
+                }
+            }
+            infectionLlmNodeRunService.markSuccess(
+                    runEntity.getId(),
+                    rawOutput,
+                    buildRefinementRunPayload(sectionContexts,
+                            promoteIdsBySection,
+                            keepIdsBySection,
+                            dropIdsBySection,
+                            refinements,
+                            null),
+                    null,
+                    System.currentTimeMillis() - startedAt
+            );
+            return new BatchRefinement(refinements, changed);
+        } catch (Exception e) {
+            infectionLlmNodeRunService.markFailed(
+                    runEntity.getId(),
+                    rawOutput,
+                    buildRefinementRunPayload(sectionContexts, Map.of(), Map.of(), Map.of(), Map.of(), e.getMessage()),
+                    "STRUCTURED_FACT_REFINEMENT_FAILED",
+                    e.getMessage(),
+                    System.currentTimeMillis() - startedAt
+            );
+            throw e;
+        }
+    }
+
+    private InfectionLlmNodeRunEntity buildPendingRun(EvidenceBlock block, String inputPayload) {
+        InfectionLlmNodeRunEntity entity = new InfectionLlmNodeRunEntity();
+        entity.setReqno(block.reqno());
+        entity.setRawDataId(block.rawDataId());
+        entity.setNodeRunKey(UUID.randomUUID().toString());
+        entity.setNodeType(InfectionNodeType.STRUCTURED_FACT_REFINEMENT.name());
+        entity.setNodeName("structured-fact-refinement");
+        entity.setPromptVersion(WarningAgentPrompt.STRUCTURED_FACT_REFINEMENT_PROMPT_VERSION);
+        entity.setModelName(MODEL_NAME);
+        entity.setInputPayload(inputPayload);
+        return entity;
+    }
+
+    private String buildRefinementInput(String reqno,
+                                        String dataDate,
+                                        ArrayNode sectionsInput,
+                                        JsonNode timelineNode) {
         ObjectNode input = objectMapper.createObjectNode();
         input.put("reqno", reqno);
         input.put("dataDate", dataDate);
@@ -123,59 +230,57 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
         } else {
             input.putNull("timelineContext");
         }
+        return writeJson(input);
+    }
 
-        String prompt = WarningAgentPrompt.buildStructuredFactRefinementPrompt();
-        String rawOutput = warningAgent.callStructuredFactRefinement(prompt, writeJson(input));
-        JsonNode root = parseJson(rawOutput);
-        JsonNode items = root.path("items");
-        if (!items.isArray()) {
-            return null;
+    private String buildRefinementRunPayload(Map<String, SectionContext> sectionContexts,
+                                             Map<String, Set<String>> promoteIdsBySection,
+                                             Map<String, Set<String>> keepIdsBySection,
+                                             Map<String, Set<String>> dropIdsBySection,
+                                             Map<String, SectionRefinement> refinements,
+                                             String errorMessage) {
+        ObjectNode root = objectMapper.createObjectNode();
+        ObjectNode stats = objectMapper.createObjectNode();
+        int sectionCount = sectionContexts == null ? 0 : sectionContexts.size();
+        int rawCandidateCount = countCandidates(sectionContexts);
+        int promotedCount = countAssignments(promoteIdsBySection);
+        int keptCount = countAssignments(keepIdsBySection);
+        int droppedCount = countAssignments(dropIdsBySection);
+        int changedSectionCount = refinements == null ? 0 : refinements.size();
+        stats.put("raw_section_count", sectionCount);
+        stats.put("raw_candidate_count", rawCandidateCount);
+        stats.put("promoted_candidate_count", promotedCount);
+        stats.put("kept_reference_count", keptCount);
+        stats.put("dropped_candidate_count", droppedCount);
+        stats.put("changed_section_count", changedSectionCount);
+        root.set("stats", stats);
+        root.set("refinements", objectMapper.valueToTree(refinements == null ? Map.of() : refinements.keySet()));
+        if (StringUtils.hasText(errorMessage)) {
+            root.put("error_message", errorMessage);
         }
+        return writeJson(root);
+    }
 
-        Map<String, Set<String>> promoteIdsBySection = new LinkedHashMap<>();
-        Map<String, Set<String>> keepIdsBySection = new LinkedHashMap<>();
-        Map<String, Set<String>> dropIdsBySection = new LinkedHashMap<>();
-        for (JsonNode item : items) {
-            String sourceSection = item.path("source_section").asText("");
-            String candidateId = item.path("candidate_id").asText("");
-            SectionContext context = sectionContexts.get(sourceSection);
-            if (!StringUtils.hasText(sourceSection)
-                    || !StringUtils.hasText(candidateId)
-                    || context == null
-                    || !context.candidates().containsKey(candidateId)) {
-                continue;
-            }
-            String promotion = item.path("promotion").asText("").trim().toLowerCase(Locale.ROOT);
-            if ("promote".equals(promotion)) {
-                promoteIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
-            } else if ("keep_reference".equals(promotion)) {
-                keepIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
-            } else if ("drop".equals(promotion)) {
-                dropIdsBySection.computeIfAbsent(sourceSection, key -> new LinkedHashSet<>()).add(candidateId);
-            }
+    private int countCandidates(Map<String, SectionContext> sectionContexts) {
+        if (sectionContexts == null || sectionContexts.isEmpty()) {
+            return 0;
         }
-        if (promoteIdsBySection.isEmpty() && keepIdsBySection.isEmpty() && dropIdsBySection.isEmpty()) {
-            return null;
+        int total = 0;
+        for (SectionContext context : sectionContexts.values()) {
+            total += context == null || context.candidates() == null ? 0 : context.candidates().size();
         }
+        return total;
+    }
 
-        boolean changed = false;
-        Map<String, SectionRefinement> refinements = new LinkedHashMap<>();
-        for (Map.Entry<String, SectionContext> entry : sectionContexts.entrySet()) {
-            String sectionName = entry.getKey();
-            SectionContext context = entry.getValue();
-            SectionRefinement refinement = applyRefinement(
-                    context.section(),
-                    context.candidates(),
-                    promoteIdsBySection.getOrDefault(sectionName, Set.of()),
-                    keepIdsBySection.getOrDefault(sectionName, Set.of()),
-                    dropIdsBySection.getOrDefault(sectionName, Set.of())
-            );
-            if (refinement != null && refinement.changed()) {
-                refinements.put(sectionName, refinement);
-                changed = true;
-            }
+    private int countAssignments(Map<String, Set<String>> valuesBySection) {
+        if (valuesBySection == null || valuesBySection.isEmpty()) {
+            return 0;
         }
-        return new BatchRefinement(refinements, changed);
+        int total = 0;
+        for (Set<String> values : valuesBySection.values()) {
+            total += values == null ? 0 : values.size();
+        }
+        return total;
     }
 
     private SectionRefinement applyRefinement(ObjectNode section,

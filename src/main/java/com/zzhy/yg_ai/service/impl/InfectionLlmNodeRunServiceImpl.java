@@ -40,6 +40,7 @@ public class InfectionLlmNodeRunServiceImpl
     @Override
     public void markFailed(Long id,
                            String outputPayload,
+                           String normalizedOutputPayload,
                            String errorCode,
                            String errorMessage,
                            Long latencyMs) {
@@ -47,6 +48,7 @@ public class InfectionLlmNodeRunServiceImpl
         entity.setId(id);
         entity.setStatus(InfectionNodeRunStatus.FAILED.name());
         entity.setOutputPayload(outputPayload);
+        entity.setNormalizedOutputPayload(normalizedOutputPayload);
         entity.setErrorCode(errorCode);
         entity.setErrorMessage(errorMessage);
         entity.setLatencyMs(latencyMs);

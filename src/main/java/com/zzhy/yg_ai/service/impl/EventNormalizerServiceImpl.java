@@ -2,19 +2,23 @@ package com.zzhy.yg_ai.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
+import com.zzhy.yg_ai.domain.enums.InfectionAbnormalFlag;
 import com.zzhy.yg_ai.domain.enums.InfectionBodySite;
 import com.zzhy.yg_ai.domain.enums.InfectionCertainty;
 import com.zzhy.yg_ai.domain.enums.InfectionClinicalMeaning;
+import com.zzhy.yg_ai.domain.enums.InfectionEvidenceRole;
+import com.zzhy.yg_ai.domain.enums.InfectionEvidenceTier;
 import com.zzhy.yg_ai.domain.enums.InfectionEventStatus;
 import com.zzhy.yg_ai.domain.enums.InfectionEventSubtype;
 import com.zzhy.yg_ai.domain.enums.InfectionEventType;
 import com.zzhy.yg_ai.domain.enums.InfectionExtractorType;
 import com.zzhy.yg_ai.domain.enums.InfectionPolarity;
 import com.zzhy.yg_ai.domain.enums.InfectionSeverity;
+import com.zzhy.yg_ai.domain.enums.InfectionSourceSection;
+import com.zzhy.yg_ai.domain.schema.InfectionEventSchema;
 import com.zzhy.yg_ai.domain.model.EvidenceBlock;
 import com.zzhy.yg_ai.domain.model.NormalizedInfectionEvent;
 import com.zzhy.yg_ai.service.EventNormalizerService;
@@ -26,10 +30,8 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,70 +44,15 @@ import org.springframework.util.StringUtils;
 public class EventNormalizerServiceImpl implements EventNormalizerService {
 
     private static final List<DateTimeFormatter> DATE_TIME_FORMATTERS = DateTimeUtils.DATE_TIME_PARSE_FORMATTERS;
-
-    private static final Set<String> STRUCTURED_SOURCE_SECTIONS = Set.of(
-            "diagnosis",
-            "vital_signs",
-            "lab_results",
-            "imaging",
-            "doctor_orders",
-            "use_medicine",
-            "transfer",
-            "operation"
-    );
-
-    private static final Set<String> EVIDENCE_TIERS = Set.of("hard", "moderate", "weak");
-
-    private static final Set<String> EVIDENCE_ROLES = Set.of("support", "against", "risk_only", "background");
-
-    private static final Set<String> ABNORMAL_FLAGS = Set.of(
-            "high", "low", "positive", "negative", "abnormal", "normal"
-    );
-
-    private static final Map<String, String> EVENT_TYPE_ALIASES = Map.of(
-            "lab", "lab_result",
-            "image", "imaging",
-            "microbe", "microbiology"
-    );
-
-    private static final Map<String, String> EVENT_SUBTYPE_ALIASES = Map.of(
-            "culture_order", "culture_ordered",
-            "culture_pos", "culture_positive",
-            "antibiotic_upgrade", "antibiotic_upgraded"
-    );
-
-    private static final Map<String, String> CLINICAL_MEANING_ALIASES = Map.of(
-            "support", "infection_support",
-            "against", "infection_against",
-            "uncertain", "infection_uncertain"
-    );
-
-    private static final Map<String, Set<String>> STRUCTURED_SECTION_EVENT_TYPES = new LinkedHashMap<>();
-
-    static {
-        STRUCTURED_SECTION_EVENT_TYPES.put("diagnosis", Set.of(InfectionEventType.DIAGNOSIS.code()));
-        STRUCTURED_SECTION_EVENT_TYPES.put("vital_signs", Set.of(InfectionEventType.VITAL_SIGN.code()));
-        STRUCTURED_SECTION_EVENT_TYPES.put("lab_results", Set.of(
-                InfectionEventType.LAB_RESULT.code(),
-                InfectionEventType.LAB_PANEL.code(),
-                InfectionEventType.MICROBIOLOGY.code()
-        ));
-        STRUCTURED_SECTION_EVENT_TYPES.put("imaging", Set.of(InfectionEventType.IMAGING.code()));
-        STRUCTURED_SECTION_EVENT_TYPES.put("doctor_orders", Set.of(
-                InfectionEventType.ORDER.code(),
-                InfectionEventType.DEVICE.code(),
-                InfectionEventType.PROCEDURE.code()
-        ));
-        STRUCTURED_SECTION_EVENT_TYPES.put("use_medicine", Set.of(InfectionEventType.ORDER.code()));
-        STRUCTURED_SECTION_EVENT_TYPES.put("transfer", Set.of(
-                InfectionEventType.PROBLEM.code(),
-                InfectionEventType.ASSESSMENT.code()
-        ));
-        STRUCTURED_SECTION_EVENT_TYPES.put("operation", Set.of(
-                InfectionEventType.PROCEDURE.code(),
-                InfectionEventType.ORDER.code()
-        ));
-    }
+    private static final String STATUS_SUCCESS = "success";
+    private static final String STATUS_SKIPPED = "skipped";
+    private static final String JSON_NULL_LITERAL = "null";
+    private static final BigDecimal LOW_CONFIDENCE_THRESHOLD = new BigDecimal("0.60");
+    private static final String SUBTYPE_CULTURE_ORDERED = InfectionEventSubtype.CULTURE_ORDERED.code();
+    private static final String SUBTYPE_CONTAMINATION_TOKEN = "contamination";
+    private static final String SUBTYPE_COLONIZATION_TOKEN = "colonization";
+    private static final String[] OPERATION_SUPPORT_HINT_KEYWORDS = {"感染", "脓", "发热", "炎"};
+    private static final String[] COMPLETED_CULTURE_RESULT_KEYWORDS = {"阳性", "阴性", "异常", "正常"};
 
     private final ObjectMapper objectMapper;
 
@@ -120,29 +67,29 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
             return List.of();
         }
         JsonNode root = parseRoot(extractorOutputJson);
-        if (root == null || !root.isObject()) {
-            return List.of();
+        if (!root.isObject()) {
+            throw new IllegalStateException("EventNormalizer extractor output must be a JSON object");
         }
         String status = normalizeStatus(root.path("status").asText(""));
         if (!StringUtils.hasText(status)) {
-            log.warn("EventNormalizer response status 非法, rawDataId={}", block.rawDataId());
-            return List.of();
+            throw new IllegalStateException("EventNormalizer response status is invalid");
         }
-        if ("skipped".equals(status)) {
+        if (STATUS_SKIPPED.equals(status)) {
             if (root.path("events").isArray() && root.path("events").isEmpty()) {
                 return List.of();
             }
-            log.warn("EventNormalizer response skipped 但 events 非空, rawDataId={}", block.rawDataId());
-            return List.of();
+            throw new IllegalStateException("EventNormalizer skipped response must contain empty events");
         }
         BigDecimal responseConfidence = parseRootConfidence(root.path("confidence"));
         if (responseConfidence == null) {
-            log.warn("EventNormalizer response confidence 非法, rawDataId={}", block.rawDataId());
-            return List.of();
+            throw new IllegalStateException("EventNormalizer response confidence is invalid");
         }
         JsonNode eventsNode = root.path("events");
-        if (!eventsNode.isArray() || eventsNode.isEmpty()) {
-            return List.of();
+        if (!eventsNode.isArray()) {
+            throw new IllegalStateException("EventNormalizer response events must be an array");
+        }
+        if (eventsNode.isEmpty()) {
+            throw new IllegalStateException("EventNormalizer success response must contain events");
         }
 
         List<NormalizedInfectionEvent> result = new ArrayList<>();
@@ -160,6 +107,9 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
             if (event != null) {
                 result.add(event);
             }
+        }
+        if (result.isEmpty()) {
+            throw new IllegalStateException("EventNormalizer rejected all extracted events");
         }
         return List.copyOf(result);
     }
@@ -196,14 +146,12 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!StringUtils.hasText(evidenceRole)) {
             return null;
         }
-        String sourceSection = normalizeSourceSection(
-                source.get("source_section"),
-                EvidenceBlockType.STRUCTURED_FACT.equals(block.blockType())
-        );
+        JsonNode sourceSectionNode = source.get("source_section");
+        String sourceSection = normalizeSourceSection(sourceSectionNode);
         if (EvidenceBlockType.STRUCTURED_FACT.equals(block.blockType()) && !StringUtils.hasText(sourceSection)) {
             return null;
         }
-        if (!EvidenceBlockType.STRUCTURED_FACT.equals(block.blockType()) && sourceSection != null) {
+        if (!EvidenceBlockType.STRUCTURED_FACT.equals(block.blockType()) && hasExplicitSourceSectionValue(sourceSectionNode)) {
             return null;
         }
 
@@ -213,7 +161,7 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (infectionRelated == null || negationFlag == null || uncertaintyFlag == null) {
             return null;
         }
-        if ("background".equals(evidenceRole) && Boolean.TRUE.equals(infectionRelated)) {
+        if (InfectionEvidenceRole.BACKGROUND.code().equals(evidenceRole) && Boolean.TRUE.equals(infectionRelated)) {
             return null;
         }
 
@@ -235,7 +183,7 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!validateCompletedResultRule(source, eventSubtype, sourceSection)) {
             return null;
         }
-        if (!validateClinicalConsistency(source, eventSubtype)) {
+        if (!validateClinicalConsistency(infectionRelated, negationFlag, uncertaintyFlag, evidenceRole, clinicalMeaning, eventSubtype)) {
             return null;
         }
 
@@ -284,13 +232,12 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
 
     private JsonNode parseRoot(String extractorOutputJson) {
         if (!StringUtils.hasText(extractorOutputJson)) {
-            return null;
+            throw new IllegalStateException("EventNormalizer extractor output is blank");
         }
         try {
             return objectMapper.readTree(extractorOutputJson);
         } catch (Exception e) {
-            log.warn("EventNormalizer 解析 extractor 输出失败", e);
-            return null;
+            throw new IllegalStateException("EventNormalizer failed to parse extractor output JSON", e);
         }
     }
 
@@ -299,7 +246,7 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
             return null;
         }
         String normalized = rawStatus.trim().toLowerCase(Locale.ROOT);
-        return ("success".equals(normalized) || "skipped".equals(normalized)) ? normalized : null;
+        return (STATUS_SUCCESS.equals(normalized) || STATUS_SKIPPED.equals(normalized)) ? normalized : null;
     }
 
     private BigDecimal parseRootConfidence(JsonNode node) {
@@ -317,24 +264,22 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
     }
 
     private String normalizeEventType(String rawType) {
-        String normalized = normalizeAlias(rawType, EVENT_TYPE_ALIASES);
-        if (!StringUtils.hasText(normalized)) {
+        if (!StringUtils.hasText(rawType)) {
             return null;
         }
         try {
-            return InfectionEventType.fromCode(normalized).code();
+            return InfectionEventType.fromCode(rawType.trim().toLowerCase(Locale.ROOT)).code();
         } catch (IllegalArgumentException e) {
             return null;
         }
     }
 
     private String normalizeSubtype(String rawSubtype) {
-        String normalized = normalizeAlias(rawSubtype, EVENT_SUBTYPE_ALIASES);
-        if (!StringUtils.hasText(normalized)) {
+        if (!StringUtils.hasText(rawSubtype)) {
             return null;
         }
         try {
-            return InfectionEventSubtype.fromCode(normalized).code();
+            return InfectionEventSubtype.fromCode(rawSubtype.trim().toLowerCase(Locale.ROOT)).code();
         } catch (IllegalArgumentException e) {
             return null;
         }
@@ -352,12 +297,11 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
     }
 
     private String normalizeClinicalMeaning(String rawMeaning) {
-        String normalized = normalizeAlias(rawMeaning, CLINICAL_MEANING_ALIASES);
-        if (!StringUtils.hasText(normalized)) {
+        if (!StringUtils.hasText(rawMeaning)) {
             return null;
         }
         try {
-            return InfectionClinicalMeaning.fromCode(normalized).code();
+            return InfectionClinicalMeaning.fromCode(rawMeaning.trim().toLowerCase(Locale.ROOT)).code();
         } catch (IllegalArgumentException e) {
             return null;
         }
@@ -367,28 +311,45 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!StringUtils.hasText(rawTier)) {
             return null;
         }
-        String normalized = rawTier.trim().toLowerCase(Locale.ROOT);
-        return EVIDENCE_TIERS.contains(normalized) ? normalized : null;
+        try {
+            return InfectionEvidenceTier.fromCode(rawTier.trim().toLowerCase(Locale.ROOT)).code();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private String normalizeEvidenceRole(String rawRole) {
         if (!StringUtils.hasText(rawRole)) {
             return null;
         }
-        String normalized = rawRole.trim().toLowerCase(Locale.ROOT);
-        return EVIDENCE_ROLES.contains(normalized) ? normalized : null;
+        try {
+            return InfectionEvidenceRole.fromCode(rawRole.trim().toLowerCase(Locale.ROOT)).code();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
-    private String normalizeSourceSection(JsonNode node, boolean required) {
+    private String normalizeSourceSection(JsonNode node) {
         if (node == null || node.isNull()) {
-            return required ? null : null;
+            return null;
         }
         String rawValue = node.asText("");
-        if (!StringUtils.hasText(rawValue) || "null".equalsIgnoreCase(rawValue.trim())) {
-            return required ? null : null;
+        if (!StringUtils.hasText(rawValue) || JSON_NULL_LITERAL.equalsIgnoreCase(rawValue.trim())) {
+            return null;
         }
-        String normalized = rawValue.trim().toLowerCase(Locale.ROOT);
-        return STRUCTURED_SOURCE_SECTIONS.contains(normalized) ? normalized : "__invalid__";
+        try {
+            return InfectionSourceSection.fromCode(rawValue.trim().toLowerCase(Locale.ROOT)).code();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private boolean hasExplicitSourceSectionValue(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return false;
+        }
+        String rawValue = node.asText("");
+        return StringUtils.hasText(rawValue) && !JSON_NULL_LITERAL.equalsIgnoreCase(rawValue.trim());
     }
 
     private Boolean parseBoolean(JsonNode node) {
@@ -438,21 +399,25 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!EvidenceBlockType.STRUCTURED_FACT.equals(blockType)) {
             return true;
         }
-        Set<String> allowedTypes = STRUCTURED_SECTION_EVENT_TYPES.get(sourceSection);
+        Set<String> allowedTypes = InfectionEventSchema.allowedEventTypesForSection(sourceSection);
         if (allowedTypes == null || !allowedTypes.contains(eventType)) {
             return false;
         }
-        if ("vital_signs".equals(sourceSection) && "hard".equals(evidenceTier)) {
+        if (InfectionSourceSection.VITAL_SIGNS.code().equals(sourceSection)
+                && InfectionEvidenceTier.HARD.code().equals(evidenceTier)) {
             return false;
         }
-        if ("diagnosis".equals(sourceSection) && "hard".equals(evidenceTier)) {
+        if (InfectionSourceSection.DIAGNOSIS.code().equals(sourceSection)
+                && InfectionEvidenceTier.HARD.code().equals(evidenceTier)) {
             return false;
         }
-        if ("transfer".equals(sourceSection) && "support".equals(evidenceRole)) {
+        if (InfectionSourceSection.TRANSFER.code().equals(sourceSection)
+                && InfectionEvidenceRole.SUPPORT.code().equals(evidenceRole)) {
             return false;
         }
-        if ("operation".equals(sourceSection) && "support".equals(evidenceRole)
-                && !containsAny(sourceText, "感染", "脓", "发热", "炎")) {
+        if (InfectionSourceSection.OPERATION.code().equals(sourceSection)
+                && InfectionEvidenceRole.SUPPORT.code().equals(evidenceRole)
+                && !containsAny(sourceText, OPERATION_SUPPORT_HINT_KEYWORDS)) {
             return false;
         }
         return true;
@@ -470,23 +435,18 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         }
     }
 
-    private boolean validateClinicalConsistency(ObjectNode source, String eventSubtype) {
-        Boolean infectionRelated = parseBoolean(source.get("infection_related"));
-        Boolean negationFlag = parseBoolean(source.get("negation_flag"));
-        Boolean uncertaintyFlag = parseBoolean(source.get("uncertainty_flag"));
-        String evidenceRole = normalizeEvidenceRole(source.path("evidence_role").asText(""));
-        String clinicalMeaning = normalizeClinicalMeaning(source.path("clinical_meaning").asText(""));
-
-        if ("background".equals(evidenceRole) && Boolean.TRUE.equals(infectionRelated)) {
-            return false;
-        }
-        if ("against".equals(evidenceRole) && Boolean.FALSE.equals(negationFlag)
+    private boolean validateClinicalConsistency(Boolean infectionRelated,
+                                                Boolean negationFlag,
+                                                Boolean uncertaintyFlag,
+                                                String evidenceRole,
+                                                String clinicalMeaning,
+                                                String eventSubtype) {
+        if (InfectionEvidenceRole.AGAINST.code().equals(evidenceRole) && Boolean.FALSE.equals(negationFlag)
                 && !InfectionClinicalMeaning.INFECTION_AGAINST.code().equals(clinicalMeaning)
-                && !defaultIfBlank(eventSubtype, "").contains("contamination")
-                && !defaultIfBlank(eventSubtype, "").contains("colonization")) {
+                && !isContaminationOrColonizationSubtype(eventSubtype)) {
             return false;
         }
-        if ("risk_only".equals(evidenceRole) && Boolean.TRUE.equals(uncertaintyFlag)
+        if (InfectionEvidenceRole.RISK_ONLY.code().equals(evidenceRole) && Boolean.TRUE.equals(uncertaintyFlag)
                 && InfectionClinicalMeaning.INFECTION_SUPPORT.code().equals(clinicalMeaning)) {
             return false;
         }
@@ -494,14 +454,14 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
     }
 
     private boolean validateCompletedResultRule(ObjectNode source, String eventSubtype, String sourceSection) {
-        if (!"culture_ordered".equals(eventSubtype)) {
+        if (!SUBTYPE_CULTURE_ORDERED.equals(eventSubtype)) {
             return true;
         }
-        if (!"lab_results".equals(sourceSection)) {
+        if (!InfectionSourceSection.LAB_RESULTS.code().equals(sourceSection)) {
             return true;
         }
         String sourceText = defaultIfBlank(source.path("source_text").asText(""), "");
-        return !containsAny(sourceText, "阳性", "阴性", "异常", "正常");
+        return !containsAny(sourceText, COMPLETED_CULTURE_RESULT_KEYWORDS);
     }
 
     private boolean isSourceTextTraceable(EvidenceBlock block, String sourceSection, String sourceText) {
@@ -542,14 +502,14 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                                  boolean negationFlag,
                                  boolean uncertaintyFlag,
                                  String clinicalMeaning) {
-        if ("against".equals(evidenceRole) || negationFlag
+        if (InfectionEvidenceRole.AGAINST.code().equals(evidenceRole) || negationFlag
                 || InfectionClinicalMeaning.INFECTION_AGAINST.code().equals(clinicalMeaning)) {
             return InfectionPolarity.NEGATIVE.code();
         }
         if (uncertaintyFlag || InfectionClinicalMeaning.INFECTION_UNCERTAIN.code().equals(clinicalMeaning)) {
             return InfectionPolarity.UNCERTAIN.code();
         }
-        if ("support".equals(evidenceRole)
+        if (InfectionEvidenceRole.SUPPORT.code().equals(evidenceRole)
                 || InfectionClinicalMeaning.INFECTION_SUPPORT.code().equals(clinicalMeaning)) {
             return InfectionPolarity.POSITIVE.code();
         }
@@ -560,13 +520,13 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                                   boolean uncertaintyFlag,
                                   EvidenceBlockType blockType,
                                   BigDecimal confidence) {
-        if ("risk_only".equals(evidenceRole)) {
+        if (InfectionEvidenceRole.RISK_ONLY.code().equals(evidenceRole)) {
             return InfectionCertainty.RISK_ONLY.code();
         }
         if (uncertaintyFlag) {
             return InfectionCertainty.POSSIBLE.code();
         }
-        if (confidence != null && confidence.compareTo(new BigDecimal("0.60")) < 0
+        if (confidence != null && confidence.compareTo(LOW_CONFIDENCE_THRESHOLD) < 0
                 && !EvidenceBlockType.STRUCTURED_FACT.equals(blockType)) {
             return InfectionCertainty.POSSIBLE.code();
         }
@@ -574,12 +534,7 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
     }
 
     private String resolveEventCategory(EvidenceBlockType blockType) {
-        return switch (blockType) {
-            case STRUCTURED_FACT -> "fact";
-            case CLINICAL_TEXT -> "text";
-            case MID_SEMANTIC -> "semantic";
-            case TIMELINE_CONTEXT -> "context";
-        };
+        return InfectionEventSchema.resolveEventCategory(blockType);
     }
 
     private String normalizeAbnormalFlag(JsonNode node) {
@@ -591,7 +546,17 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
             return null;
         }
         String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return ABNORMAL_FLAGS.contains(normalized) ? normalized : null;
+        try {
+            return InfectionAbnormalFlag.fromCode(normalized).code();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private boolean isContaminationOrColonizationSubtype(String eventSubtype) {
+        String normalizedSubtype = defaultIfBlank(eventSubtype, "");
+        return normalizedSubtype.contains(SUBTYPE_CONTAMINATION_TOKEN)
+                || normalizedSubtype.contains(SUBTYPE_COLONIZATION_TOKEN);
     }
 
     private String buildEvidenceJson(EvidenceBlock block,
@@ -684,14 +649,6 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize normalized event payload", e);
         }
-    }
-
-    private String normalizeAlias(String rawValue, Map<String, String> aliases) {
-        if (!StringUtils.hasText(rawValue)) {
-            return null;
-        }
-        String normalized = rawValue.trim().toLowerCase(Locale.ROOT);
-        return aliases.getOrDefault(normalized, normalized);
     }
 
     private String normalizeForSearch(String rawValue) {

@@ -6,8 +6,6 @@ public enum InfectionClinicalMeaning {
     INFECTION_SUPPORT("infection_support", "支持感染"),
     INFECTION_AGAINST("infection_against", "反对感染"),
     INFECTION_UNCERTAIN("infection_uncertain", "感染未明"),
-    DEVICE_EXPOSURE("device_exposure", "器械暴露"),
-    PROCEDURE_EXPOSURE("procedure_exposure", "操作暴露"),
     SCREENING("screening", "筛查"),
     BASELINE_PROBLEM("baseline_problem", "基线问题");
 
@@ -33,4 +31,5 @@ public enum InfectionClinicalMeaning {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unsupported InfectionClinicalMeaning code: " + code));
     }
+
 }

@@ -1,45 +1,71 @@
 package com.zzhy.yg_ai.ai.orchestrator;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzhy.yg_ai.ai.agent.SummaryAgent;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.config.StructDataFormatProperties;
+import com.zzhy.yg_ai.domain.entity.InfectionAlertResultEntity;
+import com.zzhy.yg_ai.domain.entity.InfectionCaseSnapshotEntity;
 import com.zzhy.yg_ai.domain.entity.InfectionEventTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import com.zzhy.yg_ai.domain.enums.InfectionCaseState;
 import com.zzhy.yg_ai.domain.enums.InfectionEventTaskType;
+import com.zzhy.yg_ai.domain.enums.InfectionEventTriggerReasonCode;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
+import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
+import com.zzhy.yg_ai.domain.enums.PatientCourseDataType;
+import com.zzhy.yg_ai.domain.model.EvidenceBlock;
 import com.zzhy.yg_ai.domain.model.EvidenceBlockBuildResult;
+import com.zzhy.yg_ai.domain.model.InfectionEvidencePacket;
+import com.zzhy.yg_ai.domain.model.JudgeDecisionResult;
 import com.zzhy.yg_ai.domain.model.LlmEventExtractorResult;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
+import com.zzhy.yg_ai.service.InfectionAlertResultService;
+import com.zzhy.yg_ai.service.InfectionCaseSnapshotService;
 import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.InfectionEventTaskService;
+import com.zzhy.yg_ai.service.InfectionEvidencePacketBuilder;
 import com.zzhy.yg_ai.service.InfectionEvidenceBlockService;
+import com.zzhy.yg_ai.service.InfectionEventPoolService;
+import com.zzhy.yg_ai.service.InfectionJudgeService;
 import com.zzhy.yg_ai.service.LlmEventExtractorService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientRawDataCollectTaskService;
 import com.zzhy.yg_ai.service.PatientService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.ToIntFunction;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Slf4j
 @Service
-public class InfectionPipeline {
+public class InfectionPipeline implements DisposableBean {
 
     private static final int EVENT_EXTRACT_PRIORITY = 50;
     private static final int CASE_RECOMPUTE_PRIORITY = 10;
-    private static final int CASE_BUCKET_MINUTES = 30;
+    private static final int CASE_MAX_WAIT_MINUTES = 30;
+    private static final long THREAD_KEEP_ALIVE_SECONDS = 60L;
 
+    private final ExecutorService sharedExecutor;
     private final InfectionMonitorProperties infectionMonitorProperties;
     private final SummaryAgent summaryAgent;
     private final PatientService patientService;
@@ -49,6 +75,12 @@ public class InfectionPipeline {
     private final InfectionDailyJobLogService infectionDailyJobLogService;
     private final InfectionEvidenceBlockService infectionEvidenceBlockService;
     private final LlmEventExtractorService llmEventExtractorService;
+    private final InfectionEventPoolService infectionEventPoolService;
+    private final InfectionCaseSnapshotService infectionCaseSnapshotService;
+    private final InfectionEvidencePacketBuilder infectionEvidencePacketBuilder;
+    private final InfectionJudgeService infectionJudgeService;
+    private final InfectionAlertResultService infectionAlertResultService;
+    private final ObjectMapper objectMapper;
     private final StructDataFormatProperties structDataFormatProperties;
 
     public InfectionPipeline(InfectionMonitorProperties infectionMonitorProperties,
@@ -60,7 +92,19 @@ public class InfectionPipeline {
                              InfectionDailyJobLogService infectionDailyJobLogService,
                              InfectionEvidenceBlockService infectionEvidenceBlockService,
                              LlmEventExtractorService llmEventExtractorService,
+                             InfectionEventPoolService infectionEventPoolService,
+                             InfectionCaseSnapshotService infectionCaseSnapshotService,
+                             InfectionEvidencePacketBuilder infectionEvidencePacketBuilder,
+                             InfectionJudgeService infectionJudgeService,
+                             InfectionAlertResultService infectionAlertResultService,
+                             ObjectMapper objectMapper,
                              StructDataFormatProperties structDataFormatProperties) {
+        int maxThreads = Math.max(1, structDataFormatProperties.getWorkerThreads());
+        this.sharedExecutor = new ThreadPoolExecutor(
+                0, maxThreads,
+                THREAD_KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                new ThreadPoolExecutor.CallerRunsPolicy());
         this.infectionMonitorProperties = infectionMonitorProperties;
         this.summaryAgent = summaryAgent;
         this.patientService = patientService;
@@ -70,7 +114,26 @@ public class InfectionPipeline {
         this.infectionDailyJobLogService = infectionDailyJobLogService;
         this.infectionEvidenceBlockService = infectionEvidenceBlockService;
         this.llmEventExtractorService = llmEventExtractorService;
+        this.infectionEventPoolService = infectionEventPoolService;
+        this.infectionCaseSnapshotService = infectionCaseSnapshotService;
+        this.infectionEvidencePacketBuilder = infectionEvidencePacketBuilder;
+        this.infectionJudgeService = infectionJudgeService;
+        this.infectionAlertResultService = infectionAlertResultService;
+        this.objectMapper = objectMapper;
         this.structDataFormatProperties = structDataFormatProperties;
+    }
+
+    @Override
+    public void destroy() {
+        sharedExecutor.shutdown();
+        try {
+            if (!sharedExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                sharedExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            sharedExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     public int enqueueRawDataTasks(List<String> reqnos, LocalDateTime sourceBatchTime) {
@@ -80,27 +143,13 @@ public class InfectionPipeline {
     public int processPendingRawDataTasks() {
         List<PatientRawDataCollectTaskEntity> tasks =
                 patientRawDataCollectTaskService.claimPendingTasks(infectionMonitorProperties.getBatchSize());
-        if (tasks == null || tasks.isEmpty()) {
-            return 0;
-        }
-
-        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, infectionMonitorProperties.getWorkerThreads()));
-        List<CompletableFuture<RawCollectTaskExecutionResult>> futures = new ArrayList<>();
-        for (PatientRawDataCollectTaskEntity taskEntity : tasks) {
-            futures.add(CompletableFuture.supplyAsync(() -> processCollectTask(taskEntity), executor));
-        }
-
-        int processedCount;
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            processedCount = futures.stream()
-                    .map(CompletableFuture::join)
-                    .peek(this::finalizeCollectTask)
-                    .mapToInt(result -> result.isSuccessLike() ? 1 : 0)
-                    .sum();
-        } finally {
-            executor.shutdown();
-        }
+        int processedCount = executeParallelTasks(
+                tasks,
+                infectionMonitorProperties.getWorkerThreads(),
+                this::processCollectTask,
+                this::finalizeCollectTask,
+                result -> result.isSuccessLike() ? 1 : 0
+        );
 
         if (processedCount > 0) {
             log.info("患者原始数据采集任务完成，processedCount={}", processedCount);
@@ -125,23 +174,13 @@ public class InfectionPipeline {
             return 0;
         }
 
-        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, structDataFormatProperties.getWorkerThreads()));
-        List<CompletableFuture<StructTaskExecutionResult>> futures = new ArrayList<>();
-        for (List<PatientRawDataChangeTaskEntity> taskGroup : tasksByReqno.values()) {
-            futures.add(CompletableFuture.supplyAsync(() -> processStructTask(taskGroup), executor));
-        }
-
-        int formattedCount;
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            formattedCount = futures.stream()
-                    .map(CompletableFuture::join)
-                    .peek(this::finalizeStructTask)
-                    .mapToInt(StructTaskExecutionResult::successCount)
-                    .sum();
-        } finally {
-            executor.shutdown();
-        }
+        int formattedCount = executeParallelTasks(
+                new ArrayList<>(tasksByReqno.values()),
+                structDataFormatProperties.getWorkerThreads(),
+                this::processStructTask,
+                this::finalizeStructTask,
+                StructTaskExecutionResult::successCount
+        );
 
         if (formattedCount > 0) {
             log.info("患者结构化格式化完成，formattedCount={}", formattedCount);
@@ -152,27 +191,13 @@ public class InfectionPipeline {
     public int processPendingEventData() {
         List<InfectionEventTaskEntity> claimedTasks =
                 infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.EVENT_EXTRACT, structDataFormatProperties.getBatchSize());
-        if (claimedTasks == null || claimedTasks.isEmpty()) {
-            return 0;
-        }
-
-        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, structDataFormatProperties.getWorkerThreads()));
-        List<CompletableFuture<EventTaskExecutionResult>> futures = new ArrayList<>();
-        for (InfectionEventTaskEntity taskEntity : claimedTasks) {
-            futures.add(CompletableFuture.supplyAsync(() -> processEventTask(taskEntity), executor));
-        }
-
-        int extractedCount;
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            extractedCount = futures.stream()
-                    .map(CompletableFuture::join)
-                    .peek(this::finalizeEventTask)
-                    .mapToInt(EventTaskExecutionResult::successCount)
-                    .sum();
-        } finally {
-            executor.shutdown();
-        }
+        int extractedCount = executeParallelTasks(
+                claimedTasks,
+                structDataFormatProperties.getWorkerThreads(),
+                this::processEventTask,
+                this::finalizeEventTask,
+                EventTaskExecutionResult::successCount
+        );
 
         if (extractedCount > 0) {
             log.info("患者事件抽取完成，extractedCount={}", extractedCount);
@@ -183,27 +208,13 @@ public class InfectionPipeline {
     public int processPendingCaseData() {
         List<InfectionEventTaskEntity> claimedTasks =
                 infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.CASE_RECOMPUTE, structDataFormatProperties.getBatchSize());
-        if (claimedTasks == null || claimedTasks.isEmpty()) {
-            return 0;
-        }
-
-        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, structDataFormatProperties.getWorkerThreads()));
-        List<CompletableFuture<CaseTaskExecutionResult>> futures = new ArrayList<>();
-        for (InfectionEventTaskEntity taskEntity : claimedTasks) {
-            futures.add(CompletableFuture.supplyAsync(() -> processCaseTask(taskEntity), executor));
-        }
-
-        int processedCount;
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            processedCount = futures.stream()
-                    .map(CompletableFuture::join)
-                    .peek(this::finalizeCaseTask)
-                    .mapToInt(CaseTaskExecutionResult::successCount)
-                    .sum();
-        } finally {
-            executor.shutdown();
-        }
+        int processedCount = executeParallelTasks(
+                claimedTasks,
+                structDataFormatProperties.getWorkerThreads(),
+                this::processCaseTask,
+                this::finalizeCaseTask,
+                CaseTaskExecutionResult::successCount
+        );
 
         if (processedCount > 0) {
             log.info("病例重算任务完成，processedCount={}", processedCount);
@@ -293,8 +304,8 @@ public class InfectionPipeline {
         }
 
         try {
-            String timelineWindowJson = patientService.buildSummaryWindowJson(reqno, rawData.getDataDate(), 7);
-            LlmEventExtractorResult extractResult = extractEvents(rawData, timelineWindowJson);
+            String timelineWindowJson = patientService.buildSummaryWindowJson(reqno, rawData.getDataDate());
+            LlmEventExtractorResult extractResult = extractEvents(rawData, timelineWindowJson, taskEntity);
             int caseTaskCount = 0;
             if (extractResult != null && !extractResult.persistedEvents().isEmpty()) {
                 infectionEventTaskService.upsertCaseRecomputeTask(
@@ -303,7 +314,7 @@ public class InfectionPipeline {
                         rawData.getDataDate(),
                         rawData.getLastTime(),
                         taskEntity.getSourceBatchTime() == null ? LocalDateTime.now() : taskEntity.getSourceBatchTime(),
-                        CASE_BUCKET_MINUTES,
+                        0,
                         CASE_RECOMPUTE_PRIORITY
                 );
                 caseTaskCount = 1;
@@ -315,12 +326,18 @@ public class InfectionPipeline {
         }
     }
 
-    private LlmEventExtractorResult extractEvents(PatientRawDataEntity rawData, String timelineWindowJson) {
+    private LlmEventExtractorResult extractEvents(PatientRawDataEntity rawData,
+                                                  String timelineWindowJson,
+                                                  InfectionEventTaskEntity taskEntity) {
         EvidenceBlockBuildResult buildResult = infectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson);
         if (buildResult == null || buildResult.primaryBlocks().isEmpty()) {
             return null;
         }
-        return llmEventExtractorService.extractAndSave(buildResult);
+        List<EvidenceBlock> primaryBlocks = selectPrimaryBlocks(buildResult, taskEntity);
+        if (primaryBlocks.isEmpty()) {
+            return null;
+        }
+        return llmEventExtractorService.extractAndSave(buildResult, primaryBlocks);
     }
 
     private CaseTaskExecutionResult processCaseTask(InfectionEventTaskEntity taskEntity) {
@@ -330,10 +347,32 @@ public class InfectionPipeline {
             return CaseTaskExecutionResult.failed(taskIds, reqno, "reqno为空");
         }
         try {
-            log.info("病例重算占位任务执行，taskId={}, reqno={}", taskEntity.getId(), reqno);
+            InfectionCaseSnapshotEntity snapshot = infectionCaseSnapshotService.getOrInit(reqno);
+            Long latestEventPoolVersion = infectionEventPoolService.getLatestActiveEventVersion(reqno);
+            long snapshotVersion = snapshot == null || snapshot.getLastEventPoolVersion() == null
+                    ? 0L : snapshot.getLastEventPoolVersion();
+            if (latestEventPoolVersion == null || latestEventPoolVersion <= snapshotVersion) {
+                return CaseTaskExecutionResult.skipped(taskIds, reqno, "无新增事件版本，跳过病例重算");
+            }
+
+            LocalDateTime now = DateTimeUtils.now();
+            if (taskEntity.getDebounceUntil() != null
+                    && now.isBefore(taskEntity.getDebounceUntil())
+                    && (taskEntity.getFirstTriggeredAt() == null
+                    || now.isBefore(taskEntity.getFirstTriggeredAt().plusMinutes(CASE_MAX_WAIT_MINUTES)))) {
+                infectionEventTaskService.reschedule(taskIds, taskEntity.getDebounceUntil(), "仍在病例重算防抖窗口内");
+                return CaseTaskExecutionResult.rescheduled(taskIds, reqno, "病例重算延后执行");
+            }
+
+            InfectionEvidencePacket packet = infectionEvidencePacketBuilder.build(reqno, now);
+            JudgeDecisionResult decision = infectionJudgeService.judge(packet, now);
+            persistAlertResult(snapshot, taskEntity, packet, decision);
+            updateSnapshot(snapshot, latestEventPoolVersion, now, decision);
+            log.info("病例重算完成，taskId={}, reqno={}, decisionStatus={}, warningLevel={}",
+                    taskEntity.getId(), reqno, decision.decisionStatus(), decision.warningLevel());
             return CaseTaskExecutionResult.success(taskIds, reqno);
         } catch (Exception e) {
-            log.error("病例重算占位任务失败，taskId={}, reqno={}", taskEntity.getId(), reqno, e);
+            log.error("病例重算任务失败，taskId={}, reqno={}", taskEntity.getId(), reqno, e);
             return CaseTaskExecutionResult.failed(taskIds, reqno, "病例重算任务执行失败，需重试");
         }
     }
@@ -381,6 +420,13 @@ public class InfectionPipeline {
 
     private void finalizeCaseTask(CaseTaskExecutionResult result) {
         if (result == null || result.taskIds() == null || result.taskIds().isEmpty()) {
+            return;
+        }
+        if (result.rescheduled()) {
+            return;
+        }
+        if (result.skipped()) {
+            infectionEventTaskService.markSkipped(result.taskIds(), result.message());
             return;
         }
         if (result.failedCount() > 0) {
@@ -481,6 +527,126 @@ public class InfectionPipeline {
         return rawData;
     }
 
+    private <T, R> int executeParallelTasks(List<T> tasks,
+                                            int workerThreads,
+                                            Function<T, R> processor,
+                                            Consumer<R> finalizer,
+                                            ToIntFunction<R> successCounter) {
+        if (tasks == null || tasks.isEmpty()) {
+            return 0;
+        }
+        List<CompletableFuture<R>> futures = new ArrayList<>();
+        for (T task : tasks) {
+            futures.add(CompletableFuture.supplyAsync(() -> processor.apply(task), sharedExecutor));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        return futures.stream()
+                .map(CompletableFuture::join)
+                .peek(finalizer)
+                .mapToInt(successCounter)
+                .sum();
+    }
+
+    private List<EvidenceBlock> selectPrimaryBlocks(EvidenceBlockBuildResult buildResult, InfectionEventTaskEntity taskEntity) {
+        if (buildResult == null) {
+            return List.of();
+        }
+        Set<InfectionEventTriggerReasonCode> triggerReasons = InfectionEventTriggerReasonCode.fromCsv(
+                taskEntity == null ? null : taskEntity.getTriggerReasonCodes()
+        );
+        EnumSet<PatientCourseDataType> changedTypes = PatientCourseDataType.parseCsv(
+                taskEntity == null ? null : taskEntity.getChangedTypes()
+        );
+        if (triggerReasons.isEmpty() && changedTypes.isEmpty()) {
+            return buildResult.primaryBlocks();
+        }
+
+        boolean includeStructuredFact = hasAny(triggerReasons,
+                InfectionEventTriggerReasonCode.LAB_RESULT_CHANGED,
+                InfectionEventTriggerReasonCode.MICROBE_CHANGED,
+                InfectionEventTriggerReasonCode.IMAGING_CHANGED,
+                InfectionEventTriggerReasonCode.ANTIBIOTIC_OR_ORDER_CHANGED,
+                InfectionEventTriggerReasonCode.OPERATION_CHANGED,
+                InfectionEventTriggerReasonCode.TRANSFER_CHANGED,
+                InfectionEventTriggerReasonCode.VITAL_SIGN_CHANGED)
+                || hasAny(changedTypes,
+                PatientCourseDataType.FULL_PATIENT,
+                PatientCourseDataType.DIAGNOSIS,
+                PatientCourseDataType.BODY_SURFACE,
+                PatientCourseDataType.DOCTOR_ADVICE,
+                PatientCourseDataType.LAB_TEST,
+                PatientCourseDataType.USE_MEDICINE,
+                PatientCourseDataType.VIDEO_RESULT,
+                PatientCourseDataType.TRANSFER,
+                PatientCourseDataType.OPERATION,
+                PatientCourseDataType.MICROBE);
+        boolean includeClinicalText = triggerReasons.contains(InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED)
+                || hasAny(changedTypes, PatientCourseDataType.FULL_PATIENT, PatientCourseDataType.ILLNESS_COURSE);
+        boolean includeMidSemantic = includeClinicalText || hasAny(triggerReasons,
+                InfectionEventTriggerReasonCode.ANTIBIOTIC_OR_ORDER_CHANGED,
+                InfectionEventTriggerReasonCode.OPERATION_CHANGED,
+                InfectionEventTriggerReasonCode.TRANSFER_CHANGED)
+                || hasAny(changedTypes,
+                PatientCourseDataType.FULL_PATIENT,
+                PatientCourseDataType.ILLNESS_COURSE,
+                PatientCourseDataType.DOCTOR_ADVICE,
+                PatientCourseDataType.USE_MEDICINE,
+                PatientCourseDataType.TRANSFER,
+                PatientCourseDataType.OPERATION);
+
+        List<EvidenceBlock> selected = new ArrayList<>();
+        if (includeStructuredFact) {
+            selected.addAll(filterByBlockType(buildResult.structuredFactBlocks(), EvidenceBlockType.STRUCTURED_FACT));
+        }
+        if (includeClinicalText) {
+            selected.addAll(filterByBlockType(buildResult.clinicalTextBlocks(), EvidenceBlockType.CLINICAL_TEXT));
+        }
+        if (includeMidSemantic) {
+            selected.addAll(filterByBlockType(buildResult.midSemanticBlocks(), EvidenceBlockType.MID_SEMANTIC));
+        }
+        if (selected.isEmpty()) {
+            return buildResult.primaryBlocks();
+        }
+        return List.copyOf(selected);
+    }
+
+    private boolean hasAny(Set<InfectionEventTriggerReasonCode> triggerReasons, InfectionEventTriggerReasonCode... expected) {
+        if (triggerReasons == null || triggerReasons.isEmpty()) {
+            return false;
+        }
+        for (InfectionEventTriggerReasonCode code : expected) {
+            if (code != null && triggerReasons.contains(code)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasAny(EnumSet<PatientCourseDataType> changedTypes, PatientCourseDataType... expected) {
+        if (changedTypes == null || changedTypes.isEmpty()) {
+            return false;
+        }
+        for (PatientCourseDataType type : expected) {
+            if (type != null && changedTypes.contains(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<EvidenceBlock> filterByBlockType(List<EvidenceBlock> blocks, EvidenceBlockType blockType) {
+        if (blocks == null || blocks.isEmpty()) {
+            return List.of();
+        }
+        List<EvidenceBlock> result = new ArrayList<>();
+        for (EvidenceBlock block : blocks) {
+            if (block != null && block.blockType() == blockType) {
+                result.add(block);
+            }
+        }
+        return result;
+    }
+
     private record StructTaskExecutionResult(List<Long> taskIds,
                                              String reqno,
                                              int totalRows,
@@ -542,15 +708,94 @@ public class InfectionPipeline {
                                            String reqno,
                                            int successCount,
                                            int failedCount,
+                                           boolean skipped,
+                                           boolean rescheduled,
                                            String lastErrorMessage,
                                            String message) {
 
         private static CaseTaskExecutionResult success(List<Long> taskIds, String reqno) {
-            return new CaseTaskExecutionResult(taskIds, reqno, 1, 0, null, "病例重算占位任务完成");
+            return new CaseTaskExecutionResult(taskIds, reqno, 1, 0, false, false, null, "病例重算完成");
         }
 
         private static CaseTaskExecutionResult failed(List<Long> taskIds, String reqno, String lastErrorMessage) {
-            return new CaseTaskExecutionResult(taskIds, reqno, 0, 1, lastErrorMessage, lastErrorMessage);
+            return new CaseTaskExecutionResult(taskIds, reqno, 0, 1, false, false, lastErrorMessage, lastErrorMessage);
+        }
+
+        private static CaseTaskExecutionResult skipped(List<Long> taskIds, String reqno, String message) {
+            return new CaseTaskExecutionResult(taskIds, reqno, 0, 0, true, false, null, message);
+        }
+
+        private static CaseTaskExecutionResult rescheduled(List<Long> taskIds, String reqno, String message) {
+            return new CaseTaskExecutionResult(taskIds, reqno, 0, 0, false, true, null, message);
+        }
+    }
+
+    private void persistAlertResult(InfectionCaseSnapshotEntity snapshot,
+                                    InfectionEventTaskEntity taskEntity,
+                                    InfectionEvidencePacket packet,
+                                    JudgeDecisionResult decision) {
+        InfectionAlertResultEntity result = new InfectionAlertResultEntity();
+        result.setReqno(taskEntity.getReqno());
+        result.setDataDate(taskEntity.getDataDate());
+        result.setResultVersion(decision.resultVersion());
+        result.setAlertStatus(decision.decisionStatus());
+        result.setOverallRiskLevel(decision.warningLevel());
+        result.setPrimarySite(decision.primarySite());
+        result.setNewOnsetFlag(decision.newOnsetFlag());
+        result.setAfter48hFlag(decision.after48hFlag());
+        result.setProcedureRelatedFlag(decision.procedureRelatedFlag());
+        result.setDeviceRelatedFlag(decision.deviceRelatedFlag());
+        result.setInfectionPolarity(decision.infectionPolarity());
+        result.setSourceSnapshotId(snapshot == null ? null : snapshot.getId());
+        result.setResultJson(writeJson(decision));
+        result.setDiffJson(writeJson(packet));
+        infectionAlertResultService.saveResult(result);
+    }
+
+    private void updateSnapshot(InfectionCaseSnapshotEntity snapshot,
+                                Long latestEventPoolVersion,
+                                LocalDateTime judgeTime,
+                                JudgeDecisionResult decision) {
+        if (snapshot == null || decision == null) {
+            return;
+        }
+        snapshot.setCaseState(decision.decisionStatus());
+        snapshot.setWarningLevel(decision.warningLevel());
+        snapshot.setPrimarySite(decision.primarySite());
+        snapshot.setNosocomialLikelihood(decision.nosocomialLikelihood());
+        snapshot.setCurrentNewOnsetFlag(decision.newOnsetFlag());
+        snapshot.setCurrentAfter48hFlag(decision.after48hFlag());
+        snapshot.setCurrentProcedureRelatedFlag(decision.procedureRelatedFlag());
+        snapshot.setCurrentDeviceRelatedFlag(decision.deviceRelatedFlag());
+        snapshot.setCurrentInfectionPolarity(decision.infectionPolarity());
+        snapshot.setActiveEventKeysJson(writeJson(decision.newSupportingKeys()));
+        snapshot.setActiveRiskKeysJson(writeJson(decision.newRiskKeys()));
+        snapshot.setActiveAgainstKeysJson(writeJson(decision.newAgainstKeys()));
+        snapshot.setLastJudgeTime(judgeTime);
+        snapshot.setLastResultVersion(decision.resultVersion());
+        snapshot.setLastEventPoolVersion(latestEventPoolVersion == null ? 0L : latestEventPoolVersion);
+        snapshot.setJudgeDebounceUntil(null);
+        InfectionCaseState state = InfectionCaseState.fromCodeOrDefault(decision.decisionStatus(), null);
+        if (state == InfectionCaseState.CANDIDATE && snapshot.getLastCandidateSince() == null) {
+            snapshot.setLastCandidateSince(judgeTime);
+        }
+        if (state == InfectionCaseState.WARNING && snapshot.getLastWarningSince() == null) {
+            snapshot.setLastWarningSince(judgeTime);
+        }
+        if (state != null && !state.isActiveRisk()) {
+            snapshot.setLastCandidateSince(null);
+        }
+        infectionCaseSnapshotService.saveOrUpdateSnapshot(snapshot);
+    }
+
+    private String writeJson(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return null;
         }
     }
 
