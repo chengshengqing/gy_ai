@@ -8,12 +8,6 @@ import java.util.List;
 
 public interface PatientRawDataChangeTaskService extends IService<PatientRawDataChangeTaskEntity> {
 
-    void appendChange(Long patientRawDataId,
-                      String reqno,
-                      LocalDate dataDate,
-                      LocalDateTime rawDataLastTime,
-                      LocalDateTime sourceBatchTime);
-
     void appendChanges(List<PatientRawDataChangeTaskEntity> tasks);
 
     List<PatientRawDataChangeTaskEntity> claimPendingStructTasks(int patientLimit);

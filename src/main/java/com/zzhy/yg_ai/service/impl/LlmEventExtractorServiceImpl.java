@@ -22,10 +22,12 @@ import com.zzhy.yg_ai.service.LlmEventExtractorService;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 @Slf4j
 @Service
@@ -33,6 +35,10 @@ import org.springframework.stereotype.Service;
 public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
 
     private static final String MODEL_NAME = "warning-agent-chat-model";
+    private static final String STATUS_SUCCESS = "success";
+    private static final String STATUS_SKIPPED = "skipped";
+    private static final BigDecimal DEFAULT_SKIPPED_CONFIDENCE = new BigDecimal("0.20");
+    private static final int MAX_ERROR_PREVIEW_LENGTH = 600;
 
     private final WarningAgent warningAgent;
     private final InfectionLlmNodeRunService infectionLlmNodeRunService;
@@ -86,8 +92,10 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         try {
             String prompt = WarningAgentPrompt.buildEventExtractorPrompt(block.blockType());
             rawOutput = warningAgent.callEventExtractor(prompt, inputPayload);
-            rawEventCount = countRawEvents(rawOutput);
-            BigDecimal confidence = extractConfidence(rawOutput);
+            PreparedExtractorOutput preparedOutput = prepareExtractorOutput(rawOutput);
+            rawOutput = preparedOutput.outputJson();
+            rawEventCount = preparedOutput.rawEventCount();
+            BigDecimal confidence = preparedOutput.confidence();
             List<NormalizedInfectionEvent> normalizedEvents = eventNormalizerService.normalize(
                     block,
                     rawOutput,
@@ -110,16 +118,143 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
             );
             return new LlmBlockExtractionResult(normalizedEvents, persistedEvents);
         } catch (Exception e) {
-            infectionLlmNodeRunService.markFailed(
-                    runEntity.getId(),
-                    rawOutput,
-                    buildExtractionRunPayload(rawEventCount, 0, rawEventCount, 0, List.of(), e.getMessage()),
-                    "EVENT_EXTRACT_FAILED",
-                    e.getMessage(),
-                    System.currentTimeMillis() - startedAt
-            );
-            throw new IllegalStateException("LlmEventExtractor failed for block=" + block.blockKey(), e);
+            String detailedError = buildFailureMessage(block, e, rawOutput);
+            try {
+                infectionLlmNodeRunService.markFailed(
+                        runEntity.getId(),
+                        rawOutput,
+                        buildExtractionRunPayload(rawEventCount, 0, rawEventCount, 0, List.of(), detailedError),
+                        "EVENT_EXTRACT_FAILED",
+                        detailedError,
+                        System.currentTimeMillis() - startedAt
+                );
+            } catch (Exception markFailedError) {
+                e.addSuppressed(markFailedError);
+                log.error("Failed to persist extractor failure audit, blockKey={}, runId={}",
+                        block.blockKey(), runEntity.getId(), markFailedError);
+            }
+            log.error("LlmEventExtractor failed, blockKey={}, reqno={}, rawDataId={}, blockType={}, sourceRef={}, rawOutputPreview={}",
+                    block.blockKey(),
+                    block.reqno(),
+                    block.rawDataId(),
+                    block.blockType(),
+                    block.sourceRef(),
+                    abbreviate(rawOutput),
+                    e);
+            throw new IllegalStateException(detailedError, e);
         }
+    }
+
+    private PreparedExtractorOutput prepareExtractorOutput(String rawOutput) {
+        if (!StringUtils.hasText(rawOutput)) {
+            throw new IllegalStateException("Event extractor model output is blank");
+        }
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(rawOutput);
+        } catch (Exception e) {
+            throw new IllegalStateException("Event extractor model output is not valid JSON", e);
+        }
+        if (!root.isObject()) {
+            throw new IllegalStateException("Event extractor model output must be a JSON object");
+        }
+
+        ObjectNode normalizedRoot = ((ObjectNode) root).deepCopy();
+        ArrayNode events = normalizeEvents(normalizedRoot.get("events"));
+        normalizedRoot.set("events", events);
+
+        String status = normalizeResponseStatus(normalizedRoot.path("status").asText(null), events);
+        normalizedRoot.put("status", status);
+
+        BigDecimal confidence = normalizeConfidence(normalizedRoot.get("confidence"), status);
+        if (confidence != null) {
+            normalizedRoot.put("confidence", confidence);
+        } else {
+            normalizedRoot.putNull("confidence");
+        }
+        return new PreparedExtractorOutput(writeJson(normalizedRoot), events.size(), confidence);
+    }
+
+    private ArrayNode normalizeEvents(JsonNode eventsNode) {
+        if (eventsNode == null || eventsNode.isNull() || eventsNode.isMissingNode()) {
+            return objectMapper.createArrayNode();
+        }
+        if (!eventsNode.isArray()) {
+            throw new IllegalStateException("Event extractor response events must be an array");
+        }
+        return (ArrayNode) eventsNode.deepCopy();
+    }
+
+    private String normalizeResponseStatus(String rawStatus, ArrayNode events) {
+        if (StringUtils.hasText(rawStatus)) {
+            String normalized = rawStatus.trim().toLowerCase(Locale.ROOT);
+            if (STATUS_SUCCESS.equals(normalized) || STATUS_SKIPPED.equals(normalized)) {
+                if (STATUS_SUCCESS.equals(normalized) && events.isEmpty()) {
+                    return STATUS_SKIPPED;
+                }
+                return normalized;
+            }
+        }
+        return events.isEmpty() ? STATUS_SKIPPED : STATUS_SUCCESS;
+    }
+
+    private BigDecimal normalizeConfidence(JsonNode confidenceNode, String status) {
+        BigDecimal confidence = parseConfidence(confidenceNode);
+        if (confidence != null) {
+            return confidence;
+        }
+        if (STATUS_SKIPPED.equals(status)) {
+            return DEFAULT_SKIPPED_CONFIDENCE;
+        }
+        throw new IllegalStateException("Event extractor response confidence is invalid");
+    }
+
+    private BigDecimal parseConfidence(JsonNode confidenceNode) {
+        if (confidenceNode == null || confidenceNode.isNull() || confidenceNode.isMissingNode()) {
+            return null;
+        }
+        try {
+            BigDecimal value;
+            if (confidenceNode.isNumber()) {
+                value = confidenceNode.decimalValue();
+            } else if (confidenceNode.isTextual() && StringUtils.hasText(confidenceNode.asText())) {
+                value = new BigDecimal(confidenceNode.asText().trim());
+            } else {
+                return null;
+            }
+            if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(BigDecimal.ONE) > 0) {
+                return null;
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String buildFailureMessage(EvidenceBlock block, Exception exception, String rawOutput) {
+        String rootMessage = exception.getMessage();
+        if (!StringUtils.hasText(rootMessage)) {
+            rootMessage = exception.getClass().getSimpleName();
+        }
+        return "LlmEventExtractor failed for block=%s, blockType=%s, sourceRef=%s, cause=%s, rawOutputPreview=%s"
+                .formatted(
+                        block.blockKey(),
+                        block.blockType(),
+                        block.sourceRef(),
+                        rootMessage,
+                        abbreviate(rawOutput)
+                );
+    }
+
+    private String abbreviate(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "<empty>";
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= MAX_ERROR_PREVIEW_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_ERROR_PREVIEW_LENGTH) + "...";
     }
 
     private InfectionLlmNodeRunEntity buildPendingRun(EvidenceBlock block, String promptVersion, String inputPayload) {
@@ -312,6 +447,13 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
     private record LlmBlockExtractionResult(
             List<NormalizedInfectionEvent> normalizedEvents,
             List<InfectionEventPoolEntity> persistedEvents
+    ) {
+    }
+
+    private record PreparedExtractorOutput(
+            String outputJson,
+            int rawEventCount,
+            BigDecimal confidence
     ) {
     }
 }

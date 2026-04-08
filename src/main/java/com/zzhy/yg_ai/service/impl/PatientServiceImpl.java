@@ -161,8 +161,7 @@ public class PatientServiceImpl implements PatientService {
             }
             for (DailyPatientRawData dailyData : queriedDayDataMap.values()) {
                 PatientRawDataEntity savedRow = insertPatientRawData(reqno, dailyData, now, firstCourse);
-                changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
-                routeEventTask(savedRow, requestedTypes, dailyData, effectiveSourceBatchTime);
+                enqueueDownstreamTasks(changedTasks, savedRow, requestedTypes, dailyData, effectiveSourceBatchTime);
                 savedCount++;
             }
         } else {
@@ -188,12 +187,22 @@ public class PatientServiceImpl implements PatientService {
                         continue;
                     }
                     PatientRawDataEntity savedRow = upsertPatientRawData(reqno, fullDailyData, now, firstCourse);
-                    changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
-                    routeEventTask(savedRow, PatientCourseDataType.fullSnapshot(), fullDailyData, effectiveSourceBatchTime);
+                    enqueueDownstreamTasks(
+                            changedTasks,
+                            savedRow,
+                            PatientCourseDataType.fullSnapshot(),
+                            fullDailyData,
+                            effectiveSourceBatchTime
+                    );
                 } else {
                     PatientRawDataEntity savedRow = mergeChangedRawData(existing, changedDailyData, changedTypes, now, firstCourse);
-                    changedTasks.add(buildChangeTask(savedRow, effectiveSourceBatchTime));
-                    routeEventTask(savedRow, changedTypes, changedDailyData, effectiveSourceBatchTime);
+                    enqueueDownstreamTasks(
+                            changedTasks,
+                            savedRow,
+                            changedTypes,
+                            changedDailyData,
+                            effectiveSourceBatchTime
+                    );
                 }
                 savedCount++;
             }
@@ -530,6 +539,18 @@ public class PatientServiceImpl implements PatientService {
         task.setSourceBatchTime(sourceBatchTime);
         task.setCreateTime(DateTimeUtils.now());
         return task;
+    }
+
+    private void enqueueDownstreamTasks(List<PatientRawDataChangeTaskEntity> changedTasks,
+                                        PatientRawDataEntity rawDataEntity,
+                                        EnumSet<PatientCourseDataType> changedTypes,
+                                        DailyPatientRawData dailyData,
+                                        LocalDateTime sourceBatchTime) {
+        PatientRawDataChangeTaskEntity changeTask = buildChangeTask(rawDataEntity, sourceBatchTime);
+        if (changeTask != null) {
+            changedTasks.add(changeTask);
+        }
+        routeEventTask(rawDataEntity, changedTypes, dailyData, sourceBatchTime);
     }
 
     private void routeEventTask(PatientRawDataEntity rawDataEntity,

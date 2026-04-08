@@ -1,6 +1,7 @@
 package com.zzhy.yg_ai.ai.orchestrator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zaxxer.hikari.HikariDataSource;
 import com.zzhy.yg_ai.ai.agent.SummaryAgent;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.config.InfectionMonitorProperties;
@@ -45,12 +46,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
+import javax.sql.DataSource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Service;
@@ -63,7 +66,8 @@ public class InfectionPipeline implements DisposableBean {
     private static final int EVENT_EXTRACT_PRIORITY = 50;
     private static final int CASE_RECOMPUTE_PRIORITY = 10;
     private static final int CASE_MAX_WAIT_MINUTES = 30;
-    private static final long THREAD_KEEP_ALIVE_SECONDS = 60L;
+    private static final int RESERVED_JDBC_CONNECTIONS = 1;
+    private static final AtomicInteger EXECUTOR_THREAD_COUNTER = new AtomicInteger(1);
 
     private final ExecutorService sharedExecutor;
     private final InfectionMonitorProperties infectionMonitorProperties;
@@ -98,13 +102,23 @@ public class InfectionPipeline implements DisposableBean {
                              InfectionJudgeService infectionJudgeService,
                              InfectionAlertResultService infectionAlertResultService,
                              ObjectMapper objectMapper,
-                             StructDataFormatProperties structDataFormatProperties) {
-        int maxThreads = Math.max(1, structDataFormatProperties.getWorkerThreads());
+                             StructDataFormatProperties structDataFormatProperties,
+                             DataSource dataSource) {
+        int configuredThreads = Math.max(1, structDataFormatProperties.getWorkerThreads());
+        int maxThreads = resolveExecutorThreads(configuredThreads, dataSource);
         this.sharedExecutor = new ThreadPoolExecutor(
-                0, maxThreads,
-                THREAD_KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
-                new SynchronousQueue<>(),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+                maxThreads, maxThreads,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(),
+                runnable -> {
+                    Thread thread = new Thread(runnable);
+                    thread.setName("infection-pipeline-" + EXECUTOR_THREAD_COUNTER.getAndIncrement());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        if (this.sharedExecutor instanceof ThreadPoolExecutor threadPoolExecutor) {
+            threadPoolExecutor.prestartAllCoreThreads();
+        }
         this.infectionMonitorProperties = infectionMonitorProperties;
         this.summaryAgent = summaryAgent;
         this.patientService = patientService;
@@ -121,6 +135,7 @@ public class InfectionPipeline implements DisposableBean {
         this.infectionAlertResultService = infectionAlertResultService;
         this.objectMapper = objectMapper;
         this.structDataFormatProperties = structDataFormatProperties;
+        log.info("初始化院感处理执行器，configuredThreads={}, effectiveThreads={}", configuredThreads, maxThreads);
     }
 
     @Override
@@ -216,6 +231,20 @@ public class InfectionPipeline implements DisposableBean {
             log.info("病例重算任务完成，processedCount={}", processedCount);
         }
         return processedCount;
+    }
+
+    private int resolveExecutorThreads(int configuredThreads, DataSource dataSource) {
+        if (!(dataSource instanceof HikariDataSource hikariDataSource)) {
+            return configuredThreads;
+        }
+        int jdbcPoolSize = Math.max(1, hikariDataSource.getMaximumPoolSize());
+        int safeThreads = Math.max(1, jdbcPoolSize - RESERVED_JDBC_CONNECTIONS);
+        int effectiveThreads = Math.min(configuredThreads, safeThreads);
+        if (effectiveThreads < configuredThreads) {
+            log.warn("院感处理并发已下调以匹配 JDBC 连接池，configuredThreads={}, jdbcPoolSize={}, reservedConnections={}, effectiveThreads={}",
+                    configuredThreads, jdbcPoolSize, RESERVED_JDBC_CONNECTIONS, effectiveThreads);
+        }
+        return effectiveThreads;
     }
 
     private RawCollectTaskExecutionResult processCollectTask(PatientRawDataCollectTaskEntity taskEntity) {

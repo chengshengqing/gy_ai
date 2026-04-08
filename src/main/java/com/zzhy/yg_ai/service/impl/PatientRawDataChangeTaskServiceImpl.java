@@ -28,28 +28,6 @@ public class PatientRawDataChangeTaskServiceImpl
     private final StructDataFormatProperties structDataFormatProperties;
 
     @Override
-    public void appendChange(Long patientRawDataId,
-                             String reqno,
-                             LocalDate dataDate,
-                             LocalDateTime rawDataLastTime,
-                             LocalDateTime sourceBatchTime) {
-        if (patientRawDataId == null || !StringUtils.hasText(reqno) || rawDataLastTime == null) {
-            return;
-        }
-        if (taskExists(patientRawDataId, rawDataLastTime)) {
-            return;
-        }
-        PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
-        task.setPatientRawDataId(patientRawDataId);
-        task.setReqno(reqno.trim());
-        task.setDataDate(dataDate);
-        task.setRawDataLastTime(rawDataLastTime);
-        task.setSourceBatchTime(sourceBatchTime);
-        task.initForCreate(structDataFormatProperties.getMaxAttempts());
-        saveIfAbsent(task);
-    }
-
-    @Override
     public void appendChanges(List<PatientRawDataChangeTaskEntity> tasks) {
         if (tasks == null || tasks.isEmpty()) {
             return;
