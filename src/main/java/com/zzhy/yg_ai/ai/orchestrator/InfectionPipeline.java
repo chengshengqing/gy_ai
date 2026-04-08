@@ -145,7 +145,6 @@ public class InfectionPipeline implements DisposableBean {
                 patientRawDataCollectTaskService.claimPendingTasks(infectionMonitorProperties.getBatchSize());
         int processedCount = executeParallelTasks(
                 tasks,
-                infectionMonitorProperties.getWorkerThreads(),
                 this::processCollectTask,
                 this::finalizeCollectTask,
                 result -> result.isSuccessLike() ? 1 : 0
@@ -176,7 +175,6 @@ public class InfectionPipeline implements DisposableBean {
 
         int formattedCount = executeParallelTasks(
                 new ArrayList<>(tasksByReqno.values()),
-                structDataFormatProperties.getWorkerThreads(),
                 this::processStructTask,
                 this::finalizeStructTask,
                 StructTaskExecutionResult::successCount
@@ -193,7 +191,6 @@ public class InfectionPipeline implements DisposableBean {
                 infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.EVENT_EXTRACT, structDataFormatProperties.getBatchSize());
         int extractedCount = executeParallelTasks(
                 claimedTasks,
-                structDataFormatProperties.getWorkerThreads(),
                 this::processEventTask,
                 this::finalizeEventTask,
                 EventTaskExecutionResult::successCount
@@ -210,7 +207,6 @@ public class InfectionPipeline implements DisposableBean {
                 infectionEventTaskService.claimPendingTasks(InfectionEventTaskType.CASE_RECOMPUTE, structDataFormatProperties.getBatchSize());
         int processedCount = executeParallelTasks(
                 claimedTasks,
-                structDataFormatProperties.getWorkerThreads(),
                 this::processCaseTask,
                 this::finalizeCaseTask,
                 CaseTaskExecutionResult::successCount
@@ -444,13 +440,12 @@ public class InfectionPipeline implements DisposableBean {
         if (result == null || result.taskId() == null) {
             return;
         }
-        patientRawDataCollectTaskService.updateChangeTypes(result.taskId(), result.changeTypes());
         if (!result.isSuccessLike()) {
-            patientRawDataCollectTaskService.markFailed(result.taskId(), result.message());
+            patientRawDataCollectTaskService.markFailed(result.taskId(), result.message(), result.changeTypes());
             infectionDailyJobLogService.log(InfectionJobStage.LOAD, InfectionJobStatus.ERROR, result.reqno(), result.message());
             return;
         }
-        patientRawDataCollectTaskService.markSuccess(result.taskId(), result.message());
+        patientRawDataCollectTaskService.markSuccess(result.taskId(), result.message(), result.changeTypes());
     }
 
     private List<Long> extractStructTaskIds(List<PatientRawDataChangeTaskEntity> taskGroup) {
@@ -528,7 +523,6 @@ public class InfectionPipeline implements DisposableBean {
     }
 
     private <T, R> int executeParallelTasks(List<T> tasks,
-                                            int workerThreads,
                                             Function<T, R> processor,
                                             Consumer<R> finalizer,
                                             ToIntFunction<R> successCounter) {

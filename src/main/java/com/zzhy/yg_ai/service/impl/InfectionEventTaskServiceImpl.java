@@ -145,44 +145,8 @@ public class InfectionEventTaskServiceImpl
         int batchSize = limit <= 0 ? structDataFormatProperties.getBatchSize() : limit;
         LocalDateTime now = DateTimeUtils.now();
         reclaimTimedOutRunningTasks(taskType, now);
-        LambdaQueryWrapper<InfectionEventTaskEntity> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(InfectionEventTaskEntity::getTaskType, taskType.name())
-                .in(InfectionEventTaskEntity::getStatus,
-                        InfectionEventTaskStatus.PENDING.name(),
-                        InfectionEventTaskStatus.FAILED.name())
-                .le(InfectionEventTaskEntity::getAvailableAt, now)
-                .apply("attempt_count < max_attempts")
-                .orderByAsc(InfectionEventTaskEntity::getPriority)
-                .orderByAsc(InfectionEventTaskEntity::getAvailableAt)
-                .orderByAsc(InfectionEventTaskEntity::getCreateTime)
-                .last("OFFSET 0 ROWS FETCH NEXT " + batchSize + " ROWS ONLY");
-
-        List<InfectionEventTaskEntity> candidates = this.list(queryWrapper);
-        if (candidates == null || candidates.isEmpty()) {
-            return List.of();
-        }
-
-        List<InfectionEventTaskEntity> claimed = new ArrayList<>();
-        for (InfectionEventTaskEntity candidate : candidates) {
-            LambdaUpdateWrapper<InfectionEventTaskEntity> claimWrapper = new LambdaUpdateWrapper<>();
-            claimWrapper.eq(InfectionEventTaskEntity::getId, candidate.getId())
-                    .eq(InfectionEventTaskEntity::getTaskType, taskType.name())
-                    .in(InfectionEventTaskEntity::getStatus,
-                            InfectionEventTaskStatus.PENDING.name(),
-                            InfectionEventTaskStatus.FAILED.name())
-                    .set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.RUNNING.name())
-                    .set(InfectionEventTaskEntity::getLastStartTime, now)
-                    .set(InfectionEventTaskEntity::getUpdateTime, now)
-                    .setSql("attempt_count = attempt_count + 1");
-            if (this.update(claimWrapper)) {
-                candidate.setStatus(InfectionEventTaskStatus.RUNNING.name());
-                candidate.setAttemptCount((candidate.getAttemptCount() == null ? 0 : candidate.getAttemptCount()) + 1);
-                candidate.setLastStartTime(now);
-                candidate.setUpdateTime(now);
-                claimed.add(candidate);
-            }
-        }
-        return claimed;
+        List<InfectionEventTaskEntity> claimed = this.baseMapper.claimPendingTasks(taskType.name(), now, batchSize);
+        return claimed == null ? List.of() : claimed;
     }
 
     @Override

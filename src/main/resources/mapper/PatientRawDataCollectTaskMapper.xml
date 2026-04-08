@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PatientRawDataCollectTaskMapper">
+
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.PatientRawDataCollectTaskEntity">
+        <id column="id" property="id"/>
+        <result column="reqno" property="reqno"/>
+        <result column="status" property="status"/>
+        <result column="attempt_count" property="attemptCount"/>
+        <result column="max_attempts" property="maxAttempts"/>
+        <result column="previous_source_last_time" property="previousSourceLastTime"/>
+        <result column="source_last_time" property="sourceLastTime"/>
+        <result column="change_types" property="changeTypes"/>
+        <result column="available_at" property="availableAt"/>
+        <result column="last_start_time" property="lastStartTime"/>
+        <result column="last_finish_time" property="lastFinishTime"/>
+        <result column="last_error_message" property="lastErrorMessage"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <select id="claimPendingTasks" resultMap="BaseResultMap">
+        with claim_candidates as (
+            select top (#{limit}) t.id
+            from patient_raw_data_collect_task t with (updlock, readpast, rowlock)
+            where t.status in ('PENDING', 'FAILED')
+              and t.available_at <![CDATA[ <= ]]> #{now}
+              and t.attempt_count <![CDATA[ < ]]> t.max_attempts
+            order by t.available_at asc, t.create_time asc, t.id asc
+        )
+        update t
+        set t.status = 'RUNNING',
+            t.last_start_time = #{now},
+            t.update_time = #{now},
+            t.attempt_count = t.attempt_count + 1
+        output
+            inserted.id,
+            inserted.reqno,
+            inserted.status,
+            inserted.attempt_count,
+            inserted.max_attempts,
+            inserted.previous_source_last_time,
+            inserted.source_last_time,
+            inserted.change_types,
+            inserted.available_at,
+            inserted.last_start_time,
+            inserted.last_finish_time,
+            inserted.last_error_message,
+            inserted.create_time,
+            inserted.update_time
+        from patient_raw_data_collect_task t
+        inner join claim_candidates c on c.id = t.id
+    </select>
+</mapper>

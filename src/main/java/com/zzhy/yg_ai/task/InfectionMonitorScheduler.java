@@ -34,7 +34,6 @@ public class InfectionMonitorScheduler {
     @Scheduled(fixedDelayString = "${infection.monitor.enqueue-fixed-delay:${infection.monitor.fixed-delay:60000}}")
     public void enqueuePendingPatients() {
         try {
-            reclaimTimedOutCollectTasks("采集扫描");
             LocalDateTime sourceBatchTime = patientService.getLatestSourceBatchTime();
             LocalDateTime latestEnqueuedBatchTime = patientRawDataCollectTaskService.getLatestSourceLastTime();
             if (sourceBatchTime == null) {
@@ -69,7 +68,6 @@ public class InfectionMonitorScheduler {
     @Scheduled(fixedDelayString = "${infection.monitor.process-fixed-delay:${infection.monitor.fixed-delay:60000}}")
     public void processPendingCollectTasks() {
         try {
-            reclaimTimedOutCollectTasks("采集执行");
             int processedCount = infectionPipeline.processPendingRawDataTasks();
             if (processedCount <= 0) {
                 return;
@@ -85,13 +83,6 @@ public class InfectionMonitorScheduler {
                     InfectionJobStatus.ERROR,
                     null,
                     "院感采集执行任务失败: " + e.getMessage());
-        }
-    }
-
-    private void reclaimTimedOutCollectTasks(String phase) {
-        int reclaimedCount = patientRawDataCollectTaskService.reclaimTimedOutRunningTasks();
-        if (reclaimedCount > 0) {
-            log.warn("{}阶段回收超时采集任务，count={}", phase, reclaimedCount);
         }
     }
 }

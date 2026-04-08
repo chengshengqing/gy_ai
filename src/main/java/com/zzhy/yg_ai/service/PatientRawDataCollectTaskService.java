@@ -13,11 +13,7 @@ public interface PatientRawDataCollectTaskService extends IService<PatientRawDat
 
     LocalDateTime getLatestSourceLastTime();
 
-    int reclaimTimedOutRunningTasks();
+    void markSuccess(Long taskId, String message, String changeTypes);
 
-    void markSuccess(Long taskId, String message);
-
-    void markFailed(Long taskId, String errorMessage);
-
-    void updateChangeTypes(Long taskId, String changeTypes);
+    void markFailed(Long taskId, String errorMessage, String changeTypes);
 }

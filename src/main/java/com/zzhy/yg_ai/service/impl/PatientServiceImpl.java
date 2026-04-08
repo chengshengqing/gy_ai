@@ -79,11 +79,6 @@ public class PatientServiceImpl implements PatientService {
         LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
         List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
 
-        activeReqnos = activeReqnos.stream()
-//                .filter(reqno -> "260300011".equals(reqno))
-                .filter(reqno -> "260300124".equals(reqno))
-                .collect(Collectors.toList());
-
         if (!debugReqnos.isEmpty()) {
             log.info("已配置 debugReqnos，但 debugMode=false，当前仍按正式扫描策略执行");
         }
@@ -93,16 +88,6 @@ public class PatientServiceImpl implements PatientService {
     @Override
     public LocalDateTime getLatestSourceBatchTime() {
         return patientRawDataMapper.selectSourceLastTime();
-    }
-
-    @Override
-    public String collectAndSaveRawData(String reqno) {
-        return writeJson(collectAndSaveRawDataResult(reqno));
-    }
-
-    @Override
-    public RawDataCollectResult collectAndSaveRawDataResult(String reqno) {
-        return collectAndSaveRawDataResult(reqno, null, null);
     }
 
     @Override
@@ -118,26 +103,30 @@ public class PatientServiceImpl implements PatientService {
         }
 
         boolean isNewPatient = !hasPatientRawData(reqno);
-        LocalDateTime lastSuccessfulLoadTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
-        LocalDateTime changeDetectSinceTime = previousSourceLastTime == null ? lastSuccessfulLoadTime : previousSourceLastTime;
-        LocalDateTime effectiveSourceBatchTime = sourceBatchTime == null ? DateTimeUtils.now() : sourceBatchTime;
-        EnumSet<PatientCourseDataType> changedTypes = detectChangedDataTypes(reqno, changeDetectSinceTime, isNewPatient);
+        if (sourceBatchTime == null) {
+            result.setStatus("failed");
+            result.setMessage("采集任务缺少 sourceBatchTime");
+            return result;
+        }
+        if (!isNewPatient && previousSourceLastTime == null) {
+            result.setStatus("failed");
+            result.setMessage("增量采集任务缺少 previousSourceLastTime");
+            return result;
+        }
+
+        LocalDateTime effectiveSourceBatchTime = sourceBatchTime;
+        EnumSet<PatientCourseDataType> changedTypes = isNewPatient
+                ? PatientCourseDataType.fullSnapshot()
+                : detectChangedDataTypes(reqno, previousSourceLastTime);
         result.setChangeTypes(PatientCourseDataType.toCsv(changedTypes));
 
         int savedCount = 0;
         List<PatientRawDataChangeTaskEntity> changedTasks = new ArrayList<>();
         LocalDateTime now = DateTimeUtils.now();
-        if (!isNewPatient) {
-            if (changeDetectSinceTime == null) {
-                result.setStatus("no_data");
-                result.setMessage("缺少上次成功采集时间，跳过本轮增量更新");
-                return result;
-            }
-            if (changedTypes.isEmpty()) {
-                result.setStatus("no_data");
-                result.setMessage("当前无增量更新");
-                return result;
-            }
+        if (!isNewPatient && changedTypes.isEmpty()) {
+            result.setStatus("no_data");
+            result.setMessage("当前无增量更新");
+            return result;
         }
 
         EnumSet<PatientCourseDataType> requestedTypes = isNewPatient
@@ -145,7 +134,7 @@ public class PatientServiceImpl implements PatientService {
                 : EnumSet.copyOf(changedTypes);
         PatientCourseData queriedCourseData = buildCourseData(
                 reqno,
-                isNewPatient ? null : changeDetectSinceTime,
+                isNewPatient ? null : previousSourceLastTime,
                 effectiveSourceBatchTime,
                 requestedTypes
         );
@@ -611,13 +600,9 @@ public class PatientServiceImpl implements PatientService {
     }
 
     private EnumSet<PatientCourseDataType> detectChangedDataTypes(String reqno,
-                                                                  LocalDateTime latestLoadSuccessTime,
-                                                                  boolean isNewPatient) {
-        if (isNewPatient || latestLoadSuccessTime == null) {
-            return PatientCourseDataType.fullSnapshot();
-        }
+                                                                  LocalDateTime previousSourceLastTime) {
         return PatientCourseDataType.fromNames(
-                patientRawDataMapper.selectChangedDataTypes(reqno, latestLoadSuccessTime)
+                patientRawDataMapper.selectChangedDataTypes(reqno, previousSourceLastTime)
         );
     }
 

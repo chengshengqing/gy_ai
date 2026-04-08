@@ -13,9 +13,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class PatientRawDataCollectTaskServiceImpl
@@ -89,43 +91,12 @@ public class PatientRawDataCollectTaskServiceImpl
     public List<PatientRawDataCollectTaskEntity> claimPendingTasks(int limit) {
         int batchSize = limit <= 0 ? infectionMonitorProperties.getBatchSize() : limit;
         LocalDateTime now = DateTimeUtils.now();
-        reclaimTimedOutRunningTasks(now);
-        LambdaQueryWrapper<PatientRawDataCollectTaskEntity> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.in(PatientRawDataCollectTaskEntity::getStatus,
-                        PatientRawDataTaskStatus.PENDING.name(),
-                        PatientRawDataTaskStatus.FAILED.name())
-                .le(PatientRawDataCollectTaskEntity::getAvailableAt, now)
-                .apply("attempt_count < max_attempts")
-                .orderByAsc(PatientRawDataCollectTaskEntity::getAvailableAt)
-                .orderByAsc(PatientRawDataCollectTaskEntity::getCreateTime)
-                .last("OFFSET 0 ROWS FETCH NEXT " + batchSize + " ROWS ONLY");
-
-        List<PatientRawDataCollectTaskEntity> candidates = this.list(queryWrapper);
-        List<PatientRawDataCollectTaskEntity> claimed = new ArrayList<>();
-        for (PatientRawDataCollectTaskEntity candidate : candidates) {
-            LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> claimWrapper = new LambdaUpdateWrapper<>();
-            claimWrapper.eq(PatientRawDataCollectTaskEntity::getId, candidate.getId())
-                    .in(PatientRawDataCollectTaskEntity::getStatus,
-                        PatientRawDataTaskStatus.PENDING.name(),
-                        PatientRawDataTaskStatus.FAILED.name())
-                    .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.RUNNING.name())
-                    .set(PatientRawDataCollectTaskEntity::getLastStartTime, now)
-                    .set(PatientRawDataCollectTaskEntity::getUpdateTime, now)
-                    .setSql("attempt_count = attempt_count + 1");
-            if (this.update(claimWrapper)) {
-                candidate.setStatus(PatientRawDataTaskStatus.RUNNING.name());
-                candidate.setAttemptCount((candidate.getAttemptCount() == null ? 0 : candidate.getAttemptCount()) + 1);
-                candidate.setLastStartTime(now);
-                candidate.setUpdateTime(now);
-                claimed.add(candidate);
-            }
+        int reclaimedCount = reclaimTimedOutRunningTasks(now);
+        if (reclaimedCount > 0) {
+            log.warn("回收超时采集任务，count={}", reclaimedCount);
         }
-        return claimed;
-    }
-
-    @Override
-    public int reclaimTimedOutRunningTasks() {
-        return reclaimTimedOutRunningTasks(DateTimeUtils.now());
+        List<PatientRawDataCollectTaskEntity> claimed = this.baseMapper.claimPendingTasks(now, batchSize);
+        return claimed == null ? new ArrayList<>() : claimed;
     }
 
     private int reclaimTimedOutRunningTasks(LocalDateTime now) {
@@ -147,46 +118,43 @@ public class PatientRawDataCollectTaskServiceImpl
     }
 
     @Override
-    public void markSuccess(Long taskId, String message) {
-        if (taskId == null) {
+    public void markSuccess(Long taskId, String message, String changeTypes) {
+        updateTaskResult(taskId,
+                PatientRawDataTaskStatus.SUCCESS,
+                message,
+                changeTypes,
+                false);
+    }
+
+    @Override
+    public void markFailed(Long taskId, String errorMessage, String changeTypes) {
+        updateTaskResult(taskId,
+                PatientRawDataTaskStatus.FAILED,
+                errorMessage,
+                changeTypes,
+                true);
+    }
+
+    private void updateTaskResult(Long taskId,
+                                  PatientRawDataTaskStatus status,
+                                  String message,
+                                  String changeTypes,
+                                  boolean delayedRetry) {
+        if (taskId == null || status == null) {
             return;
         }
         LocalDateTime now = DateTimeUtils.now();
         LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
-                .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.SUCCESS.name())
+                .set(PatientRawDataCollectTaskEntity::getStatus, status.name())
+                .set(PatientRawDataCollectTaskEntity::getChangeTypes, changeTypes)
                 .set(PatientRawDataCollectTaskEntity::getLastFinishTime, now)
                 .set(PatientRawDataCollectTaskEntity::getLastErrorMessage, message)
                 .set(PatientRawDataCollectTaskEntity::getUpdateTime, now);
-        this.update(updateWrapper);
-    }
-
-    @Override
-    public void markFailed(Long taskId, String errorMessage) {
-        if (taskId == null) {
-            return;
+        if (delayedRetry) {
+            updateWrapper.set(PatientRawDataCollectTaskEntity::getAvailableAt,
+                    now.plusSeconds(Math.max(1, infectionMonitorProperties.getRetryDelaySeconds())));
         }
-        LocalDateTime now = DateTimeUtils.now();
-        LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
-                .set(PatientRawDataCollectTaskEntity::getStatus, PatientRawDataTaskStatus.FAILED.name())
-                .set(PatientRawDataCollectTaskEntity::getLastFinishTime, now)
-                .set(PatientRawDataCollectTaskEntity::getAvailableAt,
-                     now.plusSeconds(Math.max(1, infectionMonitorProperties.getRetryDelaySeconds())))
-                .set(PatientRawDataCollectTaskEntity::getLastErrorMessage, errorMessage)
-                .set(PatientRawDataCollectTaskEntity::getUpdateTime, now);
-        this.update(updateWrapper);
-    }
-
-    @Override
-    public void updateChangeTypes(Long taskId, String changeTypes) {
-        if (taskId == null) {
-            return;
-        }
-        LambdaUpdateWrapper<PatientRawDataCollectTaskEntity> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.eq(PatientRawDataCollectTaskEntity::getId, taskId)
-                .set(PatientRawDataCollectTaskEntity::getChangeTypes, changeTypes)
-                .set(PatientRawDataCollectTaskEntity::getUpdateTime, DateTimeUtils.now());
         this.update(updateWrapper);
     }
 }

@@ -15,16 +15,6 @@ public interface PatientService {
 
     LocalDateTime getLatestSourceBatchTime();
 
-    /**
-     * 采集患者全量信息并按天入库 patient_raw_data。
-     *
-     * @param reqno 患者 reqno
-     * @return 执行结果 JSON
-     */
-    String collectAndSaveRawData(String reqno);
-
-    RawDataCollectResult collectAndSaveRawDataResult(String reqno);
-
     RawDataCollectResult collectAndSaveRawDataResult(String reqno,
                                                      LocalDateTime previousSourceLastTime,
                                                      LocalDateTime sourceBatchTime);

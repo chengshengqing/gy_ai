@@ -23,6 +23,4 @@ public interface PatientRawDataChangeTaskService extends IService<PatientRawData
     void markStructSkipped(List<Long> taskIds, String message);
 
     void markStructFailed(List<Long> taskIds, String errorMessage);
-
-    int repairMissingStructTasks(List<String> reqnos, LocalDateTime lastTimeFrom, int limit);
 }

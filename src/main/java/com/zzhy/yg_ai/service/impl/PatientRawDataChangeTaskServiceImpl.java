@@ -5,7 +5,6 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.config.StructDataFormatProperties;
-import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.enums.PatientRawDataChangeTaskStatus;
 import com.zzhy.yg_ai.mapper.PatientRawDataChangeTaskMapper;
@@ -133,95 +132,18 @@ public class PatientRawDataChangeTaskServiceImpl
         markFailed(taskIds, errorMessage, PatientRawDataChangeTaskStatus.STRUCT_FAILED.name());
     }
 
-    @Override
-    public int repairMissingStructTasks(List<String> reqnos, LocalDateTime lastTimeFrom, int limit) {
-        int effectiveLimit = limit <= 0 ? Math.max(1, structDataFormatProperties.getBatchSize()) : limit;
-        List<PatientRawDataEntity> missingRows = this.baseMapper.selectMissingStructTaskRawData(reqnos, lastTimeFrom, effectiveLimit);
-        if (missingRows == null || missingRows.isEmpty()) {
-            return 0;
-        }
-        List<PatientRawDataChangeTaskEntity> tasks = new ArrayList<>();
-        for (PatientRawDataEntity row : missingRows) {
-            if (row == null || row.getId() == null || !StringUtils.hasText(row.getReqno()) || row.getLastTime() == null) {
-                continue;
-            }
-            PatientRawDataChangeTaskEntity task = new PatientRawDataChangeTaskEntity();
-            task.setPatientRawDataId(row.getId());
-            task.setReqno(row.getReqno().trim());
-            task.setDataDate(row.getDataDate());
-            task.setRawDataLastTime(row.getLastTime());
-            task.setSourceBatchTime(row.getLastTime());
-            task.initForCreate(structDataFormatProperties.getMaxAttempts());
-            tasks.add(task);
-        }
-        appendChanges(tasks);
-        return tasks.size();
-    }
-
     private List<PatientRawDataChangeTaskEntity> claimPendingTasks(int patientLimit,
                                                                    List<String> statuses,
                                                                    String runningStatus) {
         int batchSize = patientLimit <= 0 ? structDataFormatProperties.getBatchSize() : patientLimit;
         LocalDateTime now = DateTimeUtils.now();
         reclaimTimedOutRunningTasks(now, statuses, runningStatus);
-        List<String> selectedReqnos = this.baseMapper.selectPendingReqnos(statuses, now, batchSize);
-        if (selectedReqnos == null || selectedReqnos.isEmpty()) {
+        List<PatientRawDataChangeTaskEntity> claimedTasks =
+                this.baseMapper.claimPendingTasks(statuses, runningStatus, now, batchSize);
+        if (claimedTasks == null || claimedTasks.isEmpty()) {
             return Collections.emptyList();
         }
-
-        List<String> reqnos = new ArrayList<>(selectedReqnos.size());
-        for (String reqno : selectedReqnos) {
-            if (StringUtils.hasText(reqno)) {
-                reqnos.add(reqno.trim());
-            }
-        }
-        if (reqnos.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        LambdaQueryWrapper<PatientRawDataChangeTaskEntity> pendingQueryWrapper = new LambdaQueryWrapper<>();
-        pendingQueryWrapper.in(PatientRawDataChangeTaskEntity::getReqno, reqnos)
-                .in(PatientRawDataChangeTaskEntity::getStatus, statuses)
-                .le(PatientRawDataChangeTaskEntity::getAvailableAt, now)
-                .apply("attempt_count < max_attempts")
-                .orderByAsc(PatientRawDataChangeTaskEntity::getDataDate)
-                .orderByAsc(PatientRawDataChangeTaskEntity::getCreateTime)
-                .orderByAsc(PatientRawDataChangeTaskEntity::getId);
-        List<PatientRawDataChangeTaskEntity> pendingTasks = this.list(pendingQueryWrapper);
-        if (pendingTasks == null || pendingTasks.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        List<Long> taskIds = new ArrayList<>(pendingTasks.size());
-        for (PatientRawDataChangeTaskEntity pendingTask : pendingTasks) {
-            if (pendingTask != null && pendingTask.getId() != null) {
-                taskIds.add(pendingTask.getId());
-            }
-        }
-        if (taskIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        LambdaUpdateWrapper<PatientRawDataChangeTaskEntity> claimWrapper = new LambdaUpdateWrapper<>();
-        claimWrapper.in(PatientRawDataChangeTaskEntity::getId, taskIds)
-                .in(PatientRawDataChangeTaskEntity::getStatus, statuses)
-                .le(PatientRawDataChangeTaskEntity::getAvailableAt, now)
-                .apply("attempt_count < max_attempts")
-                .set(PatientRawDataChangeTaskEntity::getStatus, runningStatus)
-                .set(PatientRawDataChangeTaskEntity::getLastStartTime, now)
-                .set(PatientRawDataChangeTaskEntity::getUpdateTime, now)
-                .setSql("attempt_count = attempt_count + 1");
-        if (!this.update(claimWrapper)) {
-            return Collections.emptyList();
-        }
-
-        LambdaQueryWrapper<PatientRawDataChangeTaskEntity> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.in(PatientRawDataChangeTaskEntity::getId, taskIds)
-                .eq(PatientRawDataChangeTaskEntity::getStatus, runningStatus)
-                .orderByAsc(PatientRawDataChangeTaskEntity::getDataDate)
-                .orderByAsc(PatientRawDataChangeTaskEntity::getCreateTime)
-                .orderByAsc(PatientRawDataChangeTaskEntity::getId);
-        return this.list(queryWrapper);
+        return claimedTasks;
     }
 
     private void reclaimTimedOutRunningTasks(LocalDateTime now, List<String> pendingStatuses, String runningStatus) {

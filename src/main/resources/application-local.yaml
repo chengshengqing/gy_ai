@@ -29,7 +29,7 @@ infection:
     recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:180}
     running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
     debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:true}
-    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:2601247612}
+    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:260124371,260118051,260122324,260117982,260219321,260300231,260217201}
   format:
     batch-size: ${YG_AI_FORMAT_BATCH_SIZE:3}
     worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:4}

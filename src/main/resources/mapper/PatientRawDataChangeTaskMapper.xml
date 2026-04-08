@@ -2,6 +2,24 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.zzhy.yg_ai.mapper.PatientRawDataChangeTaskMapper">
 
+    <resultMap id="BaseResultMap" type="com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity">
+        <id column="id" property="id"/>
+        <result column="patient_raw_data_id" property="patientRawDataId"/>
+        <result column="reqno" property="reqno"/>
+        <result column="data_date" property="dataDate"/>
+        <result column="status" property="status"/>
+        <result column="attempt_count" property="attemptCount"/>
+        <result column="max_attempts" property="maxAttempts"/>
+        <result column="raw_data_last_time" property="rawDataLastTime"/>
+        <result column="source_batch_time" property="sourceBatchTime"/>
+        <result column="available_at" property="availableAt"/>
+        <result column="last_start_time" property="lastStartTime"/>
+        <result column="last_finish_time" property="lastFinishTime"/>
+        <result column="last_error_message" property="lastErrorMessage"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
     <insert id="insertBatchWithoutId" useGeneratedKeys="false">
         insert into patient_raw_data_change_task (
             patient_raw_data_id,
@@ -34,50 +52,91 @@
         </foreach>
     </insert>
 
-    <select id="selectPendingReqnos" resultType="string">
-        select reqno
-        from patient_raw_data_change_task
-        where status in
-        <foreach collection="statuses" item="status" open="(" separator="," close=")">
-            #{status}
-        </foreach>
-          and available_at <![CDATA[ <= ]]> #{now}
-          and attempt_count <![CDATA[ < ]]> max_attempts
-        group by reqno
-        order by min(available_at), min(create_time)
-        offset 0 rows fetch next #{limit} rows only
+    <select id="claimPendingTasks" resultMap="BaseResultMap">
+        declare @claimed table (
+            id bigint,
+            patient_raw_data_id bigint,
+            reqno varchar(64),
+            data_date date,
+            status varchar(32),
+            attempt_count int,
+            max_attempts int,
+            raw_data_last_time datetime,
+            source_batch_time datetime,
+            available_at datetime,
+            last_start_time datetime,
+            last_finish_time datetime,
+            last_error_message varchar(2000),
+            create_time datetime,
+            update_time datetime
+        );
+
+        ;with selected_reqnos as (
+            select top (#{patientLimit}) t.reqno
+            from patient_raw_data_change_task t with (updlock, readpast, rowlock)
+            where t.status in
+            <foreach collection="statuses" item="status" open="(" separator="," close=")">
+                #{status}
+            </foreach>
+              and t.available_at <![CDATA[ <= ]]> #{now}
+              and t.attempt_count <![CDATA[ < ]]> t.max_attempts
+            group by t.reqno
+            order by min(t.available_at), min(t.create_time), min(t.id)
+        ),
+        claim_candidates as (
+            select t.id
+            from patient_raw_data_change_task t with (updlock, readpast, rowlock)
+            inner join selected_reqnos r on r.reqno = t.reqno
+            where t.status in
+            <foreach collection="statuses" item="status" open="(" separator="," close=")">
+                #{status}
+            </foreach>
+              and t.available_at <![CDATA[ <= ]]> #{now}
+              and t.attempt_count <![CDATA[ < ]]> t.max_attempts
+        )
+        update t
+        set t.status = #{runningStatus},
+            t.last_start_time = #{now},
+            t.update_time = #{now},
+            t.attempt_count = t.attempt_count + 1
+        output
+            inserted.id,
+            inserted.patient_raw_data_id,
+            inserted.reqno,
+            inserted.data_date,
+            inserted.status,
+            inserted.attempt_count,
+            inserted.max_attempts,
+            inserted.raw_data_last_time,
+            inserted.source_batch_time,
+            inserted.available_at,
+            inserted.last_start_time,
+            inserted.last_finish_time,
+            inserted.last_error_message,
+            inserted.create_time,
+            inserted.update_time
+        into @claimed
+        from patient_raw_data_change_task t
+        inner join claim_candidates c on c.id = t.id;
+
+        select
+            id,
+            patient_raw_data_id,
+            reqno,
+            data_date,
+            status,
+            attempt_count,
+            max_attempts,
+            raw_data_last_time,
+            source_batch_time,
+            available_at,
+            last_start_time,
+            last_finish_time,
+            last_error_message,
+            create_time,
+            update_time
+        from @claimed
+        order by data_date asc, create_time asc, id asc
     </select>
 
-    <select id="selectMissingStructTaskRawData" resultType="com.zzhy.yg_ai.domain.entity.PatientRawDataEntity">
-        select
-            r.id,
-            r.reqno,
-            r.data_date,
-            r.clinical_notes,
-            r.data_json,
-            r.filter_data_json,
-            r.struct_data_json,
-            r.event_json,
-            r.create_time,
-            r.last_time,
-            r.is_del
-        from patient_raw_data r
-        left join patient_raw_data_change_task t
-            on t.patient_raw_data_id = r.id
-           and t.raw_data_last_time = r.last_time
-        where r.last_time is not null
-          and r.is_del = 0
-          and t.id is null
-        <if test="reqnos != null and reqnos.size() > 0">
-          and r.reqno in
-            <foreach collection="reqnos" item="reqno" open="(" separator="," close=")">
-                #{reqno}
-            </foreach>
-        </if>
-        <if test="lastTimeFrom != null">
-          and r.last_time <![CDATA[ >= ]]> #{lastTimeFrom}
-        </if>
-        order by r.last_time asc, r.id asc
-        offset 0 rows fetch next #{limit} rows only
-    </select>
 </mapper>
