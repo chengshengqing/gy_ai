@@ -13,10 +13,11 @@
         <result column="filter_data_json" property="filterDataJson"/>
         <result column="create_time" property="createTime"/>
         <result column="last_time" property="lastTime"/>
+        <result column="is_del" property="isDel"/>
     </resultMap>
 
     <sql id="Base_Column_List">
-        id, reqno,data_date, clinical_notes, data_json, filter_data_json, struct_data_json, event_json, create_time, last_time
+        id, reqno,data_date, clinical_notes, data_json, filter_data_json, struct_data_json, event_json, create_time, last_time, is_del
     </sql>
 
     <resultMap id="PatInforResultMap" type="com.zzhy.yg_ai.domain.entity.PatientCourseData$PatInfor">
@@ -190,6 +191,7 @@
         select max(last_time)
         from patient_raw_data
         where reqno = #{reqno}
+          and is_del = 0
     </select>
 
     <select id="selectActiveReqnos" resultType="java.lang.String">
@@ -204,6 +206,7 @@
                 SELECT 1
                 FROM patient_raw_data prd
                 WHERE prd.reqno = pat.reqno
+                  AND prd.is_del = 0
               )
             <if test="sinceTime != null">
                 UNION ALL
@@ -244,6 +247,7 @@
                     SELECT 1
                     FROM patient_raw_data prd
                     WHERE prd.reqno = updated.reqno
+                      AND prd.is_del = 0
                   )
                 GROUP BY updated.reqno
             </if>

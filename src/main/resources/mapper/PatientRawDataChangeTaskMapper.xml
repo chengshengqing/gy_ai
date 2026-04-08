@@ -59,12 +59,14 @@
             r.struct_data_json,
             r.event_json,
             r.create_time,
-            r.last_time
+            r.last_time,
+            r.is_del
         from patient_raw_data r
         left join patient_raw_data_change_task t
             on t.patient_raw_data_id = r.id
            and t.raw_data_last_time = r.last_time
         where r.last_time is not null
+          and r.is_del = 0
           and t.id is null
         <if test="reqnos != null and reqnos.size() > 0">
           and r.reqno in

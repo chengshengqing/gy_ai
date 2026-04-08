@@ -139,6 +139,7 @@
 - `data_json` 与 `filter_data_json` 当前都额外包含顶层字段 `admission_time`、`patient_summary`
 - `struct_data_json` 保存 LLM 结构化结果
 - `event_json` 保存单日时间轴摘要，是时间线展示和窗口上下文的直接来源
+- `is_del` 用作逻辑删除标记，查询 `patient_raw_data` 时默认只消费 `is_del = 0` 的快照
 - 字段级结构说明见 `docs/patient-raw-json-structure.md`
 
 处理顺序为：

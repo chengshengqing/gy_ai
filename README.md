@@ -56,6 +56,8 @@ src/main/resources
 └── timeline-view-rules.yaml
 ```
 
+其中 `src/main/resources/sql/patient_raw_data.sql` 用于补齐 `patient_raw_data.is_del` 逻辑删除字段，默认值为 `0`。
+
 ## 核心模块
 
 ### 1. 患者原始数据采集
@@ -74,6 +76,7 @@ src/main/resources
 - 从住院业务库聚合患者多维数据
 - 按天组装病程语义块
 - 将原始 JSON 与临床摘要落库
+- 默认只读取 `is_del = 0` 的有效快照，逻辑删除记录不参与后续链路
 
 执行方式：
 

@@ -40,6 +40,7 @@
 - `event_json`
 - `clinical_notes`
 - `last_time`
+- `is_del`
 
 在新架构中的定位：
 
@@ -59,6 +60,8 @@
   当前已切换为“单日时间轴摘要”字段，不再保存事件抽取结果
 - `last_time`
   当前已重新启用，表示该日 `patient_raw_data` 最后一次更新时间
+- `is_del`
+  逻辑删除标记，`0` 表示有效快照，`1` 表示删除；所有 `PatientRawDataEntity` 查询默认只返回 `is_del = 0`
 
 ## 2.2 `patient_raw_data_collect_task`
 

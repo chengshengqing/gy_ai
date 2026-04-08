@@ -499,6 +499,7 @@ public class PatientServiceImpl implements PatientService {
         rawDataEntity.setEventJson(null);
         rawDataEntity.setCreateTime(now);
         rawDataEntity.setLastTime(now);
+        rawDataEntity.setIsDel(0);
         patientRawDataMapper.insert(rawDataEntity);
         return rawDataEntity;
     }

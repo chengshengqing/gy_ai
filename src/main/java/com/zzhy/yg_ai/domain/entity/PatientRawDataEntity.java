@@ -2,6 +2,8 @@ package com.zzhy.yg_ai.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
@@ -56,5 +58,12 @@ public class PatientRawDataEntity {
      * 最后时间
      */
     private LocalDateTime lastTime;
+
+    /**
+     * 逻辑删除标记：0-正常，1-删除
+     */
+    @TableField("is_del")
+    @TableLogic(value = "0", delval = "1")
+    private Integer isDel;
 
 }
