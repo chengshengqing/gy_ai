@@ -34,7 +34,6 @@
         <spring-ai-alibaba.version>1.1.2.0</spring-ai-alibaba.version>
         <spring-ai-alibaba-extensions.version>1.1.2.0</spring-ai-alibaba-extensions.version>
 <!--        <spring-ai-alibaba-starter-memory-redis.version>1.2.0.0</spring-ai-alibaba-starter-memory-redis.version>-->
-        <redission.version>3.45.0</redission.version>
         <mybatis-plus.version>3.5.15</mybatis-plus.version>
     </properties>
     <dependencies>
@@ -76,12 +75,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.redisson</groupId>
-            <artifactId>redisson-spring-boot-starter</artifactId>
-            <version>${redission.version}</version>
         </dependency>
 
         <dependency>
@@ -159,6 +152,19 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

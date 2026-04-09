@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline 监控看板</title>
+    <style>
+        :root {
+            --bg: #eef3f8;
+            --panel: #ffffff;
+            --line: #d7e2ee;
+            --ink: #17324a;
+            --muted: #64809a;
+            --primary: #0f537d;
+            --accent: #2f7fa7;
+            --danger: #be4836;
+            --success: #1f7f5a;
+            --warning: #a66a16;
+            --shadow: 0 14px 30px -18px rgba(16, 48, 76, 0.34);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 18% 14%, rgba(42, 122, 174, 0.15), transparent 24%),
+                radial-gradient(circle at 82% 82%, rgba(28, 112, 84, 0.12), transparent 24%),
+                var(--bg);
+            min-height: 100vh;
+            padding: 24px 14px 36px;
+        }
+        .shell { max-width: 1460px; margin: 0 auto; }
+        .hero { text-align: center; margin-bottom: 18px; }
+        .hero h1 {
+            margin: 0;
+            font-size: 30px;
+            font-weight: 800;
+            color: #0e3d62;
+        }
+        .hero p {
+            margin: 8px 0 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 12px 14px;
+            box-shadow: var(--shadow);
+            flex-wrap: wrap;
+        }
+        .toolbar button {
+            border: none;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #115b8c, #0c3c62);
+            color: #fff;
+            font-weight: 700;
+            padding: 9px 16px;
+            cursor: pointer;
+        }
+        .meta {
+            display: flex;
+            gap: 18px;
+            color: var(--muted);
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+        .grid {
+            display: grid;
+            gap: 16px;
+        }
+        .grid.top {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .grid.cards {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+        .panel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            border-bottom: 1px solid #e4edf6;
+        }
+        .panel-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: #0f466d;
+        }
+        .panel-desc {
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .panel-body { padding: 14px 16px 16px; }
+        .stat-card {
+            padding: 16px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+        }
+        .stat-label {
+            color: var(--muted);
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            color: #0f4468;
+        }
+        .stat-sub {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e8eff6;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            color: #53708a;
+            font-weight: 700;
+            background: #f7fbff;
+        }
+        tr:last-child td { border-bottom: none; }
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 2px 9px;
+            font-size: 11px;
+            font-weight: 700;
+            border: 1px solid #d6e2ee;
+            background: #f5f9fc;
+            color: #45657d;
+        }
+        .tag.business { color: #0d5a83; background: #eef7ff; border-color: #c6ddf0; }
+        .tag.coordinator { color: #8a570e; background: #fff7ea; border-color: #ecd7b0; }
+        .muted { color: var(--muted); }
+        .window-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .window-card {
+            border: 1px solid #d9e6f1;
+            border-radius: 16px;
+            background: #fcfeff;
+            overflow: hidden;
+        }
+        .window-head {
+            padding: 14px 16px;
+            background: linear-gradient(135deg, rgba(18, 92, 138, 0.12), rgba(20, 65, 98, 0.04));
+            border-bottom: 1px solid #dbe8f2;
+        }
+        .window-head h3 {
+            margin: 0;
+            font-size: 20px;
+            color: #103f63;
+        }
+        .window-head p {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .window-block {
+            padding: 12px 16px 16px;
+        }
+        .window-block + .window-block {
+            border-top: 1px solid #e6eef6;
+        }
+        .summary-line {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+            color: #38546c;
+            font-size: 13px;
+        }
+        .empty {
+            padding: 14px 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        @media (max-width: 1180px) {
+            .grid.top, .window-grid, .grid.cards { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+    <div class="hero">
+        <h1>Pipeline 监控看板</h1>
+        <p>聚焦线程池、阶段积压、任务吞吐与 LLM 延迟，不扩展成通用监控平台。</p>
+    </div>
+
+    <div class="toolbar">
+        <button id="refreshBtn" type="button">立即刷新</button>
+        <div class="meta">
+            <span>接口: <code>/api/pipeline-monitor/dashboard</code></span>
+            <span id="lastUpdated">最近刷新: -</span>
+            <span id="autoRefresh">自动刷新: 15s</span>
+        </div>
+    </div>
+
+    <div class="grid cards" id="summaryCards"></div>
+
+    <div class="grid top" style="margin-top: 16px;">
+        <section class="panel">
+            <div class="panel-head">
+                <div class="panel-title">当前活跃 Work Unit</div>
+                <div class="panel-desc">展示线程池里正在执行的 coordinator / business work unit</div>
+            </div>
+            <div class="panel-body">
+                <div id="activeWorkUnits"></div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <div class="panel-title">阶段 Backlog</div>
+                <div class="panel-desc">ready pending / delayed pending / running</div>
+            </div>
+            <div class="panel-body">
+                <div id="backlogPanel"></div>
+            </div>
+        </section>
+    </div>
+
+    <section class="panel" style="margin-top: 16px;">
+        <div class="panel-head">
+            <div class="panel-title">窗口统计</div>
+            <div class="panel-desc">固定展示近 3h / 12h / 24h 的任务吞吐与 LLM 调用表现</div>
+        </div>
+        <div class="panel-body">
+            <div class="window-grid" id="windowsPanel"></div>
+        </div>
+    </section>
+</div>
+
+<script>
+    const summaryCards = document.getElementById('summaryCards');
+    const activeWorkUnits = document.getElementById('activeWorkUnits');
+    const backlogPanel = document.getElementById('backlogPanel');
+    const windowsPanel = document.getElementById('windowsPanel');
+    const lastUpdated = document.getElementById('lastUpdated');
+    const refreshBtn = document.getElementById('refreshBtn');
+
+    function formatDateTime(value) {
+        if (!value) return '-';
+        const normalized = value.replace('T', ' ');
+        return normalized.length >= 19 ? normalized.slice(0, 19) : normalized;
+    }
+
+    function formatMs(value) {
+        if (value == null) return '-';
+        if (value < 1000) return `${value} ms`;
+        return `${(value / 1000).toFixed(1)} s`;
+    }
+
+    function formatSeconds(value) {
+        if (value == null) return '-';
+        return `${((value || 0) / 1000).toFixed(1)} s`;
+    }
+
+    function formatPercent(value) {
+        return `${(value || 0).toFixed(1)}%`;
+    }
+
+    function formatThroughput(value) {
+        return `${(value || 0).toFixed(2)} 次/秒`;
+    }
+
+    function renderSummary(runtime, windows) {
+        const executor = runtime?.executor || {};
+        const model = runtime?.model || {};
+        const last3h = (windows || []).find(item => item.hours === 3) || { summary: {} };
+        const cards = [
+            {
+                label: '线程池活跃线程',
+                value: executor.activeThreads || 0,
+                sub: `总 ${executor.totalThreads || 0} / 空闲 ${executor.idleThreads || 0} / 队列 ${executor.queueSize || 0}`
+            },
+            {
+                label: '模型并发占用',
+                value: model.permitsInUse || 0,
+                sub: `总 ${model.totalPermits || 0} / 空闲 ${model.permitsIdle || 0}`
+            },
+            {
+                label: '近 3h 处理任务',
+                value: last3h.summary?.handledCount || 0,
+                sub: `近 3h LLM 调用 ${last3h.summary?.llmCallCount || 0} 次`
+            },
+            {
+                label: '当前活跃 Work Unit',
+                value: (window.__dashboardData?.activeWorkUnits || []).length,
+                sub: `线程更新时间 ${formatDateTime(executor.updatedAt)}`
+            }
+        ];
+        summaryCards.innerHTML = cards.map(card => `
+            <div class="stat-card">
+                <div class="stat-label">${card.label}</div>
+                <div class="stat-value">${card.value}</div>
+                <div class="stat-sub">${card.sub}</div>
+            </div>
+        `).join('');
+    }
+
+    function renderActive(list) {
+        if (!list || list.length === 0) {
+            activeWorkUnits.innerHTML = '<div class="empty">当前没有活跃 work unit。</div>';
+            return;
+        }
+        activeWorkUnits.innerHTML = `
+            <table>
+                <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>Kind</th>
+                    <th>Started</th>
+                    <th>Running</th>
+                </tr>
+                </thead>
+                <tbody>
+                ${list.map(item => `
+                    <tr>
+                        <td>${item.stage || '-'}</td>
+                        <td><span class="tag ${item.kind || ''}">${item.kind || '-'}</span></td>
+                        <td>${formatDateTime(item.startedAt)}</td>
+                        <td>${formatMs(item.runningMs || 0)}</td>
+                    </tr>
+                `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderBacklog(list) {
+        if (!list || list.length === 0) {
+            backlogPanel.innerHTML = '<div class="empty">暂无 backlog 快照。</div>';
+            return;
+        }
+        backlogPanel.innerHTML = `
+            <table>
+                <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>Ready</th>
+                    <th>Delayed</th>
+                    <th>Running</th>
+                    <th>Oldest Ready Age</th>
+                </tr>
+                </thead>
+                <tbody>
+                ${list.map(item => `
+                    <tr>
+                        <td>${item.stage || '-'}</td>
+                        <td>${item.readyPending || 0}</td>
+                        <td>${item.delayedPending || 0}</td>
+                        <td>${item.running || 0}</td>
+                        <td>${formatMs(item.oldestReadyAgeMs || 0)}</td>
+                    </tr>
+                `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderWindows(windows) {
+        if (!windows || windows.length === 0) {
+            windowsPanel.innerHTML = '<div class="empty">暂无窗口统计。</div>';
+            return;
+        }
+        windowsPanel.innerHTML = windows.map(windowItem => `
+            <section class="window-card">
+                <div class="window-head">
+                    <h3>${windowItem.label}</h3>
+                    <p>任务数 ${windowItem.summary?.handledCount || 0} / LLM 调用 ${windowItem.summary?.llmCallCount || 0}</p>
+                </div>
+                <div class="window-block">
+                    <div class="summary-line">
+                        <span>LLM 调用 ${windowItem.summary?.llmCallCount || 0} 次</span>
+                        <span>调用总耗时 ${formatSeconds(windowItem.summary?.llmTotalCallMs || 0)}</span>
+                        <span>执行总时长 ${formatSeconds(windowItem.summary?.llmBusyMs || 0)}</span>
+                        <span>平均单次 ${formatMs(windowItem.summary?.llmAvgCallMs || 0)}</span>
+                        <span>平均吞吐 ${formatThroughput(windowItem.summary?.llmThroughputPerSecond || 0)}</span>
+                        <span>估算 24h ${windowItem.summary?.estimatedCallsPerDay || 0} 次</span>
+                    </div>
+                </div>
+                <div class="window-block">
+                    <div class="summary-line">
+                        <span>任务视角：按 stage 聚合 handled / success / failed / skipped / rescheduled</span>
+                    </div>
+                    ${renderTaskStageTable(windowItem.taskStages)}
+                </div>
+                <div class="window-block">
+                    <div class="summary-line">
+                        <span>LLM 视角：按 stage + nodeType 聚合 avg / max / slow ratio</span>
+                    </div>
+                    ${renderLlmStageTable(windowItem.llmStages)}
+                </div>
+            </section>
+        `).join('');
+    }
+
+    function renderTaskStageTable(stages) {
+        if (!stages || stages.length === 0) {
+            return '<div class="empty">暂无任务统计。</div>';
+        }
+        return `
+            <table>
+                <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>Handled</th>
+                    <th>Success</th>
+                    <th>Failed</th>
+                    <th>Skipped</th>
+                    <th>Rescheduled</th>
+                    <th>Avg Run</th>
+                    <th>Max Run</th>
+                </tr>
+                </thead>
+                <tbody>
+                ${stages.map(item => `
+                    <tr>
+                        <td>${item.stage || '-'}</td>
+                        <td>${item.handledCount || 0}</td>
+                        <td>${item.successCount || 0}</td>
+                        <td>${item.failedCount || 0}</td>
+                        <td>${item.skippedCount || 0}</td>
+                        <td>${item.rescheduledCount || 0}</td>
+                        <td>${formatMs(item.avgRunMs || 0)}</td>
+                        <td>${formatMs(item.maxRunMs || 0)}</td>
+                    </tr>
+                `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderLlmStageTable(stages) {
+        if (!stages || stages.length === 0) {
+            return '<div class="empty">暂无 LLM 调用统计。</div>';
+        }
+        return `
+            <table>
+                <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>NodeType</th>
+                    <th>Calls</th>
+                    <th>Total Call</th>
+                    <th>Success</th>
+                    <th>Failed</th>
+                    <th>Avg Call</th>
+                    <th>Max Call</th>
+                    <th>Avg Permit Wait</th>
+                    <th>Slow Count</th>
+                    <th>Slow Ratio</th>
+                </tr>
+                </thead>
+                <tbody>
+                ${stages.map(item => `
+                    <tr>
+                        <td>${item.stage || '-'}</td>
+                        <td><code>${item.nodeType || '-'}</code></td>
+                        <td>${item.callCount || 0}</td>
+                        <td>${formatSeconds(item.totalCallMs || 0)}</td>
+                        <td>${item.successCount || 0}</td>
+                        <td>${item.failedCount || 0}</td>
+                        <td>${formatMs(item.avgCallMs || 0)}</td>
+                        <td>${formatMs(item.maxCallMs || 0)}</td>
+                        <td>${formatMs(item.avgPermitWaitMs || 0)}</td>
+                        <td>${item.slowCount || 0}</td>
+                        <td>${formatPercent(item.slowRatio || 0)}</td>
+                    </tr>
+                `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    async function fetchDashboard() {
+        const response = await fetch('/api/pipeline-monitor/dashboard', { cache: 'no-store' });
+        const payload = await response.json();
+        if (!payload || payload.code !== 200) {
+            throw new Error(payload?.message || 'dashboard fetch failed');
+        }
+        return payload.data;
+    }
+
+    async function refreshDashboard() {
+        try {
+            const data = await fetchDashboard();
+            window.__dashboardData = data;
+            renderSummary(data.runtime, data.windows);
+            renderActive(data.activeWorkUnits);
+            renderBacklog(data.backlog);
+            renderWindows(data.windows);
+            lastUpdated.textContent = `最近刷新: ${new Date().toLocaleString()}`;
+        } catch (error) {
+            console.error(error);
+            lastUpdated.textContent = `最近刷新: 失败 (${error.message})`;
+        }
+    }
+
+    refreshBtn.addEventListener('click', refreshDashboard);
+    refreshDashboard();
+    window.setInterval(refreshDashboard, 15000);
+</script>
+</body>
+</html>

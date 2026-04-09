@@ -1092,8 +1092,6 @@ public class FormatAgentPrompt {
             "time": "",
             "record_type": "daily_fusion",
             "day_summary": "",
-            "daily_fusion": {
-            "day_summary": "",
             "problem_list": [
             {
             "problem": "",
@@ -1114,7 +1112,9 @@ public class FormatAgentPrompt {
             "next_focus_24h": [],
             "source_note_refs": []
             }
-            }
+
+            注意：
+            - 所有字段都直接放在根对象，不要再嵌套一层 daily_fusion。
 
             【禁止事项】
             ❌ 不要输出解释

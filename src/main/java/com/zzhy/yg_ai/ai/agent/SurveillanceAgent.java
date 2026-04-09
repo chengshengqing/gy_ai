@@ -16,6 +16,7 @@ import com.zzhy.yg_ai.service.IPatillnessCourseInfoService;
 import com.zzhy.yg_ai.service.IItemsInforZhqService;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -27,8 +28,9 @@ import java.util.List;
 
 @Component
 @RequiredArgsConstructor
-public class SurveillanceAgent  extends AbstractAgent
-        implements Agent<String, String> {
+public class SurveillanceAgent implements Agent<String, String> {
+
+    private final ChatModel chatModel;
 
     private final IPatillnessCourseInfoService patillnessCourseInfoService;
 
@@ -51,7 +53,7 @@ public class SurveillanceAgent  extends AbstractAgent
         UserMessage userMessage = new UserMessage(content);
 
         Prompt prompt = new Prompt(List.of(systemMessage, userMessage));
-        ChatResponse chatResponse = super.callModelByPrompt(prompt);
+        ChatResponse chatResponse = chatModel.call(prompt);
         return chatResponse.getResult().getOutput().getText();
     }
 

@@ -111,40 +111,33 @@ public class PatientTimelineViewServiceImpl implements PatientTimelineViewServic
             return null;
         }
 
-        JsonNode flat = pickFlatDailyFusion(timelineNode);
-        String summary = firstNonBlank(textValue(timelineNode, "day_summary"), textValue(flat, "day_summary"));
+        String summary = textValue(timelineNode, "day_summary");
         String date = normalizeDate(firstNonBlank(
                 textValue(timelineNode, "time"),
-                textValue(timelineNode, "date"),
-                textValue(flat, "time"),
-                textValue(flat, "date")
+                textValue(timelineNode, "date")
         ));
         String recordType = firstNonBlank(
                 textValue(timelineNode, "record_type"),
-                textValue(flat, "record_type"),
                 "daily_fusion"
         );
 
         List<String> rawSourceRefs = dedupeStrings(textList(timelineNode.path("source_note_refs")));
-        if (rawSourceRefs.isEmpty()) {
-            rawSourceRefs = dedupeStrings(textList(flat.path("source_note_refs")));
-        }
-        List<String> dayRiskFlags = dedupeStrings(textList(flat.path("risk_flags")));
-        List<String> dayActions = dedupeStrings(textList(flat.path("major_actions")));
-        List<String> nextFocus = dedupeStrings(textList(flat.path("next_focus_24h")));
+        List<String> dayRiskFlags = dedupeStrings(textList(timelineNode.path("risk_flags")));
+        List<String> dayActions = dedupeStrings(textList(timelineNode.path("major_actions")));
+        List<String> nextFocus = dedupeStrings(textList(timelineNode.path("next_focus_24h")));
 
         List<PatientTimelineViewData.ProblemItem> primary = new ArrayList<>();
         List<PatientTimelineViewData.ProblemItem> secondary = new ArrayList<>();
         List<PatientTimelineViewData.RiskItem> riskItems = new ArrayList<>();
         List<String> problemRiskFlags = new ArrayList<>();
         List<String> allActions = new ArrayList<>(dayActions);
-        List<String> allEvidence = new ArrayList<>(textList(flat.path("key_evidence")));
+        List<String> allEvidence = new ArrayList<>(textList(timelineNode.path("key_evidence")));
         List<String> allSourceRefs = new ArrayList<>(rawSourceRefs);
         String firstProblemName = "";
         boolean hasHighPriorityPrimary = false;
         boolean hasImportantUnconfirmed = false;
 
-        JsonNode problemsNode = flat.path("problem_list");
+        JsonNode problemsNode = timelineNode.path("problem_list");
         if (problemsNode.isArray()) {
             int idx = 0;
             for (JsonNode problemNode : problemsNode) {
@@ -266,27 +259,6 @@ public class PatientTimelineViewServiceImpl implements PatientTimelineViewServic
         context.hasSecondaryProblem = !secondary.isEmpty();
         context.hasImportantUnconfirmed = hasImportantUnconfirmed;
         return context;
-    }
-
-    private JsonNode pickFlatDailyFusion(JsonNode timelineNode) {
-        List<JsonNode> candidates = new ArrayList<>();
-        candidates.add(timelineNode);
-        JsonNode current = timelineNode;
-        for (int i = 0; i < 4; i++) {
-            JsonNode next = current.path("daily_fusion");
-            if (next.isMissingNode() || next.isNull() || !next.isObject()) {
-                break;
-            }
-            candidates.add(next);
-            current = next;
-        }
-        for (int i = candidates.size() - 1; i >= 0; i--) {
-            JsonNode node = candidates.get(i);
-            if (node.has("problem_list") || node.has("major_actions") || node.has("key_evidence") || node.has("next_focus_24h")) {
-                return node;
-            }
-        }
-        return candidates.get(candidates.size() - 1);
     }
 
     private String buildTitle(List<PatientTimelineViewData.ProblemItem> primaryProblems, String firstProblemName, String summary) {

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.PipelineMonitorQueryMapper">
+
+    <select id="selectBacklogRows" resultType="com.zzhy.yg_ai.pipeline.monitor.PipelineMonitorBacklogRow">
+        select
+            stage,
+            ready_pending as readyPending,
+            delayed_pending as delayedPending,
+            running,
+            oldest_ready_at as oldestReadyAt
+        from (
+            select
+                'LOAD_PROCESS' as stage,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as ready_pending,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ > ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as delayed_pending,
+                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                min(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then available_at end) as oldest_ready_at
+            from patient_raw_data_collect_task
+
+            union all
+
+            select
+                'NORMALIZE' as stage,
+                sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as ready_pending,
+                sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
+                              and available_at <![CDATA[ > ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as delayed_pending,
+                sum(case when status = 'STRUCT_RUNNING' then 1 else 0 end) as running,
+                min(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then available_at end) as oldest_ready_at
+            from patient_raw_data_change_task
+
+            union all
+
+            select
+                'EVENT_EXTRACT' as stage,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as ready_pending,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ > ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as delayed_pending,
+                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                min(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then available_at end) as oldest_ready_at
+            from infection_event_task
+            where task_type = 'EVENT_EXTRACT'
+
+            union all
+
+            select
+                'CASE_RECOMPUTE' as stage,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as ready_pending,
+                sum(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ > ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then 1 else 0 end) as delayed_pending,
+                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                min(case when status in ('PENDING', 'FAILED')
+                              and available_at <![CDATA[ <= ]]> #{now}
+                              and attempt_count <![CDATA[ < ]]> max_attempts
+                         then available_at end) as oldest_ready_at
+            from infection_event_task
+            where task_type = 'CASE_RECOMPUTE'
+        ) snapshot_rows
+    </select>
+</mapper>

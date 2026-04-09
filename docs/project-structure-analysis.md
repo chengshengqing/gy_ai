@@ -33,6 +33,11 @@
 
 同时，下一阶段将进入“院感预警分析”主任务；最终审核 Agent 当前只做规划，不在当前阶段开发。
 
+当前还补充了一条运维辅助链路：
+
+3. Pipeline 轻量监控链路
+   基于 `pipeline.monitor` 目录，在共享线程池执行边界和 LLM 调用边界做 Redis 聚合埋点，对外提供轻量监控接口和静态页面。
+
 ## 2. 技术栈
 
 ### 2.1 核心框架
@@ -72,6 +77,7 @@ yg_ai/
 │   │   │   ├── controller
 │   │   │   ├── domain
 │   │   │   ├── mapper
+│   │   │   ├── pipeline
 │   │   │   ├── service
 │   │   │   ├── task
 │   │   │   └── YgAiApplication.java
@@ -202,6 +208,11 @@ yg_ai/
 - `AiProcessLogMapper`
 
 其中 `PatientRawDataMapper` 是最复杂的 Mapper，承担住院患者原始数据聚合查询的主体工作。
+
+额外补充：
+
+- `PipelineMonitorQueryMapper`
+  只读聚合三张任务表的 backlog 快照，为 Redis 监控页提供数据源。
 
 ### 4.7 `service`
 

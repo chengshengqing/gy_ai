@@ -219,6 +219,24 @@ patient_raw_data
 
 ### 2. 工作流骨架保留，但复杂判断交给 LLM
 
+## 3.4 运行监控边界
+
+当前项目新增的 Pipeline 监控能力保持轻量实现，不引入独立监控平台，也不新增数据库监控表。
+
+实现约束：
+
+- 监控数据写入 Redis，只保留近实时和近 24 小时窗口聚合
+- 监控切面固定在 `WorkUnitExecutor`、`ModelCallGuard`、`AbstractTaskHandler`、`LoadEnqueueHandler`
+- 不把监控统计逻辑耦合进 `PatientServiceImpl`、`LlmEventExtractorServiceImpl`、`InfectionJudgeServiceImpl` 等业务编排
+- backlog 通过只读 Mapper 周期性聚合现有任务表，再写入 Redis 快照
+
+当前监控页聚焦四类信息：
+
+- 共享线程池和模型并发令牌实时状态
+- 当前活跃 `work unit`
+- `LOAD_PROCESS / NORMALIZE / EVENT_EXTRACT / CASE_RECOMPUTE` backlog
+- 近 `3h / 12h / 24h` 的任务吞吐和 LLM 延迟统计
+
 整体架构仍然是工作流主架构：
 
 - 工作流负责调度

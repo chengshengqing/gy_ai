@@ -287,8 +287,8 @@ public class PatientServiceImpl implements PatientService {
         update.setStructDataJson(structDataJson);
         update.setEventJson(eventJson);
         patientRawDataMapper.updateById(update);
-        if (existing != null && StringUtils.hasText(existing.getReqno()) && eventJsonChanged(existing.getEventJson(), eventJson)) {
-            summaryContextCacheService.evictPatientSummaryContexts(existing.getReqno());
+        if (existing != null && StringUtils.hasText(existing.getReqno()) && existing.getDataDate() != null) {
+            summaryContextCacheService.refreshEventExtractorContextDay(existing.getReqno(), existing.getDataDate(), eventJson);
         }
     }
 
@@ -302,8 +302,8 @@ public class PatientServiceImpl implements PatientService {
         update.setId(id);
         update.setEventJson(eventJson);
         patientRawDataMapper.updateById(update);
-        if (existing != null && StringUtils.hasText(existing.getReqno()) && eventJsonChanged(existing.getEventJson(), eventJson)) {
-            summaryContextCacheService.evictPatientSummaryContexts(existing.getReqno());
+        if (existing != null && StringUtils.hasText(existing.getReqno()) && existing.getDataDate() != null) {
+            summaryContextCacheService.refreshEventExtractorContextDay(existing.getReqno(), existing.getDataDate(), eventJson);
         }
     }
 
@@ -1019,11 +1019,15 @@ public class PatientServiceImpl implements PatientService {
         if (rawDataId == null) {
             return;
         }
+        PatientRawDataEntity existing = patientRawDataMapper.selectById(rawDataId);
         UpdateWrapper<PatientRawDataEntity> rawDataUpdateWrapper = new UpdateWrapper<>();
         rawDataUpdateWrapper.eq("id", rawDataId)
                 .set("struct_data_json", null)
                 .set("event_json", null);
         patientRawDataMapper.update(null, rawDataUpdateWrapper);
+        if (existing != null && StringUtils.hasText(existing.getReqno()) && existing.getDataDate() != null) {
+            summaryContextCacheService.refreshEventExtractorContextDay(existing.getReqno(), existing.getDataDate(), null);
+        }
     }
 
     private String firstNonBlank(String... values) {
@@ -1116,12 +1120,6 @@ public class PatientServiceImpl implements PatientService {
             log.error("JSON序列化失败", e);
             return "{\"status\":\"failed\",\"message\":\"JSON序列化失败\"}";
         }
-    }
-
-    private boolean eventJsonChanged(String previousEventJson, String currentEventJson) {
-        String previous = previousEventJson == null ? "" : previousEventJson.trim();
-        String current = currentEventJson == null ? "" : currentEventJson.trim();
-        return !previous.equals(current);
     }
 
     private String buildSemanticBlockJson(DailyPatientRawData dailyData) {

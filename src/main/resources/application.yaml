@@ -42,30 +42,21 @@ spring:
       chat:
         options:
           model: ${YG_AI_OPENAI_MODEL:Qwen3.5-27B-FP8}
-    memory:
-      redis:
-        host: ${YG_AI_MEMORY_REDIS_HOST:${YG_AI_REDIS_HOST:127.0.0.1}}
-        port: ${YG_AI_MEMORY_REDIS_PORT:${YG_AI_REDIS_PORT:6379}}
-        database: ${YG_AI_MEMORY_REDIS_DB:1}
-        timeout: ${YG_AI_MEMORY_REDIS_TIMEOUT:60000}
-        key-prefix: ${YG_AI_MEMORY_REDIS_KEY_PREFIX:react-agent:memory:}
-
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 
-app:
-  ai:
-    openai:
-      connect-timeout: ${YG_AI_APP_OPENAI_CONNECT_TIMEOUT:10s}
-      read-timeout: ${YG_AI_APP_OPENAI_READ_TIMEOUT:180s}
-      response-timeout: ${YG_AI_APP_OPENAI_RESPONSE_TIMEOUT:180s}
-
 infection:
+  pipeline:
+    shared-threads: ${YG_AI_PIPELINE_SHARED_THREADS:16}
+    model-permits: ${YG_AI_PIPELINE_MODEL_PERMITS:12}
+    normalize-window-start-hours: ${YG_AI_PIPELINE_NORMALIZE_WINDOW_START_HOURS:0,12}
+    normalize-window-duration-hours: ${YG_AI_PIPELINE_NORMALIZE_WINDOW_DURATION_HOURS:4}
+  warning:
+    fixed-delay: ${YG_AI_WARNING_FIXED_DELAY:60000}
+    case-fixed-delay: ${YG_AI_WARNING_CASE_FIXED_DELAY:60000}
   monitor:
     fixed-delay: ${YG_AI_MONITOR_FIXED_DELAY:60000}
     scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:200}
-    batch-size: ${YG_AI_MONITOR_BATCH_SIZE:100}
-    worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:8}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}
     running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
@@ -75,12 +66,17 @@ infection:
     debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
   format:
     fixed-delay: ${YG_AI_FORMAT_FIXED_DELAY:30000}
-    batch-size: ${YG_AI_FORMAT_BATCH_SIZE:50}
-    worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:8}
     max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:300}
     running-timeout-seconds: ${YG_AI_FORMAT_RUNNING_TIMEOUT_SECONDS:1800}
+  dashboard:
+    enabled: ${YG_AI_MONITOR_DASHBOARD_ENABLED:true}
+    snapshot-fixed-delay-ms: ${YG_AI_MONITOR_DASHBOARD_SNAPSHOT_FIXED_DELAY_MS:30000}
+    bucket-ttl-hours: ${YG_AI_MONITOR_DASHBOARD_BUCKET_TTL_HOURS:30}
+    llm-slow-threshold-ms: ${YG_AI_MONITOR_DASHBOARD_LLM_SLOW_THRESHOLD_MS:5000}
 
 logging:
   level:
+    root: ${YG_AI_ROOT_LOG_LEVEL:info}
+    com.zzhy.yg_ai: ${YG_AI_APP_LOG_LEVEL:debug}
     org.springframework.ai.chat.client.advisor: ${YG_AI_CHAT_ADVISOR_LOG_LEVEL:debug}

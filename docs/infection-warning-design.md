@@ -1064,6 +1064,9 @@ Prompt 统一放入：
   - 临床动作的理由
   - 新发/加重/好转
 - 不要重复抽取结构化层已经明确表达的普通检验值、普通影像结果、普通医嘱事实
+- `structuredContext` 只能辅助理解当前病程文本，不得把其中原句、检验值、影像结论、医嘱内容直接作为 `source_text`
+- `source_section` 必须输出 JSON `null`，不得填写 `diagnosis / vital_signs / lab_results / imaging / doctor_orders / use_medicine / transfer / operation`
+- 如果一个事件只能由 `structuredContext / recent_change_context` 支撑，而当前病程正文没有对应原句，优先 `skipped`
 - 没有明确感染相关判断语义时，优先 `skipped`
 
 ### Prompt C：中间层语义块抽取
@@ -1163,6 +1166,7 @@ LLM 输出不能直接入库，必须经过标准化。
 - 非法事件类型整条拒绝
 - `source_section` 与 `event_type` 不匹配时拒绝
 - `source_text` 无法在对应 section 中命中时拒绝
+- 当全部事件被拒绝时，必须输出拒绝原因摘要，便于回放定位
 
 ### 护栏 5：原始结构化事实优先
 
@@ -1189,7 +1193,7 @@ LLM 输出不能直接入库，必须经过标准化。
 | `negation_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `uncertainty_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `clinical_meaning` | 是 | `infection_support / infection_against / infection_uncertain / screening / baseline_problem` | 小写化、少量别名修正 | 非法拒绝该事件 |
-| `source_section` | STRUCTURED_FACT 必填 | 固定 8 值，其它 block 可为 `null` | 小写化 | 非法拒绝该事件 |
+| `source_section` | STRUCTURED_FACT 必填 | 固定 8 值；其它 block 仅允许 `null` | 小写化 | 非法拒绝该事件 |
 | `source_text` | 是 | 非空且必须来自对应 section 或 block payload | trim + 溯源校验 | 命中失败拒绝该事件 |
 | `evidence_tier` | 是 | `hard` / `moderate` / `weak` | 小写化 | 非法拒绝该事件 |
 | `evidence_role` | 是 | `support` / `against` / `risk_only` / `background` | 小写化 | 非法拒绝该事件 |

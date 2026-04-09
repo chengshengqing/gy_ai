@@ -13,6 +13,10 @@
 
 `SQL Server 原始住院数据 -> patient_raw_data -> LLM 单日结构化摘要 -> patient_raw_data.struct_data_json / event_json -> 时间线接口 / 静态展示页`
 
+当前调度执行架构已经统一为：
+
+`@Scheduled -> InfectionPipelineFacade(具体类) -> pipeline.scheduler -> pipeline.stage -> pipeline.handler`
+
 系统的数据来源模式是：
 
 - 每日定时拉取
@@ -40,6 +44,7 @@ src/main/java/com/zzhy/yg_ai
 ├── controller  HTTP 接口
 ├── domain      DTO / Entity / Model / Enum
 ├── mapper      MyBatis Mapper 接口
+├── pipeline    共享线程池调度、stage 编排、handler 执行链、轻量监控埋点
 ├── service     业务服务接口与实现
 ├── task        定时任务
 └── YgAiApplication.java
@@ -58,13 +63,33 @@ src/main/resources
 
 其中 `src/main/resources/sql/patient_raw_data.sql` 用于补齐 `patient_raw_data.is_del` 逻辑删除字段，默认值为 `0`。
 
+## 架构与抽象治理
+
+当前代码约束已经明确为：
+
+- 调度主链路统一收敛在 `pipeline`，不再回到“大而全”的 orchestrator
+- `pipeline.scheduler`、`domain.normalize`、`domain.format` 等复杂目录必须按职责拆子包，避免 enum、record、helper、impl 平铺混放
+- warning 侧业务 helper 按 use case 收敛到 `service.evidence`、`service.event`、`service.casejudge` 等目录，不继续塞进 `domain`
+- `domain` 优先承接稳定规则和数据结构，不继续作为 warning 业务 Spring 组件的平铺容器
+- 默认优先使用具体类，不新增“单实现接口 + Default 实现”双层壳
+- 只有满足以下条件之一，才允许新增 `interface`、`abstract class`、`*Registry`、`*Factory`
+  - 当前迭代或下一迭代内确定会出现第二实现
+  - 用于隔离模型调用、线程调度、持久化、第三方 SDK 等外部边界
+  - 已经出现 3 处以上稳定重复逻辑，可以沉淀为统一模板
+- 如果是结构性重构，必须同步更新 `docs/shared-executor-architecture-design.md`、`docs/refactor-handover-status.md`、`README.md`、`AGENTS.md`
+
+当前更详细的约束说明见：
+
+- `docs/shared-executor-architecture-design.md`
+- `docs/refactor-handover-status.md`
+
 ## 核心模块
 
 ### 1. 患者原始数据采集
 
 - 入口任务：`InfectionMonitorScheduler`
 - 核心服务：`PatientServiceImpl`
-- 编排类：`InfectionPipeline`
+- 调度主链路：`InfectionPipelineFacade -> StageDispatcher -> LoadEnqueueCoordinator / LoadProcessCoordinator`
 - 数据来源：SQL Server
 - 输出表：`patient_raw_data`
 - 任务表：`patient_raw_data_collect_task`
@@ -93,7 +118,9 @@ src/main/resources
 ### 2. 病程结构化与时间线摘要
 
 - 入口任务：`StructDataFormatScheduler`
-- AI 核心：`FormatAgent`、`SummaryAgent`
+- 调度主链路：`InfectionPipelineFacade -> NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer`
+- Normalize 核心目录：`domain.normalize.assemble / facts / prompt / support / validation`
+- Format 相关目录：`domain.format`
 - 输出表：`patient_raw_data.struct_data_json`、`patient_raw_data.event_json`
 - 任务表：`patient_raw_data_change_task`
 - 运维日志表：`infection_daily_job_log`
@@ -104,6 +131,9 @@ src/main/resources
 - 生成当天结构化事实与单日摘要
 - 将单日摘要写入 `event_json`
 - 为前端时间线视图和事件抽取窗口提供标准化数据源
+- `NormalizeRowProcessor` 只负责 reset / 回写 / 错误包装
+- `NormalizeStructDataComposer` 负责输入选择、note 结构化、fusion 调用和 JSON 组装
+- `FormatAgent` 已收薄为兼容入口，格式化编排下沉到 `domain.format.*`
 
 执行方式：
 
@@ -127,6 +157,8 @@ src/main/resources
 ### 4. 症候群监测
 
 - 核心类：`SurveillanceAgent`
+- 共享链路中的相关能力：`EventExtractHandler`、`CaseRecomputeHandler`、`WarningModelGateway`、`WarningPromptCatalog`
+- 结构化事实精炼相关目录：`service.evidence`
 - 数据来源：病程信息查询
 - 输出：`ai_process_log`、`items_infor_zhq`
 
@@ -136,10 +168,27 @@ src/main/resources
 - 校验模型输出 JSON
 - 记录成功/失败日志
 - 写入高风险业务结果
+- 结构化事实精炼已收敛为 `StructuredFactRefinementServiceImpl + service.evidence.StructuredFactRefinementSupport`
 
 说明：
 
 - 当前调度入口 `InfectiousSyndromeSurveillanceTask` 的 `@Scheduled` 默认未启用。
+
+### 5. Pipeline 轻量监控看板
+
+- 接口：`/api/pipeline-monitor/dashboard`
+- 页面：`/pipeline_monitor_dashboard.html`
+- 监控数据只写 Redis，不新增数据库监控表
+- 监控切面只放在 `WorkUnitExecutor`、`ModelCallGuard`、`AbstractTaskHandler`、`LoadEnqueueHandler`
+- `pipeline.monitor` 负责 Redis 聚合、backlog 快照和看板 DTO，不进入业务主编排
+
+监控范围：
+
+- 共享线程池总线程 / 活跃线程 / 空闲线程 / 队列长度
+- 当前活跃 `work unit`
+- `LOAD_PROCESS / NORMALIZE / EVENT_EXTRACT / CASE_RECOMPUTE` backlog
+- 近 `3h / 12h / 24h` 的任务处理量和 LLM 调用量
+- 各类 LLM 调用平均耗时、最大耗时、慢调用占比
 
 ## 启动前准备
 
@@ -155,6 +204,7 @@ src/main/resources
 - `spring.data.redis.*`
 - `spring.ai.openai.*`
 - `infection.monitor.*`
+- `infection.monitor.dashboard.*`
 
 当前共享配置已经改为环境变量优先，不再直接存放真实账号口令。
 
@@ -243,6 +293,7 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 已成型：
 
 - 患者原始数据采集
+- 共享线程池调度主链路
 - 病程按天聚合与落库
 - AI 结构化摘要生成
 - 时间线视图转换
@@ -261,9 +312,9 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 
 主链路边界说明：
 
-- `InfectionPipeline` 当前只负责患者采集和结构化摘要主流程
+- `InfectionPipelineFacade + pipeline.*` 当前承接患者采集、结构化摘要、事件提取和病例重算主流程
 - 事件抽取窗口上下文通过 `patient_raw_data.event_json` 按需构造
-- `WarningAgent`、`AuditAgent`、`SummaryWarningScheduler` 仍为预留模块
+- `SummaryWarningScheduler` 仍为预留触发入口，旧 `WarningAgent` / `SummaryAgent` 已退出主链
 - 患者扫描默认按“在院 / 近期出院”规则查询，可通过 `infection.monitor.debug-mode=true` 和 `infection.monitor.debug-reqnos` 切到调试名单
 
 规划中但当前不开发：

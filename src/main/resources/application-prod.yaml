@@ -24,22 +24,13 @@ spring:
           model: ${YG_AI_OPENAI_MODEL}
 
 infection:
+  pipeline:
+    shared-threads: ${YG_AI_PIPELINE_SHARED_THREADS:16}
+    model-permits: ${YG_AI_PIPELINE_MODEL_PERMITS:12}
+    normalize-window-start-hours: ${YG_AI_PIPELINE_NORMALIZE_WINDOW_START_HOURS:0,12}
+    normalize-window-duration-hours: ${YG_AI_PIPELINE_NORMALIZE_WINDOW_DURATION_HOURS:4}
   monitor:
     scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:500}
-    batch-size: ${YG_AI_MONITOR_BATCH_SIZE:100}
-    worker-threads: ${YG_AI_MONITOR_WORKER_THREADS:8}
-    max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:5}
-    retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}
-    recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:30}
-    running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
-    debug-mode: ${YG_AI_MONITOR_DEBUG_MODE:false}
-    debug-reqnos: ${YG_AI_MONITOR_DEBUG_REQNOS:}
-  format:
-    batch-size: ${YG_AI_FORMAT_BATCH_SIZE:3}
-    worker-threads: ${YG_AI_FORMAT_WORKER_THREADS:8}
-    max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:5}
-    retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:300}
-    running-timeout-seconds: ${YG_AI_MONITOR_RUNNING_TIMEOUT_SECONDS:1800}
 
 logging:
   level:

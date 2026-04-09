@@ -42,6 +42,7 @@
 5. Business Execution Layer
    - 负责采集、结构化、事件抽取、病例重算等具体业务。
    - 不直接依赖线程池，不维护调度状态。
+   - 业务执行层内部继续按具体职责向领域包下沉，例如 `domain.normalize.*`、`domain.format.*`，避免 handler 或 agent 再次膨胀。
 
 ## 3. 包结构建议
 
@@ -221,6 +222,7 @@ com.zzhy.yg_ai.pipeline.model
 职责：
 
 - 执行结构化格式化任务。
+- 编排 `NormalizeRowProcessor -> NormalizeStructDataComposer -> domain.normalize.*`。
 
 #### `com.zzhy.yg_ai.pipeline.handler.EventExtractHandler`
 
@@ -250,25 +252,10 @@ com.zzhy.yg_ai.pipeline.model
 
 #### `InfectionPipelineFacade`
 
-```java
-public interface InfectionPipelineFacade {
-
-    void triggerLoadEnqueue();
-
-    void triggerLoadProcess();
-
-    void triggerNormalize();
-
-    void triggerEventExtract();
-
-    void triggerCaseRecompute();
-}
-```
-
-#### `DefaultInfectionPipelineFacade`
+已收敛为具体类，不再保留接口 + Default 实现双层壳。
 
 ```java
-public class DefaultInfectionPipelineFacade implements InfectionPipelineFacade {
+public class InfectionPipelineFacade {
 
     public void triggerLoadEnqueue();
 
@@ -637,29 +624,51 @@ public record CaseRecomputeResult(
 
 建议业务 handler 依赖 `ModelCallGuard`，而不是直接感知 permit。
 
+当前演进状态补充：
+
+- `StructuredFactRefinementServiceImpl` 的候选构造、输出校验和结果应用已收口到 `service.evidence.StructuredFactRefinementSupport`
+- `LlmEventExtractorServiceImpl` 的输入组装、输出规范化和运行载荷已收口到 `service.event.LlmEventExtractionSupport`
+- `InfectionJudgeServiceImpl` 的输出解析、fallback 和运行载荷已收口到 `service.casejudge.InfectionCaseJudgeSupport`
+- warning 相关 service 后续拆分应先按业务链路选择 `service` 侧具体职责类，不继续把 Spring 组件平铺进 `domain`
+
 ## 7. 推荐调度策略
 
 ### 7.1 普通时段
 
-建议：
+当前实际值：
 
 - `LOAD_ENQUEUE = 1`
-- `LOAD_PROCESS = 2`
+- `LOAD_PROCESS = 3`
 - `NORMALIZE = 2`
-- `EVENT_EXTRACT = 6`
-- `CASE_RECOMPUTE = 2`
-- `globalModelPermits = 10`
+- `EVENT_EXTRACT = 8`
+- `CASE_RECOMPUTE = 3`
+- `globalModelPermits = 12`
+- `shared-threads = 16`（prod）
 
 ### 7.2 `NORMALIZE` 优先窗口
 
-适用于每天 `0点 / 12点`，或者 `NORMALIZE backlog` 高于阈值时：
+已实现。通过 `StagePolicyRegistry` 基于时间窗口自动切换。
 
-- `LOAD_ENQUEUE = 1`
-- `LOAD_PROCESS = 1`
-- `NORMALIZE = 6`
-- `EVENT_EXTRACT = 3`
-- `CASE_RECOMPUTE = 1`
-- `globalModelPermits = 10`
+适用于配置窗口时段（默认 `0:00-4:00 / 12:00-16:00`）：
+
+- `LOAD_ENQUEUE = 1`（priority=100）
+- `LOAD_PROCESS = 1`（priority=80，降低）
+- `NORMALIZE = 8`（priority=95，提升为主消费者）
+- `EVENT_EXTRACT = 2`（priority=60，保留少量处理紧急任务）
+- `CASE_RECOMPUTE = 1`（priority=50，保底）
+- `globalModelPermits = 12`
+
+配置项：
+
+- `infection.pipeline.normalize-window-start-hours`：窗口起始小时，逗号分隔（默认 `0,12`）
+- `infection.pipeline.normalize-window-duration-hours`：窗口持续时长（默认 `4` 小时）
+
+切换行为：
+
+- 进入窗口时 `StagePolicyRegistry` 自动返回 NORMALIZE 优先策略
+- 退出窗口时自动恢复普通时段策略
+- 已有 in-flight 任务不会被强制中断，自然完成后新任务按新策略调度
+- 策略切换日志：`进入 NORMALIZE 优先窗口` / `退出 NORMALIZE 优先窗口`
 
 ## 8. 禁止事项
 
@@ -1181,6 +1190,23 @@ Scheduler -> Facade.triggerXxx() -> 先临时调用旧逻辑
 - 普通时段和窗口时段策略切换是否生效
 - 模型错误/超时后 permit 是否正确释放
 
+当前状态（2026-04-09）：
+
+- 已完成：`format / event / case` 三类模型调用已经统一接入 `ModelCallGuard`
+- 已完成：`InfectionPipelineFacade` 已收敛为具体类，删除 `DefaultInfectionPipelineFacade` 过渡命名
+- 已完成：共享池线程数 `shared-threads=16` 和 `model-permits=12` 已在所有 YAML 环境中显式配置
+- 已完成：清理 `worker-threads` 遗留配置（YAML + Properties），统一由 `shared-threads` 管控
+- 已完成：`StagePolicyRegistry` 已实现双策略表 + 时间窗口动态切换（普通时段 / NORMALIZE 优先窗口）
+- 已完成：普通时段 `EVENT_EXTRACT maxInFlight=8` 为 LLM 主消费者；NORMALIZE 窗口期 `NORMALIZE maxInFlight=8` 集中处理
+- 未完成：当前共享池仍是严格优先级队列，`CASE_RECOMPUTE` 仍缺少显式反饥饿机制（窗口期已通过 maxInFlight=1 保底缓解）
+- 未完成：调度指标、模型指标、线程池指标和告警尚未补齐
+- 未完成：文档第 16 节列出的单元测试、集成测试、压测场景尚未落地
+
+说明：
+
+- 本步骤里的 `ModelConcurrencyLimiter`、`ResourceProfile`、`WorkUnitFactory` 属于设计阶段草案。
+- 当前代码已按第 18 节抽象治理规则收敛，未继续保留这些单独类型；后续如确有第二实现或真实变化点，再决定是否恢复独立抽象。
+
 ## 14. 各步骤涉及的文件改动范围建议
 
 本节用于控制每一步的改动范围，避免过大 PR。
@@ -1333,3 +1359,180 @@ infection.pipeline.scheduler.enabled=false
 4. 业务执行逻辑统一收敛在 `pipeline.handler`。
 5. 模型调用并发由 `ModelCallGuard` 统一控制。
 6. `InfectionPipeline` 不再承担“大而全”的 orchestrator 职责，可逐步退化为兼容 facade 或删除。
+
+## 18. 抽象治理与本轮收敛清单
+
+说明：
+
+- 本文前文包含设计阶段的示意代码、过渡态命名和历史计划。
+- 如果前文示意与 `18.7`、`18.8` 的当前落地状态冲突，以 `18.7`、`18.8` 和当前代码实现为准。
+
+### 18.1 抽象准入规则
+
+后续新增 `interface`、`abstract class`、`*Registry`、`*Factory` 之前，必须先写清楚它要隔离的变化点，并且满足以下条件之一：
+
+1. 当前迭代或下一迭代内，确定会出现第二个实现。
+2. 该抽象用于隔离外部边界，例如模型调用、线程调度、持久化、第三方 SDK，便于替换、限流、测试或监控。
+3. 已经出现 3 处以上稳定重复逻辑，且可以沉淀为统一模板或契约。
+
+如果三条都不满足，则默认先使用具体类；等第二实现或稳定重复真正出现后，再进行抽象。
+
+### 18.2 本轮优先收敛的薄抽象
+
+以下旧形式如果仍然只有单实现，且主要起到“命名转发”作用，应优先收敛：
+
+- `Handler` 接口 + `Default*Handler` 实现
+- `StageCoordinatorRegistry` + `DefaultStageCoordinatorRegistry`
+
+收敛原则：
+
+- Handler 层不再采用“接口 + Default 实现”双类壳结构。
+- 统一保留具体职责类，类名直接使用业务名，例如 `LoadEnqueueHandler`、`NormalizeHandler`。
+- 如果多个 Handler 存在稳定共性，优先抽取一个抽象模板基类或组合组件，不再为每个 Handler 保留单独接口。
+
+### 18.3 Handler / Coordinator 层统一抽象方式
+
+Handler 层后续统一采用“抽象模板 + 具体职责类”模式：
+
+- 抽象层只承载稳定共性，例如异常包装、结果回写模板、日志骨架。
+- 具体类只承载该 stage 独有的业务流程。
+- 不允许同时存在“单实现接口”和“模板基类”两套抽象。
+
+Coordinator 层后续统一采用“调度模板父类 + 具体 stage 类”模式：
+
+- claim、batch size、trigger 状态更新、work unit 提交等稳定重复逻辑，应下沉到父类模板。
+- 具体 coordinator 只保留 stage 标识、claim 来源、work item 构造、handler 调用。
+- 不为 coordinator 再增加 registry 式转发包装。
+
+### 18.4 当前可以保留的边界抽象
+
+以下抽象当前仍然有保留价值，可以继续存在，但要确保后续真正承接变化点：
+
+- `ModelCallGuard`
+- `WarningModelGateway`
+- `NormalizeModelGateway`
+- `FormatModelGateway`
+- `WorkUnit`
+
+保留原因：
+
+- 它们隔离的是模型调用、调度执行单元等外部或跨层边界，不只是简单命名包装。
+
+### 18.5 观察项
+
+以下抽象在“动态策略、监控、可替换实现”真正落地前，暂定为观察项：
+
+- `StageDispatcher`
+- `StagePolicyRegistry`
+- `StageRuntimeRegistry`
+- `WorkUnitExecutor`
+
+判断原则：
+
+- 如果后续确实承接了多实现、动态策略或对外稳定边界，则保留。
+- 如果后续仍然只有单实现且不承担真实变化点，则继续收敛为具体类。
+
+已收敛的观察项：
+
+- `InfectionPipelineFacade`：已从"接口 + DefaultInfectionPipelineFacade"收敛为具体类
+
+### 18.6 命名收口
+
+- facade 实现类应直接使用正式主入口名称，禁止保留 `LegacyCompatible`、`Default` 之类过渡态命名。
+- `InfectionPipelineFacade` 已完成收口，当前为具体类。
+
+### 18.7 已完成的 `pipeline.scheduler` 收敛
+
+当前 `pipeline.scheduler` 已按职责拆成 4 个子包：
+
+- `executor`
+- `limiter`
+- `policy`
+- `runtime`
+
+本轮已完成的收敛包括：
+
+- 删除 `StagePolicyRegistry + DefaultStagePolicyRegistry` 双层壳，统一为具体类 `StagePolicyRegistry`
+- 删除 `StageRuntimeRegistry + InMemoryStageRuntimeRegistry` 双层壳，统一为具体类 `StageRuntimeRegistry`
+- 删除 `StageDispatcher + DefaultStageDispatcher` 双层壳，统一为具体类 `StageDispatcher`
+- 删除 `WorkUnitExecutor + DefaultWorkUnitExecutor` 双层壳，统一为具体类 `WorkUnitExecutor`
+- 删除 `WorkUnit + RunnableWorkUnit` 双层壳，统一为具体类 `WorkUnit`
+- 删除 `ModelCallGuard + DefaultModelCallGuard + ModelConcurrencyLimiter + SemaphoreModelConcurrencyLimiter` 的多层包装，统一收敛为 `ModelCallGuard`
+
+同时，以下未进入真实运行链路的调度元数据已删除：
+
+- `ResourceProfile`
+- `StagePolicy.singleCoordinator`
+- `StagePolicyRegistry.currentPolicies()`
+- `StagePolicyRegistry.isNormalizePreferredWindow()`
+
+收敛后的原则是：
+
+- `scheduler` 内只保留真正独立的调度概念，不保留“单实现接口 + 默认实现”或“命名转发”包装。
+- 如果后续动态策略、监控或多实现没有真实落地，`StageDispatcher / StagePolicyRegistry / StageRuntimeRegistry / WorkUnitExecutor` 仍应继续接受收敛审查。
+
+### 18.8 已完成的 `domain.normalize` 收敛
+
+当前 `domain.normalize` 已按职责拆成 6 个子包：
+
+- `assemble`
+- `facts`
+- `facts.candidate`
+- `prompt`
+- `support`
+- `validation`
+
+本轮已完成的收敛包括：
+
+- 删除 `DayFactsBuilder`、`FusionFactsBuilder`、`TimelineEntryBuilder` 等 root 包单实现接口，统一改为具体职责类
+- 删除 `NormalizeNoteStructAssembler`、`NormalizeOutputValidator`、`NormalizeRetryInstructionBuilder` 等“接口 + Default 实现”双层壳，统一改为具体职责类
+- 删除 `NotePreparationService`、`NoteTypePriorityResolver`、`ProblemCandidateBuilder`、`RiskCandidateBuilder` 等单实现接口，统一改为具体职责类
+- 保留 `NormalizePromptCatalog`、`NormalizePromptDefinition`、`NormalizeValidation*` 等提示词与校验元数据，但迁入独立子包，避免与业务执行类混放
+
+`facts.candidate` 中新增的 `AbstractStructuredNoteFactsBuilder` 属于合规抽象，因为它承接了 `ProblemCandidateBuilder`、`RiskCandidateBuilder`、`FusionFactsBuilder` 三处稳定重复的“结构化 note 读取”逻辑，满足“3 处以上稳定重复才抽象”的准入条件。
+
+收敛后的原则是：
+
+- `normalize` 领域优先按职责拆目录，不再把 assembler、prompt、validator、facts builder、support helper 混放在一个平面包中。
+- 单实现类直接用业务职责命名，不保留 `Default*` 前缀。
+- 只有跨 3 处以上的稳定重复逻辑，才允许抽取父类模板。
+
+### 18.9 文档同步要求
+
+后续凡是涉及包结构调整、抽象收敛、命名收口的重构，必须同步更新以下文档：
+
+- `docs/shared-executor-architecture-design.md`
+- `docs/refactor-handover-status.md`
+- `README.md`
+- `AGENTS.md`
+
+### 18.10 尚未完成的规划任务
+
+截至 2026-04-09，本文档规划中仍未完成的任务如下：
+
+1. ~~动态策略切换~~ **已完成**
+   - `StagePolicyRegistry` 已实现基于时间窗口的双策略表切换
+   - 配置项：`normalize-window-start-hours` / `normalize-window-duration-hours`
+   - 后续可扩展基于 backlog 数量的自适应切换
+
+2. `CASE_RECOMPUTE` 反饥饿保证
+   - 当前 NORMALIZE 窗口期 `CASE_RECOMPUTE maxInFlight=1` 做保底，但普通时段无显式反饥饿
+   - 后续如需进一步保证，可引入 aging 或独立补投阈值
+
+3. 调度观测与告警
+   - 需要补齐第 12 节中定义的 stage 维度、模型维度、线程池维度指标
+   - 需要补齐 backlog、permit 满载、补投失败等告警
+
+4. 测试补齐
+   - 需要补齐 `StageRuntimeState`、`StageDispatcher`、`StagePolicyRegistry`、handler 成功/失败路径单测
+   - 需要补齐 scheduler -> facade -> dispatcher -> coordinator -> work unit 的集成测试
+   - 需要补齐策略切换窗口期前后的行为验证
+
+5. 文档草案与当前实现的差异清理
+   - 前文仍保留 `ModelConcurrencyLimiter`、`ResourceProfile`、`WorkUnitFactory` 等草案描述
+   - 后续如不计划恢复这些抽象，应继续逐段清理前文历史草案，避免读者把草案误认为当前实现
+
+6. 线程池与 LLM 并发调优验证
+   - 当前 prod 配置 `shared-threads=16`、`model-permits=12`，基于 vLLM PP 模式 12 并发 40 秒的实测数据
+   - 需要补测 8/10/14/16 并发的吞吐曲线，确认 PP 甜点区上界
+   - 需要验证 NORMALIZE 窗口切换前后 LLM 吞吐是否平稳过渡

@@ -13,7 +13,6 @@ public class InfectionMonitorProperties {
 
     private int scanLimit = 200;
     private int batchSize = 100;
-    private int workerThreads = 8;
     private int maxAttempts = 5;
     private int retryDelaySeconds = 300;
     private int runningTimeoutSeconds = 1800;
