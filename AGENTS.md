@@ -88,6 +88,9 @@ LLM 默认背景：
 - `InfectionPipelineFacade`
 - `NormalizeRowProcessor`
 - `NormalizeStructDataComposer`
+- `NormalizeInputAssembler`
+- `NormalizeResultAssembler`
+- `AiGateway`
 - `FormatContextComposer`
 - `FormatSectionFormatter`
 - `FilteredRawDataBuilder`
@@ -243,6 +246,10 @@ LLM 默认背景：
 - `prompt`
 - `support`
 - `validation`
+
+当前模型调用外部边界统一为：
+
+- `ai.gateway.AiGateway`
 
 ## 封装与抽象治理准则
 

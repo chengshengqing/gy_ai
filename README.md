@@ -121,6 +121,7 @@ src/main/resources
 - 调度主链路：`InfectionPipelineFacade -> NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer`
 - Normalize 核心目录：`domain.normalize.assemble / facts / prompt / support / validation`
 - Format 相关目录：`domain.format`
+- 模型调用边界：`ai.gateway.AiGateway`
 - 输出表：`patient_raw_data.struct_data_json`、`patient_raw_data.event_json`
 - 任务表：`patient_raw_data_change_task`
 - 运维日志表：`infection_daily_job_log`
@@ -132,7 +133,9 @@ src/main/resources
 - 将单日摘要写入 `event_json`
 - 为前端时间线视图和事件抽取窗口提供标准化数据源
 - `NormalizeRowProcessor` 只负责 reset / 回写 / 错误包装
-- `NormalizeStructDataComposer` 负责输入选择、note 结构化、fusion 调用和 JSON 组装
+- `NormalizeStructDataComposer` 只负责串联 normalize 三层调用
+- `NormalizeInputAssembler` 负责 normalize 输入准备、day context 构造、fusion 输入组装
+- `NormalizeResultAssembler` 负责 note / daily fusion 的模型结果校验、重试与最终 JSON 组装
 - `FormatAgent` 已收薄为兼容入口，格式化编排下沉到 `domain.format.*`
 
 执行方式：
@@ -157,7 +160,7 @@ src/main/resources
 ### 4. 症候群监测
 
 - 核心类：`SurveillanceAgent`
-- 共享链路中的相关能力：`EventExtractHandler`、`CaseRecomputeHandler`、`WarningModelGateway`、`WarningPromptCatalog`
+- 共享链路中的相关能力：`EventExtractHandler`、`CaseRecomputeHandler`、`AiGateway`、`WarningPromptCatalog`
 - 结构化事实精炼相关目录：`service.evidence`
 - 数据来源：病程信息查询
 - 输出：`ai_process_log`、`items_infor_zhq`

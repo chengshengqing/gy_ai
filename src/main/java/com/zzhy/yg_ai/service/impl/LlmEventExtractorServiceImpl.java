@@ -1,6 +1,6 @@
 package com.zzhy.yg_ai.service.impl;
 
-import com.zzhy.yg_ai.ai.gateway.WarningModelGateway;
+import com.zzhy.yg_ai.ai.gateway.AiGateway;
 import com.zzhy.yg_ai.ai.prompt.WarningPromptCatalog;
 import com.zzhy.yg_ai.domain.entity.InfectionEventPoolEntity;
 import com.zzhy.yg_ai.domain.entity.InfectionLlmNodeRunEntity;
@@ -22,6 +22,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import com.zzhy.yg_ai.pipeline.scheduler.policy.PipelineStage;
 
 @Slf4j
 @Service
@@ -30,7 +31,7 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
 
     private static final String MODEL_NAME = "warning-agent-chat-model";
 
-    private final WarningModelGateway warningAgent;
+    private final AiGateway aiGateway;
     private final InfectionLlmNodeRunService infectionLlmNodeRunService;
     private final EventNormalizerService eventNormalizerService;
     private final InfectionEventPoolService infectionEventPoolService;
@@ -81,7 +82,12 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
         LlmEventExtractionSupport.PreparedExtractorOutput preparedOutput = null;
         try {
             String prompt = WarningPromptCatalog.buildEventExtractorPrompt(block.blockType());
-            rawOutput = warningAgent.callEventExtractor(prompt, inputPayload);
+            rawOutput = aiGateway.callSystem(
+                    PipelineStage.EVENT_EXTRACT,
+                    InfectionNodeType.EVENT_EXTRACTOR.name(),
+                    prompt,
+                    inputPayload
+            );
             preparedOutput = llmEventExtractionSupport.prepareOutput(rawOutput);
             rawOutput = preparedOutput.outputJson();
             BigDecimal confidence = preparedOutput.confidence();

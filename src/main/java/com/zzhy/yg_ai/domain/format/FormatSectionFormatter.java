@@ -1,9 +1,10 @@
 package com.zzhy.yg_ai.domain.format;
 
 import com.zzhy.yg_ai.ai.agent.AgentUtils;
-import com.zzhy.yg_ai.ai.gateway.FormatModelGateway;
+import com.zzhy.yg_ai.ai.gateway.AiGateway;
 import com.zzhy.yg_ai.ai.prompt.FormatAgentPrompt;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
+import com.zzhy.yg_ai.pipeline.scheduler.policy.PipelineStage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -11,7 +12,9 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class FormatSectionFormatter {
 
-    private final FormatModelGateway formatModelGateway;
+    private static final String NODE_TYPE = "FORMAT_SECTION";
+
+    private final AiGateway aiGateway;
 
     public String formatIllnessSection(String illnessJson) {
         return AgentUtils.formatSectionWithSplit(
@@ -31,7 +34,7 @@ public class FormatSectionFormatter {
 
     public String callWithPrompt(String promptTemplate, String inputJson) {
         String resolvedPrompt = resolvePromptTemplate(promptTemplate, inputJson);
-        return formatModelGateway.callPrompt(resolvedPrompt, inputJson);
+        return aiGateway.callSystem(PipelineStage.NORMALIZE, NODE_TYPE, resolvedPrompt, inputJson);
     }
 
     private String resolvePromptTemplate(String promptTemplate, String inputJson) {

@@ -2,7 +2,7 @@ package com.zzhy.yg_ai.service.impl;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zzhy.yg_ai.ai.gateway.WarningModelGateway;
+import com.zzhy.yg_ai.ai.gateway.AiGateway;
 import com.zzhy.yg_ai.ai.prompt.WarningPromptCatalog;
 import com.zzhy.yg_ai.domain.entity.InfectionLlmNodeRunEntity;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import com.zzhy.yg_ai.pipeline.scheduler.policy.PipelineStage;
 
 @Slf4j
 @Service
@@ -25,7 +26,7 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
 
     private static final String MODEL_NAME = "warning-agent-chat-model";
 
-    private final WarningModelGateway warningModelGateway;
+    private final AiGateway aiGateway;
     private final InfectionLlmNodeRunService infectionLlmNodeRunService;
     private final StructuredFactRefinementSupport structuredFactRefinementSupport;
     private final ObjectMapper objectMapper;
@@ -46,7 +47,9 @@ public class StructuredFactRefinementServiceImpl implements StructuredFactRefine
         long startedAt = System.currentTimeMillis();
         String rawOutput = null;
         try {
-            rawOutput = warningModelGateway.callStructuredFactRefinement(
+            rawOutput = aiGateway.callSystem(
+                    PipelineStage.EVENT_EXTRACT,
+                    InfectionNodeType.STRUCTURED_FACT_REFINEMENT.name(),
                     WarningPromptCatalog.buildStructuredFactRefinementPrompt(),
                     preparedRefinement.inputPayload()
             );

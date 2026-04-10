@@ -1,6 +1,6 @@
 # Refactor Handover Status
 
-日期：2026-04-09
+日期：2026-04-10
 
 这份文档用于在新 chat 窗口继续当前重构任务。
 
@@ -56,19 +56,14 @@
 
 ### 1.2 模型调用限流主链路
 
-当前真实模型调用已经统一通过 gateway 与 guard 收口：
+当前真实模型调用已经统一通过统一 gateway 与 guard 收口：
 
-`Handler / Service -> *ModelGateway -> ModelCallGuard -> Spring AI / vLLM`
+`Handler / Service -> AiGateway -> ModelCallGuard -> Spring AI / vLLM`
 
 对应代码：
 
 - `ai.gateway`
-  - `NormalizeModelGateway`
-  - `FormatModelGateway`
-  - `WarningModelGateway`
-  - `SpringAiNormalizeModelGateway`
-  - `SpringAiFormatModelGateway`
-  - `SpringAiWarningModelGateway`
+  - `AiGateway`
 - `pipeline.scheduler.limiter`
   - `ModelCallGuard`
 
@@ -76,18 +71,19 @@
 
 `NORMALIZE` 当前主链路已经收口到：
 
-`NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer -> domain.normalize.* -> NormalizeModelGateway`
+`NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer -> NormalizeInputAssembler / NormalizeResultAssembler -> AiGateway`
 
 `domain.normalize` 当前已拆分为：
 
 - `assemble`
-  - `NormalizeNoteStructAssembler`
   - `NormalizeNoteStructureResult`
-  - `IllnessCourseTimeResolver`
+  - `NormalizeContext`
+  - `NotePromptTask`
+  - `DailyFusionPlan`
+  - `NormalizeInputAssembler`
 - `facts`
   - `DayFactsBuilder`
   - `FusionFactsBuilder`
-  - `TimelineEntryBuilder`
   - `DailyIllnessExtractionResult`
 - `facts.candidate`
   - `AbstractStructuredNoteFactsBuilder`
@@ -101,11 +97,8 @@
   - `NormalizeEnumFieldRule`
 - `support`
   - `NotePreparationSupport`
-  - `NoteTypePriorityResolver`
 - `validation`
-  - `NormalizeOutputValidator`
-  - `NormalizePromptOutputValidator`
-  - `NormalizeRetryInstructionBuilder`
+  - `NormalizeResultAssembler`
   - `NormalizeAttemptReport`
   - `NormalizeValidatedResult`
   - `NormalizeValidationIssue`
@@ -118,13 +111,15 @@
 当前分工：
 
 - `NormalizeRowProcessor` 仅保留 reset derived data、调用 composer、结果回写、错误包装
-- `NormalizeStructDataComposer` 负责输入 JSON 选择、note 结构化、fusion 调用、`struct_data_json` / `event_json` 组装
+- `NormalizeStructDataComposer` 只负责串联 normalize 三层调用
+- `NormalizeInputAssembler` 负责输入 JSON 选择、note prompt 输入、day context 和 fusion 输入准备
+- `NormalizeResultAssembler` 负责 note / daily fusion 的模型调用后校验、重试与 `struct_data_json` / `event_json` 组装
 
 ### 1.4 Format 业务主链路
 
 `FormatAgent` 当前已收口到：
 
-`FormatAgent -> domain.format.FormatContextComposer -> domain.format.FormatSectionFormatter -> FormatModelGateway`
+`FormatAgent -> domain.format.FormatContextComposer -> domain.format.FormatSectionFormatter -> AiGateway`
 
 `domain.format` 当前已拆分为：
 
@@ -137,7 +132,7 @@
 
 - `FormatAgent` 仅保留兼容入口并转发到 `domain.format.*`
 - `FormatContextComposer` 负责编排输入拆分、病程去重、section 合并与 `PatientContext` 构造
-- `FormatSectionFormatter` 负责 section 级格式化与 `FormatModelGateway` 调用
+- `FormatSectionFormatter` 负责 section 级格式化与 `AiGateway` 调用
 - `FinalMergePromptBuilder` 负责最终 merge prompt 组装
 - `FilteredRawDataBuilder` 负责过滤后的 `filter_data_json` 构造
 
@@ -211,16 +206,18 @@
 
 `domain.normalize` 已从单层平铺目录收敛为 6 个职责子包。
 
-本轮已删除的单实现薄抽象包括：
+本轮已删除或合并的单实现薄抽象包括：
 
 - `DayFactsBuilder` root 接口
 - `FusionFactsBuilder` root 接口
-- `TimelineEntryBuilder` root 接口
-- `NormalizeNoteStructAssembler` root 接口
-- `NormalizeOutputValidator` root 接口
-- `NormalizeRetryInstructionBuilder` root 接口
+- `NormalizeNoteStructAssembler`
+- `NormalizeOutputValidator`
+- `NormalizePromptOutputValidator`
+- `NormalizeRetryInstructionBuilder`
+- `TimelineEntryBuilder`
 - `NotePreparationService`
-- `NoteTypePriorityResolver` root 接口
+- `IllnessCourseTimeResolver`
+- `NoteTypePriorityResolver`
 - `ProblemCandidateBuilder` root 接口
 - `RiskCandidateBuilder` root 接口
 
@@ -230,8 +227,9 @@
 
 本轮已完成的收敛：
 
-- 将 `extractDailyIllness(...)` 从 `NormalizeRowProcessor` 迁移到新的具体类 `NormalizeStructDataComposer`
-- 将 `resolveRawInputJson(...)`、`parseToNode(...)`、`toJson(...)` 收敛为 `NormalizeStructDataComposer` 私有实现
+- 将 normalize 输入准备收敛到 `domain.normalize.assemble.NormalizeInputAssembler`
+- 将模型结果校验、重试和结果 JSON 组装收敛到 `domain.normalize.validation.NormalizeResultAssembler`
+- 将多套 gateway 调用统一收敛到 `ai.gateway.AiGateway`
 - 保持 `NormalizeRowProcessor` 为 handler 级 orchestration，不新增接口或 `Default*` 壳
 
 ### 2.4 `FormatAgent` 收薄

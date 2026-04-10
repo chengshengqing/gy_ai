@@ -1,6 +1,6 @@
 package com.zzhy.yg_ai.service.impl;
 
-import com.zzhy.yg_ai.ai.gateway.WarningModelGateway;
+import com.zzhy.yg_ai.ai.gateway.AiGateway;
 import com.zzhy.yg_ai.ai.prompt.WarningPromptCatalog;
 import com.zzhy.yg_ai.domain.entity.InfectionLlmNodeRunEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionNodeType;
@@ -14,6 +14,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import com.zzhy.yg_ai.pipeline.scheduler.policy.PipelineStage;
 
 /**
  * 第二层法官节点。
@@ -26,7 +27,7 @@ public class InfectionJudgeServiceImpl implements InfectionJudgeService {
 
     private static final String MODEL_NAME = "warning-agent-chat-model";
 
-    private final WarningModelGateway warningAgent;
+    private final AiGateway aiGateway;
     private final InfectionLlmNodeRunService infectionLlmNodeRunService;
     private final InfectionCaseJudgeSupport infectionCaseJudgeSupport;
 
@@ -42,7 +43,12 @@ public class InfectionJudgeServiceImpl implements InfectionJudgeService {
         String rawOutput = null;
         try {
             String prompt = WarningPromptCatalog.buildCaseJudgePrompt();
-            rawOutput = warningAgent.callCaseJudge(prompt, inputPayload);
+            rawOutput = aiGateway.callSystem(
+                    PipelineStage.CASE_RECOMPUTE,
+                    InfectionNodeType.CASE_JUDGE.name(),
+                    prompt,
+                    inputPayload
+            );
             JudgeDecisionResult parsed = infectionCaseJudgeSupport.parseDecision(rawOutput, safePacket, judgeTime);
             infectionLlmNodeRunService.markSuccess(
                     runEntity.getId(),

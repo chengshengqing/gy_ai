@@ -14,28 +14,36 @@ import org.springframework.stereotype.Component;
 
 @Component
 @RequiredArgsConstructor
-public class SpringAiNormalizeModelGateway implements NormalizeModelGateway {
+public class AiGateway {
 
     private final ChatModel chatModel;
     private final ModelCallGuard modelCallGuard;
 
-    @Override
-    public String callSystemPrompt(String systemPrompt, String inputJson) {
+    public String callSystem(PipelineStage stage,
+                             String nodeType,
+                             String systemPrompt,
+                             String inputJson) {
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage(systemPrompt),
                 new UserMessage(inputJson)
         ));
-        ChatResponse response = modelCallGuard.call(PipelineStage.NORMALIZE, "DAILY_FUSION", () -> chatModel.call(prompt));
-        return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
+        return execute(stage, nodeType, prompt);
     }
 
-    @Override
-    public String callSystemAndUserPrompt(String systemPrompt, String userPrompt, String inputJson) {
+    public String callSystemAndUser(PipelineStage stage,
+                                    String nodeType,
+                                    String systemPrompt,
+                                    String userPrompt,
+                                    String inputJson) {
         Prompt prompt = new Prompt(List.of(
                 new SystemMessage(systemPrompt),
                 new UserMessage(userPrompt + inputJson)
         ));
-        ChatResponse response = modelCallGuard.call(PipelineStage.NORMALIZE, "DAILY_FUSION", () -> chatModel.call(prompt));
+        return execute(stage, nodeType, prompt);
+    }
+
+    private String execute(PipelineStage stage, String nodeType, Prompt prompt) {
+        ChatResponse response = modelCallGuard.call(stage, nodeType, () -> chatModel.call(prompt));
         return AgentUtils.normalizeToJson(response.getResult().getOutput().getText());
     }
 }
