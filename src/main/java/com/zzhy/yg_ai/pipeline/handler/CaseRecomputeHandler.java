@@ -30,6 +30,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTaskEntity, CaseRecomputeResult> {
 
+    private static final String TASK_NAME = "病例重算任务";
     private static final int CASE_MAX_WAIT_MINUTES = 30;
 
     private final InfectionEventTaskService infectionEventTaskService;
@@ -80,11 +81,12 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
             JudgeDecisionResult decision = infectionJudgeService.judge(packet, now);
             persistAlertResult(snapshot, taskEntity, packet, decision);
             updateSnapshot(snapshot, latestEventPoolVersion, now, decision);
-            log.info("病例重算完成，taskId={}, reqno={}, decisionStatus={}, warningLevel={}",
-                    taskEntity.getId(), reqno, decision.decisionStatus(), decision.warningLevel());
             return new CaseRecomputeResult(taskIds, reqno, 1, 0, false, false, null, "病例重算完成");
         } catch (Exception e) {
-            log.error("病例重算任务失败，taskId={}, reqno={}", taskEntity.getId(), reqno, e);
+            log.error(buildFailureMessage(TASK_NAME,
+                    "taskId", taskEntity == null ? null : taskEntity.getId(),
+                    "reqno", reqno,
+                    "message", "病例重算任务执行失败，需重试"), e);
             return new CaseRecomputeResult(taskIds, reqno, 0, 1, false, false, "病例重算任务执行失败，需重试", "病例重算任务执行失败，需重试");
         }
     }
@@ -95,11 +97,29 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
         }
 
         if (result.rescheduled()) {
+            log.info("{}延后，{}", TASK_NAME, buildSummary(
+                    "taskId", firstTaskId(result.taskIds()),
+                    "reqno", result.reqno(),
+                    "successCount", result.successCount(),
+                    "failedCount", result.failedCount(),
+                    "skipped", result.skipped(),
+                    "rescheduled", result.rescheduled(),
+                    "message", result.message()
+            ));
             return;
         }
 
         if (result.skipped()) {
             infectionEventTaskService.markSkipped(result.taskIds(), result.message());
+            log.info("{}跳过，{}", TASK_NAME, buildSummary(
+                    "taskId", firstTaskId(result.taskIds()),
+                    "reqno", result.reqno(),
+                    "successCount", result.successCount(),
+                    "failedCount", result.failedCount(),
+                    "skipped", result.skipped(),
+                    "rescheduled", result.rescheduled(),
+                    "message", result.message()
+            ));
             return;
         }
 
@@ -108,11 +128,24 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
                     ? result.lastErrorMessage()
                     : "病例重算失败";
             infectionEventTaskService.markFailed(result.taskIds(), message);
-            infectionDailyJobLogService.log(InfectionJobStage.FINALIZE, InfectionJobStatus.ERROR, result.reqno(), message);
+            String errorMessage = buildFailureMessage(TASK_NAME,
+                    "taskId", firstTaskId(result.taskIds()),
+                    "reqno", result.reqno(),
+                    "message", message);
+            infectionDailyJobLogService.log(InfectionJobStage.FINALIZE, InfectionJobStatus.ERROR, result.reqno(), errorMessage);
             return;
         }
 
         infectionEventTaskService.markSuccess(result.taskIds(), result.message());
+        log.info("{}结束，{}", TASK_NAME, buildSummary(
+                "taskId", firstTaskId(result.taskIds()),
+                "reqno", result.reqno(),
+                "successCount", result.successCount(),
+                "failedCount", result.failedCount(),
+                "skipped", result.skipped(),
+                "rescheduled", result.rescheduled(),
+                "message", result.message()
+        ));
     }
 
     private List<Long> extractTaskIds(InfectionEventTaskEntity taskEntity) {
@@ -199,4 +232,5 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
             return null;
         }
     }
+
 }

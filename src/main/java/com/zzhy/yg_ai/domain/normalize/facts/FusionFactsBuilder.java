@@ -1,10 +1,10 @@
 package com.zzhy.yg_ai.domain.normalize.facts;
 
-import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.normalize.facts.candidate.AbstractStructuredNoteFactsBuilder;
 import com.zzhy.yg_ai.domain.normalize.facts.candidate.ProblemCandidateBuilder;
 import com.zzhy.yg_ai.domain.normalize.facts.candidate.RiskCandidateBuilder;
 import com.zzhy.yg_ai.domain.normalize.support.NotePreparationSupport;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -46,10 +46,10 @@ public class FusionFactsBuilder extends AbstractStructuredNoteFactsBuilder {
         return false;
     }
 
-    public Map<String, Object> buildFusionReadyFacts(Map<String, Object> standardizedDayFacts, PatientRawDataEntity rawData) {
+    public Map<String, Object> buildFusionReadyFacts(Map<String, Object> standardizedDayFacts, String reqno, LocalDate dataDate) {
         Map<String, Object> fusionFacts = new LinkedHashMap<>();
-        fusionFacts.put("reqno", rawData == null ? "" : notes().defaultIfBlank(rawData.getReqno(), ""));
-        fusionFacts.put("date", rawData == null || rawData.getDataDate() == null ? "" : rawData.getDataDate().toString());
+        fusionFacts.put("reqno", notes().defaultIfBlank(reqno, ""));
+        fusionFacts.put("date", dataDate == null ? "" : dataDate.toString());
         fusionFacts.put("meta", buildFusionMeta(standardizedDayFacts));
 
         Map<String, Object> clinicalReasoningLayer = new LinkedHashMap<>();

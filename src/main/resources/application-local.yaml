@@ -4,6 +4,7 @@ spring:
       on-profile: local
   datasource:
     url: ${YG_AI_DB_URL:jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;}
+#    url: ${YG_AI_DB_URL:jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;}
     username: ${YG_AI_DB_USERNAME:sa}
     password: ${YG_AI_DB_PASSWORD:Abcd@1234}
     hikari:
@@ -29,6 +30,8 @@ infection:
     normalize-window-start-hours: 0,12
     normalize-window-duration-hours: 4
   monitor:
+    enqueue-fixed-delay: ${YG_AI_MONITOR_ENQUEUE_FIXED_DELAY:60000}
+    collect-fixed-delay: ${YG_AI_MONITOR_ENQUEUE_FIXED_DELAY:60000}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:3}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:60}
     recent-admission-days: ${YG_AI_MONITOR_RECENT_ADMISSION_DAYS:180}

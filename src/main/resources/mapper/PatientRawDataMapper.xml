@@ -258,8 +258,8 @@
             FROM candidate_reqnos
             GROUP BY reqno
         ) final_candidates
-        ORDER BY latest_time ASC
-        OFFSET 0 ROWS FETCH NEXT #{limit} ROWS ONLY
+        ORDER BY latest_time ASC, reqno ASC
+        OFFSET #{offset} ROWS FETCH NEXT #{limit} ROWS ONLY
     </select>
 
     <select id="selectChangedDataTypes" resultType="java.lang.String">

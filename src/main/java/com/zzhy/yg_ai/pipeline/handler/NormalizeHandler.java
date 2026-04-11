@@ -3,23 +3,34 @@ package com.zzhy.yg_ai.pipeline.handler;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
+import com.zzhy.yg_ai.domain.enums.InfectionJobStatus;
+import com.zzhy.yg_ai.domain.normalize.facts.DailyIllnessExtractionResult;
 import com.zzhy.yg_ai.pipeline.model.NormalizeResult;
+import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.PatientService;
+import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
+import com.zzhy.yg_ai.service.normalize.NormalizeStructDataService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class NormalizeHandler extends AbstractTaskHandler<List<PatientRawDataChangeTaskEntity>, NormalizeResult> {
 
-    private final NormalizeRowProcessor normalizeRowProcessor;
-    private final NormalizeResultApplier normalizeResultApplier;
+    private static final String TASK_NAME = "结构化处理任务";
+    private static final String RETRY_MESSAGE = "存在未完成的 rawData 行，需重试";
+
+    private final NormalizeStructDataService normalizeStructDataService;
     private final PatientService patientService;
+    private final PatientRawDataChangeTaskService patientRawDataChangeTaskService;
+    private final InfectionDailyJobLogService infectionDailyJobLogService;
 
     @Override
     protected NormalizeResult process(List<PatientRawDataChangeTaskEntity> taskGroup) {
@@ -28,7 +39,7 @@ public class NormalizeHandler extends AbstractTaskHandler<List<PatientRawDataCha
 
     @Override
     protected void afterHandle(NormalizeResult result) {
-        normalizeResultApplier.apply(result);
+        finalizeTask(result);
     }
 
     private NormalizeResult processTaskGroup(List<PatientRawDataChangeTaskEntity> taskGroup) {
@@ -48,12 +59,12 @@ public class NormalizeHandler extends AbstractTaskHandler<List<PatientRawDataCha
         String lastErrorMessage = null;
         InfectionJobStage failedStage = InfectionJobStage.NORMALIZE;
         for (PatientRawDataEntity rawData : rows) {
-            NormalizeRowProcessResult rowResult = normalizeRowProcessor.process(rawData);
+            NormalizeRowProcessResult rowResult = processRow(rawData);
             if (!rowResult.isSuccess()) {
                 failedCount++;
                 lastErrorMessage = StringUtils.hasText(rowResult.errorMessage())
                         ? rowResult.errorMessage()
-                        : "存在未完成的 rawData 行，需重试";
+                        : RETRY_MESSAGE;
                 failedStage = rowResult.failedStage() == null ? InfectionJobStage.NORMALIZE : rowResult.failedStage();
                 continue;
             }
@@ -107,5 +118,87 @@ public class NormalizeHandler extends AbstractTaskHandler<List<PatientRawDataCha
             rows.putIfAbsent(rawData.getId() + "|" + taskEntity.getRawDataLastTime(), rawData);
         }
         return new ArrayList<>(rows.values());
+    }
+
+    private NormalizeRowProcessResult processRow(PatientRawDataEntity rawData) {
+        if (rawData == null || !StringUtils.hasText(rawData.getDataJson())) {
+            return NormalizeRowProcessResult.failed(InfectionJobStage.NORMALIZE, "rawData为空或缺少dataJson");
+        }
+
+        try {
+            DailyIllnessExtractionResult dailyIllnessResult = normalizeStructDataService.compose(rawData);
+            rawData.setStructDataJson(dailyIllnessResult.structDataJson());
+            rawData.setEventJson(dailyIllnessResult.dailySummaryJson());
+            patientService.saveStructDataJson(
+                    rawData.getId(),
+                    dailyIllnessResult.structDataJson(),
+                    dailyIllnessResult.dailySummaryJson()
+            );
+            return NormalizeRowProcessResult.success();
+        } catch (Exception e) {
+            log.error(buildFailureMessage(
+                    TASK_NAME,
+                    "rowId", rawData.getId(),
+                    "reqno", rawData.getReqno(),
+                    "message", RETRY_MESSAGE
+            ), e);
+            return NormalizeRowProcessResult.failed(InfectionJobStage.NORMALIZE, RETRY_MESSAGE);
+        }
+    }
+
+    private void finalizeTask(NormalizeResult result) {
+        if (result == null || result.taskIds() == null || result.taskIds().isEmpty()) {
+            return;
+        }
+
+        if (result.failedCount() > 0) {
+            String message = StringUtils.hasText(result.lastErrorMessage())
+                    ? result.lastErrorMessage()
+                    : "部分结构化处理失败";
+            patientRawDataChangeTaskService.markStructFailed(result.taskIds(), message);
+            infectionDailyJobLogService.log(result.failedStage(), InfectionJobStatus.ERROR, result.reqno(), message);
+            return;
+        }
+
+        if (result.totalRows() == 0) {
+            patientRawDataChangeTaskService.markStructSkipped(result.taskIds(), "结构化任务版本已过期，跳过");
+            log.info("{}跳过，{}", TASK_NAME, buildSummary(
+                    "taskId", firstTaskId(result.taskIds()),
+                    "reqno", result.reqno(),
+                    "totalRows", result.totalRows(),
+                    "successCount", result.successCount(),
+                    "failedCount", result.failedCount(),
+                    "message", "结构化任务版本已过期，跳过"
+            ));
+            return;
+        }
+
+        patientRawDataChangeTaskService.markStructSuccess(
+                result.taskIds(),
+                "结构化处理成功，successCount=" + result.successCount()
+        );
+        log.info("{}结束，{}", TASK_NAME, buildSummary(
+                "taskId", firstTaskId(result.taskIds()),
+                "reqno", result.reqno(),
+                "totalRows", result.totalRows(),
+                "successCount", result.successCount(),
+                "failedCount", result.failedCount(),
+                "message", "结构化处理成功，successCount=" + result.successCount()
+        ));
+    }
+
+    private record NormalizeRowProcessResult(InfectionJobStage failedStage, String errorMessage) {
+
+        private static NormalizeRowProcessResult success() {
+            return new NormalizeRowProcessResult(null, null);
+        }
+
+        private static NormalizeRowProcessResult failed(InfectionJobStage failedStage, String errorMessage) {
+            return new NormalizeRowProcessResult(failedStage, errorMessage);
+        }
+
+        private boolean isSuccess() {
+            return failedStage == null && !StringUtils.hasText(errorMessage);
+        }
     }
 }

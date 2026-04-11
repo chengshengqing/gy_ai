@@ -11,7 +11,10 @@ import java.util.List;
 
 public interface PatientService {
 
-    List<String> listActiveReqnos();
+    List<String> listActiveReqnos(LocalDateTime sinceTime,
+                                  int recentAdmissionDays,
+                                  int offset,
+                                  int limit);
 
     LocalDateTime getLatestSourceBatchTime();
 
@@ -31,8 +34,6 @@ public interface PatientService {
     List<PatientRawDataEntity> listPendingStructRawData(String reqno, LocalDate replayFromDate);
 
     List<PatientRawDataEntity> listPendingEventRawData(String reqno, LocalDate replayFromDate);
-
-    void resetDerivedDataForRawData(Long rawDataId);
 
     /**
      * 更新格式化后的结构化 JSON。

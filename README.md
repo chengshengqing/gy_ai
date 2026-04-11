@@ -118,8 +118,9 @@ src/main/resources
 ### 2. 病程结构化与时间线摘要
 
 - 入口任务：`StructDataFormatScheduler`
-- 调度主链路：`InfectionPipelineFacade -> NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer`
+- 调度主链路：`InfectionPipelineFacade -> NormalizeCoordinator -> NormalizeHandler -> NormalizeStructDataService -> NormalizeContextBuilder / NormalizeResultAssembler`
 - Normalize 核心目录：`domain.normalize.assemble / facts / prompt / support / validation`
+- Normalize 服务目录：`service.normalize`
 - Format 相关目录：`domain.format`
 - 模型调用边界：`ai.gateway.AiGateway`
 - 输出表：`patient_raw_data.struct_data_json`、`patient_raw_data.event_json`
@@ -132,9 +133,9 @@ src/main/resources
 - 生成当天结构化事实与单日摘要
 - 将单日摘要写入 `event_json`
 - 为前端时间线视图和事件抽取窗口提供标准化数据源
-- `NormalizeRowProcessor` 只负责 reset / 回写 / 错误包装
-- `NormalizeStructDataComposer` 只负责串联 normalize 三层调用
-- `NormalizeInputAssembler` 负责 normalize 输入准备、day context 构造、fusion 输入组装
+- `NormalizeHandler` 统一负责任务编排、单行处理、状态收尾
+- `NormalizeStructDataService` 只负责串联 normalize 三层调用
+- `NormalizeContextBuilder` 负责 normalize 输入准备、day context 构造、fusion 输入组装
 - `NormalizeResultAssembler` 负责 note / daily fusion 的模型结果校验、重试与最终 JSON 组装
 - `FormatAgent` 已收薄为兼容入口，格式化编排下沉到 `domain.format.*`
 

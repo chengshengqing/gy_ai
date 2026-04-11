@@ -11,12 +11,12 @@ public class InfectionMonitorScheduler {
 
     private final InfectionPipelineFacade infectionPipelineFacade;
 
-    @Scheduled(fixedDelayString = "${infection.monitor.enqueue-fixed-delay:${infection.monitor.fixed-delay:60000}}")
+    @Scheduled(fixedDelayString = "${infection.monitor.enqueue-fixed-delay:${infection.monitor.enqueue-fixed-delay:60000}}")
     public void enqueuePendingPatients() {
         infectionPipelineFacade.triggerLoadEnqueue();
     }
 
-    @Scheduled(fixedDelayString = "${infection.monitor.process-fixed-delay:${infection.monitor.fixed-delay:60000}}")
+    @Scheduled(fixedDelayString = "${infection.monitor.collect-fixed-delay:${infection.monitor.collect-fixed-delay:60000}}")
     public void processPendingCollectTasks() {
         infectionPipelineFacade.triggerLoadProcess();
     }

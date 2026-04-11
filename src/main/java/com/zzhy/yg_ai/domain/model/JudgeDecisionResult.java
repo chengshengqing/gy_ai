@@ -15,7 +15,7 @@ public record JudgeDecisionResult(
         Boolean procedureRelatedFlag,
         Boolean deviceRelatedFlag,
         String infectionPolarity,
-        String decisionReason,
+        List<String> decisionReason,
         List<String> newSupportingKeys,
         List<String> newAgainstKeys,
         List<String> newRiskKeys,
@@ -25,6 +25,7 @@ public record JudgeDecisionResult(
         Integer resultVersion
 ) {
     public JudgeDecisionResult {
+        decisionReason = decisionReason == null ? List.of() : List.copyOf(decisionReason);
         newSupportingKeys = newSupportingKeys == null ? List.of() : List.copyOf(newSupportingKeys);
         newAgainstKeys = newAgainstKeys == null ? List.of() : List.copyOf(newAgainstKeys);
         newRiskKeys = newRiskKeys == null ? List.of() : List.copyOf(newRiskKeys);

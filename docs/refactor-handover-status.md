@@ -50,9 +50,10 @@
   - `LoadEnqueueHandler`
   - `LoadProcessHandler`
   - `NormalizeHandler`
-  - `NormalizeStructDataComposer`
   - `EventExtractHandler`
   - `CaseRecomputeHandler`
+- `service.normalize`
+  - `NormalizeStructDataService`
 
 ### 1.2 模型调用限流主链路
 
@@ -71,7 +72,7 @@
 
 `NORMALIZE` 当前主链路已经收口到：
 
-`NormalizeCoordinator -> NormalizeHandler -> NormalizeRowProcessor -> NormalizeStructDataComposer -> NormalizeInputAssembler / NormalizeResultAssembler -> AiGateway`
+`NormalizeCoordinator -> NormalizeHandler -> NormalizeStructDataService -> NormalizeContextBuilder / NormalizeResultAssembler -> AiGateway`
 
 `domain.normalize` 当前已拆分为：
 
@@ -80,7 +81,6 @@
   - `NormalizeContext`
   - `NotePromptTask`
   - `DailyFusionPlan`
-  - `NormalizeInputAssembler`
 - `facts`
   - `DayFactsBuilder`
   - `FusionFactsBuilder`
@@ -106,13 +106,14 @@
 
 本轮已新增：
 
-- `pipeline.handler.NormalizeStructDataComposer`
+- `service.normalize.NormalizeStructDataService`
+- `service.normalize.NormalizeContextBuilder`
 
 当前分工：
 
-- `NormalizeRowProcessor` 仅保留 reset derived data、调用 composer、结果回写、错误包装
-- `NormalizeStructDataComposer` 只负责串联 normalize 三层调用
-- `NormalizeInputAssembler` 负责输入 JSON 选择、note prompt 输入、day context 和 fusion 输入准备
+- `NormalizeHandler` 统一负责任务组编排、单行 reset / 回写 / 错误包装、任务状态收尾
+- `NormalizeStructDataService` 只负责串联 normalize 三层调用
+- `NormalizeContextBuilder` 负责输入 JSON 选择、note prompt 输入、day context 和 fusion 输入准备
 - `NormalizeResultAssembler` 负责 note / daily fusion 的模型调用后校验、重试与 `struct_data_json` / `event_json` 组装
 
 ### 1.4 Format 业务主链路
@@ -223,14 +224,15 @@
 
 当前 `facts.candidate.AbstractStructuredNoteFactsBuilder` 是唯一新增父类模板，用于统一 3 处以上稳定重复的结构化 note 读取逻辑，符合抽象治理准则。
 
-### 2.3 `NormalizeRowProcessor` 收薄
+### 2.3 `NormalizeHandler` 收敛
 
 本轮已完成的收敛：
 
-- 将 normalize 输入准备收敛到 `domain.normalize.assemble.NormalizeInputAssembler`
+- 将 normalize 输入准备收敛到 `service.normalize.NormalizeContextBuilder`
 - 将模型结果校验、重试和结果 JSON 组装收敛到 `domain.normalize.validation.NormalizeResultAssembler`
 - 将多套 gateway 调用统一收敛到 `ai.gateway.AiGateway`
-- 保持 `NormalizeRowProcessor` 为 handler 级 orchestration，不新增接口或 `Default*` 壳
+- 将 handler 包内的中间层收敛到 `NormalizeHandler`，保持每个阶段只暴露一个 handler
+- 将 normalize 三层调用的稳定边界下沉到 `service.normalize.NormalizeStructDataService`
 
 ### 2.4 `FormatAgent` 收薄
 

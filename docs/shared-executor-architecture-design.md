@@ -42,7 +42,7 @@
 5. Business Execution Layer
    - 负责采集、结构化、事件抽取、病例重算等具体业务。
    - 不直接依赖线程池，不维护调度状态。
-   - 业务执行层内部继续按具体职责向领域包下沉，例如 `domain.normalize.*`、`domain.format.*`，避免 handler 或 agent 再次膨胀。
+- 业务执行层内部继续按具体职责向领域包下沉，例如 `domain.normalize.*`、`domain.format.*`；与 normalize 编排强相关的具体职责类保留在 `service.normalize`，避免 handler 或 agent 再次膨胀。
    - 当前模型调用边界已经统一收敛到 `ai.gateway.AiGateway -> ModelCallGuard`。
 
 ## 3. 包结构建议
@@ -223,7 +223,8 @@ com.zzhy.yg_ai.pipeline.model
 职责：
 
 - 执行结构化格式化任务。
-- 编排 `NormalizeRowProcessor -> NormalizeStructDataComposer -> domain.normalize.*`。
+- 编排任务组版本校验、单行结构化处理和结果收尾。
+- 调用 `service.normalize.NormalizeStructDataService -> domain.normalize.*`。
 
 #### `com.zzhy.yg_ai.pipeline.handler.EventExtractHandler`
 

@@ -289,7 +289,7 @@ public class WarningPromptCatalog {
               "primarySite": "%s",
               "nosocomialLikelihood": "%s",
               "infectionPolarity": "%s",
-              "decisionReason": "简明原因",
+              "decisionReason": ["简明原因1", "简明原因2"],
               "newSupportingKeys": [],
               "newAgainstKeys": [],
               "newRiskKeys": [],
@@ -308,7 +308,7 @@ public class WarningPromptCatalog {
             6. newSupportingKeys/newAgainstKeys/newRiskKeys 只能引用输入中真实存在的 key。
             7. dismissedKeys 只放你明确认为当前不应再作为核心依据的 key。
             8. 若无法形成明确预警但需继续观察，可返回 candidate。
-            9. decisionReason输出必须是中文。
+            9. decisionReason 必须输出中文字符串数组，建议 2-4 条，每条独立表达一个判断理由，避免输出长段落或无格式文本。
             """.formatted(
             joinCaseStates(),
             joinWarningLevels(),

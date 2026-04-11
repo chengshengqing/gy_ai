@@ -31,6 +31,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class EventExtractHandler extends AbstractTaskHandler<InfectionEventTaskEntity, EventExtractResult> {
 
+    private static final String TASK_NAME = "事件抽取任务";
     private static final int CASE_RECOMPUTE_PRIORITY = 10;
 
     private final PatientService patientService;
@@ -82,11 +83,13 @@ public class EventExtractHandler extends AbstractTaskHandler<InfectionEventTaskE
                     : "事件抽取成功";
             return new EventExtractResult(taskIds, reqno, 1, 0, caseTaskCount, null, false, message);
         } catch (Exception e) {
-            log.error("事件抽取失败，taskId={}, rowId={}, reqno={}",
-                    taskEntity == null ? null : taskEntity.getId(),
-                    rawData.getId(),
-                    reqno,
-                    e);
+            log.error(buildFailureMessage(
+                    TASK_NAME,
+                    "taskId", taskEntity == null ? null : taskEntity.getId(),
+                    "rowId", rawData == null ? null : rawData.getId(),
+                    "reqno", reqno,
+                    "message", "存在未完成的事件抽取 rawData 行，需重试"
+            ), e);
             return new EventExtractResult(taskIds, reqno, 0, 1, 0, "存在未完成的事件抽取 rawData 行，需重试", false, "存在未完成的事件抽取 rawData 行，需重试");
         }
     }
@@ -101,18 +104,37 @@ public class EventExtractHandler extends AbstractTaskHandler<InfectionEventTaskE
                     ? result.lastErrorMessage()
                     : "部分事件抽取失败";
             infectionEventTaskService.markFailed(result.taskIds(), message);
-            infectionDailyJobLogService.log(InfectionJobStage.LLM, InfectionJobStatus.ERROR, result.reqno(), message);
+            String errorMessage = buildFailureMessage(TASK_NAME,
+                    "taskId", firstTaskId(result.taskIds()),
+                    "rowId", null,
+                    "reqno", result.reqno(),
+                    "message", message);
+            infectionDailyJobLogService.log(InfectionJobStage.LLM, InfectionJobStatus.ERROR, result.reqno(), errorMessage);
             return;
         }
 
         if (result.skipped()) {
             infectionEventTaskService.markSkipped(result.taskIds(), result.message());
+            log.info("{}跳过，{}", TASK_NAME, buildSummary(
+                    "taskId", firstTaskId(result.taskIds()),
+                    "reqno", result.reqno(),
+                    "successCount", result.successCount(),
+                    "failedCount", result.failedCount(),
+                    "caseTaskCount", result.caseTaskCount(),
+                    "message", result.message()
+            ));
             return;
         }
 
         infectionEventTaskService.markSuccess(result.taskIds(), result.message());
-        log.info("事件抽取完成，reqno={}, successCount={}, caseTaskCount={}",
-                result.reqno(), result.successCount(), result.caseTaskCount());
+        log.info("{}结束，{}", TASK_NAME, buildSummary(
+                "taskId", firstTaskId(result.taskIds()),
+                "reqno", result.reqno(),
+                "successCount", result.successCount(),
+                "failedCount", result.failedCount(),
+                "caseTaskCount", result.caseTaskCount(),
+                "message", result.message()
+        ));
     }
 
     private LlmEventExtractorResult extractEvents(PatientRawDataEntity rawData,
@@ -259,4 +281,5 @@ public class EventExtractHandler extends AbstractTaskHandler<InfectionEventTaskE
         }
         return rawData;
     }
+
 }

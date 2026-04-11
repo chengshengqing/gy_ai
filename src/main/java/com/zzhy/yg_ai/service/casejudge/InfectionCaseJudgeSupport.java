@@ -36,7 +36,7 @@ public class InfectionCaseJudgeSupport {
     private static final Set<String> DECISION_STATUS = InfectionCaseState.allCodes();
     private static final Set<String> WARNING_LEVEL = InfectionWarningLevel.allCodes();
     private static final Set<String> NOSOCOMIAL_LIKELIHOOD = InfectionNosocomialLikelihood.allCodes();
-    private static final Set<String> PRIMARY_SITE = Set.of("urinary", "respiratory", "genital", "abdominal", "bloodstream", "unknown");
+    private static final Set<String> PRIMARY_SITE = InfectionBodySite.allCodes();
     private static final Set<String> INFECTION_POLARITY = InfectionJudgePolarity.allCodes();
 
     private final ObjectMapper objectMapper;
@@ -54,11 +54,11 @@ public class InfectionCaseJudgeSupport {
         String primarySite = normalizeEnumText(root.path("primarySite").asText(""));
         String nosocomialLikelihood = normalizeEnumText(root.path("nosocomialLikelihood").asText(""));
         String infectionPolarity = normalizeEnumText(root.path("infectionPolarity").asText(""));
-        String decisionReason = normalizeText(root.path("decisionReason").asText(""));
+        List<String> decisionReason = readTextArray(root.path("decisionReason"));
         if (!StringUtils.hasText(decisionStatus) || !StringUtils.hasText(warningLevel)
                 || !StringUtils.hasText(primarySite) || !StringUtils.hasText(nosocomialLikelihood)
                 || !StringUtils.hasText(infectionPolarity)
-                || !StringUtils.hasText(decisionReason)) {
+                || decisionReason.isEmpty()) {
             throw new IllegalStateException("judge output missing required fields");
         }
         validateEnum(decisionStatus, DECISION_STATUS, "decisionStatus");
@@ -113,7 +113,7 @@ public class InfectionCaseJudgeSupport {
                     .procedureRelatedFlag(precomputed == null ? Boolean.FALSE : precomputed.procedureRelatedFlag())
                     .deviceRelatedFlag(precomputed == null ? Boolean.FALSE : precomputed.deviceRelatedFlag())
                     .infectionPolarity(InfectionJudgePolarity.UNCERTAIN.code())
-                    .decisionReason("当前无新增支持、反证或风险背景事件。")
+                    .decisionReason(List.of("当前无新增支持、反证或风险背景事件。"))
                     .requiresFollowUp(Boolean.FALSE)
                     .nextSuggestedJudgeAt(judgeTime == null ? null : judgeTime.plusMinutes(30))
                     .resultVersion(safePacket.snapshotVersion() == null ? 1 : safePacket.snapshotVersion() + 1)
@@ -137,7 +137,7 @@ public class InfectionCaseJudgeSupport {
                 .procedureRelatedFlag(precomputed == null ? Boolean.FALSE : precomputed.procedureRelatedFlag())
                 .deviceRelatedFlag(precomputed == null ? Boolean.FALSE : precomputed.deviceRelatedFlag())
                 .infectionPolarity(fallbackPolarity)
-                .decisionReason("当前存在新增事件，需由第二层法官进一步综合裁决。")
+                .decisionReason(List.of("当前存在新增事件，需由第二层法官进一步综合裁决。"))
                 .newSupportingKeys(supportKeys)
                 .newAgainstKeys(againstKeys)
                 .newRiskKeys(riskKeys)
@@ -217,6 +217,20 @@ public class InfectionCaseJudgeSupport {
             return null;
         }
         return Boolean.parseBoolean(text.trim());
+    }
+
+    private List<String> readTextArray(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        node.forEach(item -> {
+            String text = normalizeText(item == null ? null : item.asText(""));
+            if (StringUtils.hasText(text)) {
+                result.add(text);
+            }
+        });
+        return List.copyOf(result);
     }
 
     private LocalDateTime parseDateTime(String raw) {

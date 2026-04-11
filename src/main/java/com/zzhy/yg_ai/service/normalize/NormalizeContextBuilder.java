@@ -1,4 +1,4 @@
-package com.zzhy.yg_ai.domain.normalize.assemble;
+package com.zzhy.yg_ai.service.normalize;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -7,10 +7,15 @@ import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
+import com.zzhy.yg_ai.domain.normalize.assemble.DailyFusionPlan;
+import com.zzhy.yg_ai.domain.normalize.assemble.NormalizeContext;
+import com.zzhy.yg_ai.domain.normalize.assemble.NormalizeNoteStructureResult;
+import com.zzhy.yg_ai.domain.normalize.assemble.NotePromptTask;
 import com.zzhy.yg_ai.domain.normalize.facts.DayFactsBuilder;
 import com.zzhy.yg_ai.domain.normalize.facts.FusionFactsBuilder;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptCatalog;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptDefinition;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -25,7 +30,7 @@ import org.springframework.util.StringUtils;
 
 @Component
 @RequiredArgsConstructor
-public class NormalizeInputAssembler {
+public class NormalizeContextBuilder {
 
     private static final String EMPTY_JSON = "{}";
     private static final DateTimeFormatter ILLNESS_TIME_FORMATTER = DateTimeUtils.DATE_TIME_FORMATTER;
@@ -37,10 +42,15 @@ public class NormalizeInputAssembler {
 
     public NormalizeContext buildContext(PatientRawDataEntity rawData) {
         if (rawData == null) {
-            return new NormalizeContext(null, "", objectMapper.createObjectNode());
+            return new NormalizeContext("", null, objectMapper.createObjectNode(), false);
         }
         String rawInputJson = resolveRawInputJson(rawData);
-        return new NormalizeContext(rawData, rawInputJson, parseToNode(rawInputJson));
+        return new NormalizeContext(
+                defaultIfBlank(rawData.getReqno(), ""),
+                rawData.getDataDate(),
+                parseToNode(rawInputJson),
+                StringUtils.hasText(rawInputJson)
+        );
     }
 
     public List<NotePromptTask> buildNoteTasks(NormalizeContext context) {
@@ -61,7 +71,7 @@ public class NormalizeInputAssembler {
                 continue;
             }
             String noteType = illnessCourse.getItemname();
-            String noteTime = resolveNoteTime(illnessCourse, context.rawData());
+            String noteTime = resolveNoteTime(illnessCourse, context.dataDate());
             NormalizePromptDefinition promptDefinition = promptCatalog.selectIllnessPrompt(noteType);
             Map<String, Object> currentIllness = new LinkedHashMap<>();
             currentIllness.put("itemname", noteType);
@@ -92,8 +102,9 @@ public class NormalizeInputAssembler {
         if (!fusionFactsBuilder.canGenerateDailyFusion(dayContext)) {
             return new DailyFusionPlan(false, "daily_fusion skipped", promptCatalog.dailyFusionPrompt(), "");
         }
-        PatientRawDataEntity rawData = context == null ? null : context.rawData();
-        Map<String, Object> fusionReadyFactsInput = fusionFactsBuilder.buildFusionReadyFacts(dayContext, rawData);
+        String reqno = context == null ? "" : context.reqno();
+        LocalDate dataDate = context == null ? null : context.dataDate();
+        Map<String, Object> fusionReadyFactsInput = fusionFactsBuilder.buildFusionReadyFacts(dayContext, reqno, dataDate);
         String inputJson = toJson(Map.of("fusion_ready_facts", objectMapper.valueToTree(fusionReadyFactsInput)));
         return new DailyFusionPlan(true, "", promptCatalog.dailyFusionPrompt(), inputJson);
     }
@@ -113,13 +124,13 @@ public class NormalizeInputAssembler {
         }
     }
 
-    private String resolveNoteTime(PatientCourseData.PatIllnessCourse illnessCourse, PatientRawDataEntity rawData) {
+    private String resolveNoteTime(PatientCourseData.PatIllnessCourse illnessCourse, LocalDate dataDate) {
         LocalDateTime dt = illnessCourse.getChangetime();
         if (dt == null) {
             dt = illnessCourse.getCreattime();
         }
-        if (dt == null && rawData != null && rawData.getDataDate() != null) {
-            dt = rawData.getDataDate().atTime(LocalTime.MIN);
+        if (dt == null && dataDate != null) {
+            dt = dataDate.atTime(LocalTime.MIN);
         }
         return dt == null ? "" : DateTimeUtils.truncateToMillis(dt).format(ILLNESS_TIME_FORMATTER);
     }

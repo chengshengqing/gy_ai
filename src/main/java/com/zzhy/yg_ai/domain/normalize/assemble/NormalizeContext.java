@@ -1,11 +1,12 @@
 package com.zzhy.yg_ai.domain.normalize.assemble;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
+import java.time.LocalDate;
 
 public record NormalizeContext(
-        PatientRawDataEntity rawData,
-        String rawInputJson,
-        JsonNode rawRoot
+        String reqno,
+        LocalDate dataDate,
+        JsonNode rawRoot,
+        boolean hasRawInput
 ) {
 }

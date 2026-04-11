@@ -18,6 +18,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class LoadProcessHandler extends AbstractTaskHandler<PatientRawDataCollectTaskEntity, LoadProcessResult> {
 
+    private static final String TASK_NAME = "患者原始数据采集任务";
+
     private final PatientService patientService;
     private final PatientRawDataCollectTaskService patientRawDataCollectTaskService;
     private final InfectionDailyJobLogService infectionDailyJobLogService;
@@ -42,7 +44,7 @@ public class LoadProcessHandler extends AbstractTaskHandler<PatientRawDataCollec
                     collectResult == null ? "采集结果为空" : collectResult.getMessage(),
                     collectResult == null ? null : collectResult.getChangeTypes());
         } catch (Exception e) {
-            log.error("患者原始数据采集失败，reqno={}", reqno, e);
+            log.error(buildFailureMessage(TASK_NAME, "reqno", reqno, "message", e.getMessage()), e);
             return new LoadProcessResult(taskEntity.getId(), reqno, false, e.getMessage(), null);
         }
     }
@@ -54,12 +56,21 @@ public class LoadProcessHandler extends AbstractTaskHandler<PatientRawDataCollec
         }
         if (result.success()) {
             patientRawDataCollectTaskService.markSuccess(result.taskId(), result.message(), result.changeTypes());
+            log.info("{}结束，{}", TASK_NAME, buildSummary(
+                    "taskId", result.taskId(),
+                    "reqno", result.reqno(),
+                    "changeTypes", result.changeTypes(),
+                    "message", result.message()
+            ));
             return;
         }
         patientRawDataCollectTaskService.markFailed(result.taskId(), result.message(), result.changeTypes());
+        String errorMessage = buildFailureMessage(TASK_NAME,
+                "reqno", result.reqno(),
+                "message", result.message());
         infectionDailyJobLogService.log(InfectionJobStage.LOAD,
                 InfectionJobStatus.ERROR,
                 result.reqno(),
-                result.message());
+                errorMessage);
     }
 }

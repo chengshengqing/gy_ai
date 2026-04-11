@@ -17,6 +17,7 @@ public interface PatientRawDataMapper extends BaseMapper<PatientRawDataEntity> {
 
     List<String> selectActiveReqnos(@Param("sinceTime") LocalDateTime sinceTime,
                                     @Param("recentAdmissionDays") int recentAdmissionDays,
+                                    @Param("offset") int offset,
                                     @Param("limit") int limit);
 
     List<String> selectChangedDataTypes(@Param("reqno") String reqno,

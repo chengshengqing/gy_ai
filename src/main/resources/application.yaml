@@ -55,7 +55,8 @@ infection:
     fixed-delay: ${YG_AI_WARNING_FIXED_DELAY:60000}
     case-fixed-delay: ${YG_AI_WARNING_CASE_FIXED_DELAY:60000}
   monitor:
-    fixed-delay: ${YG_AI_MONITOR_FIXED_DELAY:60000}
+    enqueue-fixed-delay: ${YG_AI_MONITOR_ENQUEUE_FIXED_DELAY:10800000}
+    collect-fixed-delay: ${YG_AI_MONITOR_ENQUEUE_FIXED_DELAY:60000}
     scan-limit: ${YG_AI_MONITOR_SCAN_LIMIT:200}
     max-attempts: ${YG_AI_MONITOR_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_MONITOR_RETRY_DELAY_SECONDS:300}

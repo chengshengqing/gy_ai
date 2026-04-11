@@ -86,9 +86,9 @@ LLM 默认背景：
 - `InfectionMonitorScheduler`
 - `StructDataFormatScheduler`
 - `InfectionPipelineFacade`
-- `NormalizeRowProcessor`
-- `NormalizeStructDataComposer`
-- `NormalizeInputAssembler`
+- `NormalizeHandler`
+- `NormalizeStructDataService`
+- `NormalizeContextBuilder`
 - `NormalizeResultAssembler`
 - `AiGateway`
 - `FormatContextComposer`
@@ -166,7 +166,7 @@ LLM 默认背景：
 
 尤其注意：
 
-- `NormalizeStructDataComposer` 输出会进入 `patient_raw_data.struct_data_json` 与 `patient_raw_data.event_json`
+- `NormalizeStructDataService` 输出会进入 `patient_raw_data.struct_data_json` 与 `patient_raw_data.event_json`
 - `SurveillanceAgent` 输出需要经过校验器验证
 - 后续院感预警节点输出必须先经过标准化和护栏校验，不能直接入主结果
 
@@ -231,6 +231,7 @@ LLM 默认背景：
 - 保持方法职责单一
 - 新增配置优先进入 `application.yaml` 或专用配置类
 - 新增规则优先考虑放入 YAML 规则文件
+- 使用 `apply_patch` 做文件迁移或重命名时，不要使用 `*** Move to:` 语法；统一采用“新增新文件 + 更新引用 + 删除旧文件”的方式，避免补丁解析失败
 
 ## 当前结构基线
 

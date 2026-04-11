@@ -3,7 +3,6 @@ package com.zzhy.yg_ai.domain.normalize.validation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzhy.yg_ai.ai.gateway.AiGateway;
-import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.normalize.assemble.DailyFusionPlan;
 import com.zzhy.yg_ai.domain.normalize.assemble.NotePromptTask;
 import com.zzhy.yg_ai.domain.normalize.assemble.NormalizeNoteStructureResult;
@@ -12,6 +11,7 @@ import com.zzhy.yg_ai.domain.normalize.prompt.NormalizeEnumFieldRule;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptCatalog;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptDefinition;
 import com.zzhy.yg_ai.pipeline.scheduler.policy.PipelineStage;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -47,7 +47,7 @@ public class NormalizeResultAssembler {
     }
 
     public DailyIllnessExtractionResult assembleFinalResult(AiGateway aiGateway,
-                                                            PatientRawDataEntity rawData,
+                                                            LocalDate dataDate,
                                                             Map<String, Object> dayContext,
                                                             NormalizeNoteStructureResult noteResult,
                                                             DailyFusionPlan fusionPlan) {
@@ -64,7 +64,7 @@ public class NormalizeResultAssembler {
         ));
         return new DailyIllnessExtractionResult(
                 toJson(structData),
-                buildDailySummaryJson(rawData, dailyFusionResult.outputNode())
+                buildDailySummaryJson(dataDate, dailyFusionResult.outputNode())
         );
     }
 
@@ -256,7 +256,7 @@ public class NormalizeResultAssembler {
         );
     }
 
-    private String buildDailySummaryJson(PatientRawDataEntity rawData, JsonNode validatedDailyFusionNode) {
+    private String buildDailySummaryJson(LocalDate dataDate, JsonNode validatedDailyFusionNode) {
         if (validatedDailyFusionNode == null
                 || !validatedDailyFusionNode.isObject()
                 || validatedDailyFusionNode.size() == 0) {
@@ -264,7 +264,7 @@ public class NormalizeResultAssembler {
         }
         Map<String, Object> timelineEntry = new LinkedHashMap<>();
         validatedDailyFusionNode.fields().forEachRemaining(entry -> timelineEntry.put(entry.getKey(), entry.getValue()));
-        timelineEntry.put("time", rawData == null || rawData.getDataDate() == null ? "" : rawData.getDataDate().toString());
+        timelineEntry.put("time", dataDate == null ? "" : dataDate.toString());
         timelineEntry.put("record_type", "daily_fusion");
         timelineEntry.put("day_summary", validatedDailyFusionNode.path("day_summary").asText(""));
         return toJson(timelineEntry);

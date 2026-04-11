@@ -1,6 +1,8 @@
 package com.zzhy.yg_ai.domain.enums;
 
 import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public enum InfectionBodySite {
     URINARY("urinary", "泌尿道"),
@@ -53,5 +55,9 @@ public enum InfectionBodySite {
                 .filter(item -> item.code.equalsIgnoreCase(code))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unsupported InfectionBodySite code: " + code));
+    }
+
+    public static Set<String> allCodes() {
+        return Arrays.stream(values()).map(InfectionBodySite::code).collect(Collectors.toUnmodifiableSet());
     }
 }

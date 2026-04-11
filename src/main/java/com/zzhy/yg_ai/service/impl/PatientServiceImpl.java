@@ -1,7 +1,6 @@
 package com.zzhy.yg_ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -11,18 +10,15 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.ai.agent.AgentUtils;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.common.FilterTextUtils;
-import com.zzhy.yg_ai.config.InfectionMonitorProperties;
 import com.zzhy.yg_ai.domain.dto.PatientRawDataTimelineGroup;
 import com.zzhy.yg_ai.domain.entity.PatientCourseData;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataChangeTaskEntity;
 import com.zzhy.yg_ai.domain.entity.PatientRawDataEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionEventTriggerReasonCode;
 import com.zzhy.yg_ai.domain.enums.PatientCourseDataType;
-import com.zzhy.yg_ai.domain.enums.InfectionJobStage;
 import com.zzhy.yg_ai.domain.enums.IllnessRecordType;
 import com.zzhy.yg_ai.domain.model.RawDataCollectResult;
 import com.zzhy.yg_ai.mapper.PatientRawDataMapper;
-import com.zzhy.yg_ai.service.InfectionDailyJobLogService;
 import com.zzhy.yg_ai.service.InfectionEventTaskService;
 import com.zzhy.yg_ai.service.PatientRawDataChangeTaskService;
 import com.zzhy.yg_ai.service.PatientService;
@@ -54,35 +50,21 @@ public class PatientServiceImpl implements PatientService {
     private final PatientRawDataMapper patientRawDataMapper;
     private final ObjectMapper objectMapper;
     private final FilterTextUtils filterTextUtils;
-    private final InfectionMonitorProperties infectionMonitorProperties;
-    private final InfectionDailyJobLogService infectionDailyJobLogService;
     private final InfectionEventTaskService infectionEventTaskService;
     private final PatientRawDataChangeTaskService patientRawDataChangeTaskService;
     private final SummaryContextCacheService summaryContextCacheService;
 
     @Override
-    public List<String> listActiveReqnos() {
-        List<String> debugReqnos = normalizeReqnos(infectionMonitorProperties.getDebugReqnos());
-        if (infectionMonitorProperties.isDebugMode()) {
-            if (debugReqnos.isEmpty()) {
-                log.warn("院感扫描当前处于调试模式，但未配置 debugReqnos，跳过本轮扫描");
-                return Collections.emptyList();
-            }
-            log.info("院感扫描使用调试名单，patients={}", debugReqnos.size());
-            return debugReqnos;
-        }
-
-        int recentAdmissionDays = infectionMonitorProperties.getRecentAdmissionDays() <= 0
-                ? 30 : infectionMonitorProperties.getRecentAdmissionDays();
-        int scanLimit = infectionMonitorProperties.getScanLimit() <= 0
-                ? 200 : infectionMonitorProperties.getScanLimit();
-        LocalDateTime latestLoadSuccessTime = infectionDailyJobLogService.getLatestSuccessTime(InfectionJobStage.LOAD);
-        List<String> activeReqnos = patientRawDataMapper.selectActiveReqnos(latestLoadSuccessTime, recentAdmissionDays, scanLimit);
-
-        if (!debugReqnos.isEmpty()) {
-            log.info("已配置 debugReqnos，但 debugMode=false，当前仍按正式扫描策略执行");
-        }
-        return normalizeReqnos(activeReqnos);
+    public List<String> listActiveReqnos(LocalDateTime sinceTime,
+                                         int recentAdmissionDays,
+                                         int offset,
+                                         int limit) {
+        int safeRecentAdmissionDays = recentAdmissionDays <= 0 ? 30 : recentAdmissionDays;
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = limit <= 0 ? 200 : limit;
+        return normalizeReqnos(
+                patientRawDataMapper.selectActiveReqnos(sinceTime, safeRecentAdmissionDays, safeOffset, safeLimit)
+        );
     }
 
     @Override
@@ -1012,22 +994,6 @@ public class PatientServiceImpl implements PatientService {
             }
         }
         return parts.isEmpty() ? null : String.join("|", parts);
-    }
-
-    @Override
-    public void resetDerivedDataForRawData(Long rawDataId) {
-        if (rawDataId == null) {
-            return;
-        }
-        PatientRawDataEntity existing = patientRawDataMapper.selectById(rawDataId);
-        UpdateWrapper<PatientRawDataEntity> rawDataUpdateWrapper = new UpdateWrapper<>();
-        rawDataUpdateWrapper.eq("id", rawDataId)
-                .set("struct_data_json", null)
-                .set("event_json", null);
-        patientRawDataMapper.update(null, rawDataUpdateWrapper);
-        if (existing != null && StringUtils.hasText(existing.getReqno()) && existing.getDataDate() != null) {
-            summaryContextCacheService.refreshEventExtractorContextDay(existing.getReqno(), existing.getDataDate(), null);
-        }
     }
 
     private String firstNonBlank(String... values) {
