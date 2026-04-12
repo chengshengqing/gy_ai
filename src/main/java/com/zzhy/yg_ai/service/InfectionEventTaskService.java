@@ -30,6 +30,11 @@ public interface InfectionEventTaskService extends IService<InfectionEventTaskEn
 
     void markSuccess(List<Long> taskIds, String message);
 
+    boolean markSuccessOrRequeueIfEventVersionAdvanced(List<Long> taskIds,
+                                                       Long processedEventPoolVersion,
+                                                       String successMessage,
+                                                       String requeueMessage);
+
     void markSkipped(List<Long> taskIds, String message);
 
     void markFailed(List<Long> taskIds, String errorMessage);

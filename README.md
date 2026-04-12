@@ -136,6 +136,7 @@ src/main/resources
 - `NormalizeHandler` 统一负责任务编排、单行处理、状态收尾
 - `NormalizeStructDataService` 只负责串联 normalize 三层调用
 - `NormalizeContextBuilder` 负责 normalize 输入准备、day context 构造、fusion 输入组装
+- `DailyFusionInputCompactor` 负责 daily fusion 输入长度预算；未超过阈值时不裁剪，超过阈值时才做分级压缩
 - `NormalizeResultAssembler` 负责 note / daily fusion 的模型结果校验、重试与最终 JSON 组装
 - `FormatAgent` 已收薄为兼容入口，格式化编排下沉到 `domain.format.*`
 

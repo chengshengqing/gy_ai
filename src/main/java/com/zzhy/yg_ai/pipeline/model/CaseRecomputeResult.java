@@ -10,6 +10,18 @@ public record CaseRecomputeResult(
         boolean skipped,
         boolean rescheduled,
         String lastErrorMessage,
-        String message
+        String message,
+        Long processedEventPoolVersion
 ) {
+
+    public CaseRecomputeResult(List<Long> taskIds,
+                               String reqno,
+                               int successCount,
+                               int failedCount,
+                               boolean skipped,
+                               boolean rescheduled,
+                               String lastErrorMessage,
+                               String message) {
+        this(taskIds, reqno, successCount, failedCount, skipped, rescheduled, lastErrorMessage, message, null);
+    }
 }

@@ -114,6 +114,7 @@
 - `NormalizeHandler` 统一负责任务组编排、单行 reset / 回写 / 错误包装、任务状态收尾
 - `NormalizeStructDataService` 只负责串联 normalize 三层调用
 - `NormalizeContextBuilder` 负责输入 JSON 选择、note prompt 输入、day context 和 fusion 输入准备
+- `DailyFusionInputCompactor` 负责 daily fusion 输入长度预算；默认保留完整输入，仅当超过阈值时压缩重复来源、医嘱冗余和低优先级候选
 - `NormalizeResultAssembler` 负责 note / daily fusion 的模型调用后校验、重试与 `struct_data_json` / `event_json` 组装
 
 ### 1.4 Format 业务主链路

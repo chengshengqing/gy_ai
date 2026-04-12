@@ -233,6 +233,15 @@ Prompt 中不再保留：
 
 并明确要求模型只输出 canonical 值。
 
+当前为降低少量模型字段漂移导致的事件抽取任务重试，`EventNormalizer` 过渡期采用“硬校验 + 软修正 + 软丢弃”策略：
+
+- 硬校验仍覆盖结构、枚举、source_text 溯源、source_section 边界和 subtype/type 匹配。
+- 软修正仅覆盖 `clinical_meaning` 被误写为 `risk_only/support/against/uncertain` 等少量可由 `evidence_role`、`event_subtype`、`uncertainty_flag` 约束的场景。
+- 预防性管理语句被误抽成 `against` / `infection_negative_statement` 时作为软丢弃事件跳过；如果整批只有这类事件，返回空列表而非任务级失败。
+- 修正记录写入 `attributes_json.normalizer_fallbacks`，用于后续统计和清理。
+
+该策略不是新的 alias 协议，也不表示 `risk_only` 可作为 `clinical_meaning`。后续应通过 prompt 约束、校验反馈重试或 schema 化输出消除字段漂移，稳定后收敛或删除这批软修正逻辑。
+
 ## 7. 协议定义统一方案
 
 建议新增统一定义层，例如：

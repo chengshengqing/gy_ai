@@ -2,6 +2,7 @@ package com.zzhy.yg_ai.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.enums.EvidenceBlockType;
@@ -51,10 +52,18 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
     private static final String JSON_NULL_LITERAL = "null";
     private static final BigDecimal LOW_CONFIDENCE_THRESHOLD = new BigDecimal("0.60");
     private static final String SUBTYPE_CULTURE_ORDERED = InfectionEventSubtype.CULTURE_ORDERED.code();
+    private static final String SUBTYPE_DEVICE_EXPOSURE = InfectionEventSubtype.DEVICE_EXPOSURE.code();
+    private static final String SUBTYPE_PROCEDURE_EXPOSURE = InfectionEventSubtype.PROCEDURE_EXPOSURE.code();
     private static final String SUBTYPE_CONTAMINATION_TOKEN = "contamination";
     private static final String SUBTYPE_COLONIZATION_TOKEN = "colonization";
     private static final String[] OPERATION_SUPPORT_HINT_KEYWORDS = {"感染", "脓", "发热", "炎"};
     private static final String[] COMPLETED_CULTURE_RESULT_KEYWORDS = {"阳性", "阴性", "异常", "正常"};
+    private static final String[] INFECTION_NEGATIVE_JUDGMENT_KEYWORDS = {
+            "不支持感染", "排除感染", "未见感染", "无感染证据", "无明确感染", "未提示感染", "不考虑感染"
+    };
+    private static final String[] PREVENTIVE_MANAGEMENT_KEYWORDS = {
+            "预防感染", "注意预防感染", "预防肺部感染", "预防患者误吸", "预防误吸", "防止感染", "预防压疮", "预防深静脉血栓"
+    };
     private static final int REJECTION_SAMPLE_LIMIT = 3;
     private static final int REJECTION_SAMPLE_PREVIEW_LENGTH = 240;
 
@@ -128,6 +137,14 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                     rejectionSamples);
         }
         if (result.isEmpty()) {
+            if (hasOnlySoftDroppableRejections(rejectionCounts)) {
+                log.warn("EventNormalizer dropped all extracted events as soft-droppable, blockKey={}, reqno={}, rawDataId={}, reasons={}",
+                        block.blockKey(),
+                        block.reqno(),
+                        block.rawDataId(),
+                        formatRejectionCounts(rejectionCounts));
+                return List.of();
+            }
             throw new IllegalStateException("EventNormalizer rejected all extracted events, reasons=%s, samples=%s"
                     .formatted(formatRejectionCounts(rejectionCounts), rejectionSamples));
         }
@@ -154,9 +171,32 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!StringUtils.hasText(bodySite)) {
             return reject(RejectionReason.INVALID_BODY_SITE);
         }
-        String clinicalMeaning = normalizeClinicalMeaning(source.path("clinical_meaning").asText(""));
+        String evidenceRole = normalizeEvidenceRole(source.path("evidence_role").asText(""));
+        if (!StringUtils.hasText(evidenceRole)) {
+            return reject(RejectionReason.INVALID_EVIDENCE_ROLE);
+        }
+
+        Boolean infectionRelated = parseBoolean(source.get("infection_related"));
+        Boolean negationFlag = parseBoolean(source.get("negation_flag"));
+        Boolean uncertaintyFlag = parseBoolean(source.get("uncertainty_flag"));
+        if (infectionRelated == null || negationFlag == null || uncertaintyFlag == null) {
+            return reject(RejectionReason.INVALID_BOOLEAN_FLAGS);
+        }
+
+        List<NormalizerFallback> fallbacks = new ArrayList<>();
+        String rawClinicalMeaning = source.path("clinical_meaning").asText("");
+        String clinicalMeaning = normalizeClinicalMeaning(rawClinicalMeaning);
         if (!StringUtils.hasText(clinicalMeaning)) {
-            return reject(RejectionReason.INVALID_CLINICAL_MEANING);
+            FieldRepair clinicalMeaningRepair = normalizeClinicalMeaningLenient(
+                    rawClinicalMeaning,
+                    evidenceRole,
+                    eventSubtype,
+                    uncertaintyFlag);
+            if (clinicalMeaningRepair == null) {
+                return reject(RejectionReason.INVALID_CLINICAL_MEANING);
+            }
+            clinicalMeaning = clinicalMeaningRepair.value();
+            fallbacks.add(clinicalMeaningRepair.fallback());
         }
         JsonNode sourceSectionNode = source.get("source_section");
         String sourceSection = normalizeSourceSection(sourceSectionNode);
@@ -171,20 +211,6 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                 normalizeEvidenceTier(source.path("evidence_tier").asText("")));
         if (!StringUtils.hasText(evidenceTier)) {
             return reject(RejectionReason.INVALID_EVIDENCE_TIER);
-        }
-        String evidenceRole = normalizeEvidenceRole(source.path("evidence_role").asText(""));
-        if (!StringUtils.hasText(evidenceRole)) {
-            return reject(RejectionReason.INVALID_EVIDENCE_ROLE);
-        }
-
-        Boolean infectionRelated = parseBoolean(source.get("infection_related"));
-        Boolean negationFlag = parseBoolean(source.get("negation_flag"));
-        Boolean uncertaintyFlag = parseBoolean(source.get("uncertainty_flag"));
-        if (infectionRelated == null || negationFlag == null || uncertaintyFlag == null) {
-            return reject(RejectionReason.INVALID_BOOLEAN_FLAGS);
-        }
-        if (InfectionEvidenceRole.BACKGROUND.code().equals(evidenceRole) && Boolean.TRUE.equals(infectionRelated)) {
-            return reject(RejectionReason.BACKGROUND_INFECTION_RELATED_CONFLICT);
         }
 
         String eventName = normalizeRequiredText(source.path("event_name").asText(""));
@@ -205,9 +231,23 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         if (!validateCompletedResultRule(source, eventSubtype, sourceSection)) {
             return reject(RejectionReason.COMPLETED_RESULT_RULE_VIOLATION);
         }
-        if (!validateClinicalConsistency(infectionRelated, negationFlag, uncertaintyFlag, evidenceRole, clinicalMeaning, eventSubtype)) {
-            return reject(RejectionReason.CLINICAL_CONSISTENCY_VIOLATION);
+        ClinicalConsistencyDecision clinicalDecision = normalizeClinicalConsistencyLenient(
+                evidenceRole,
+                clinicalMeaning,
+                infectionRelated,
+                negationFlag,
+                uncertaintyFlag,
+                eventSubtype,
+                sourceText,
+                fallbacks);
+        if (!clinicalDecision.accepted()) {
+            return reject(clinicalDecision.rejectionReason());
         }
+        evidenceRole = clinicalDecision.evidenceRole();
+        clinicalMeaning = clinicalDecision.clinicalMeaning();
+        infectionRelated = clinicalDecision.infectionRelated();
+        negationFlag = clinicalDecision.negationFlag();
+        uncertaintyFlag = clinicalDecision.uncertaintyFlag();
 
         LocalDateTime eventTime = normalizeEventTime(source.path("event_time").asText(""));
         String polarity = inferPolarity(evidenceRole, negationFlag, uncertaintyFlag, clinicalMeaning);
@@ -247,7 +287,8 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                 abnormalFlag,
                 infectionRelated,
                 negationFlag,
-                uncertaintyFlag));
+                uncertaintyFlag,
+                fallbacks));
         event.setEventKey(buildEventKey(event, sourceSection));
         return accept(event);
     }
@@ -327,6 +368,86 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    private FieldRepair normalizeClinicalMeaningLenient(String rawMeaning,
+                                                        String evidenceRole,
+                                                        String eventSubtype,
+                                                        boolean uncertaintyFlag) {
+        String rawCode = normalizeCode(rawMeaning);
+        if (!StringUtils.hasText(rawCode)) {
+            return null;
+        }
+        if (InfectionEvidenceRole.RISK_ONLY.code().equals(rawCode)
+                && InfectionEvidenceRole.RISK_ONLY.code().equals(evidenceRole)
+                && isExposureSubtype(eventSubtype)) {
+            return repairField("clinical_meaning", rawMeaning, InfectionClinicalMeaning.BASELINE_PROBLEM.code(),
+                    "risk_only_exposure_fallback");
+        }
+        if ("support".equals(rawCode) && InfectionEvidenceRole.SUPPORT.code().equals(evidenceRole)) {
+            return repairField("clinical_meaning", rawMeaning, InfectionClinicalMeaning.INFECTION_SUPPORT.code(),
+                    "support_alias_by_evidence_role");
+        }
+        if ("against".equals(rawCode) && InfectionEvidenceRole.AGAINST.code().equals(evidenceRole)) {
+            return repairField("clinical_meaning", rawMeaning, InfectionClinicalMeaning.INFECTION_AGAINST.code(),
+                    "against_alias_by_evidence_role");
+        }
+        if ("uncertain".equals(rawCode) && uncertaintyFlag) {
+            return repairField("clinical_meaning", rawMeaning, InfectionClinicalMeaning.INFECTION_UNCERTAIN.code(),
+                    "uncertain_alias_by_uncertainty_flag");
+        }
+        return null;
+    }
+
+    private ClinicalConsistencyDecision normalizeClinicalConsistencyLenient(String evidenceRole,
+                                                                           String clinicalMeaning,
+                                                                           boolean infectionRelated,
+                                                                           boolean negationFlag,
+                                                                           boolean uncertaintyFlag,
+                                                                           String eventSubtype,
+                                                                           String sourceText,
+                                                                           List<NormalizerFallback> fallbacks) {
+        if (InfectionEvidenceRole.BACKGROUND.code().equals(evidenceRole) && infectionRelated) {
+            fallbacks.add(new NormalizerFallback("infection_related", Boolean.TRUE.toString(), Boolean.FALSE.toString(),
+                    "background_infection_related_conflict"));
+            infectionRelated = false;
+        }
+
+        if (InfectionEvidenceRole.AGAINST.code().equals(evidenceRole) && !negationFlag
+                && !InfectionClinicalMeaning.INFECTION_AGAINST.code().equals(clinicalMeaning)
+                && !isContaminationOrColonizationSubtype(eventSubtype)) {
+            if (containsAny(sourceText, INFECTION_NEGATIVE_JUDGMENT_KEYWORDS)) {
+                fallbacks.add(new NormalizerFallback("clinical_meaning", clinicalMeaning,
+                        InfectionClinicalMeaning.INFECTION_AGAINST.code(), "against_role_negative_text_fallback"));
+                clinicalMeaning = InfectionClinicalMeaning.INFECTION_AGAINST.code();
+            } else if (containsAny(sourceText, PREVENTIVE_MANAGEMENT_KEYWORDS)) {
+                return ClinicalConsistencyDecision.rejected(RejectionReason.PREVENTIVE_MANAGEMENT_SOFT_DROPPED);
+            } else {
+                fallbacks.add(new NormalizerFallback("evidence_role", evidenceRole,
+                        InfectionEvidenceRole.BACKGROUND.code(), "against_role_untraceable_semantics_downgrade"));
+                fallbacks.add(new NormalizerFallback("clinical_meaning", clinicalMeaning,
+                        InfectionClinicalMeaning.BASELINE_PROBLEM.code(), "against_role_untraceable_semantics_downgrade"));
+                if (infectionRelated) {
+                    fallbacks.add(new NormalizerFallback("infection_related", Boolean.TRUE.toString(), Boolean.FALSE.toString(),
+                            "against_role_untraceable_semantics_downgrade"));
+                }
+                evidenceRole = InfectionEvidenceRole.BACKGROUND.code();
+                clinicalMeaning = InfectionClinicalMeaning.BASELINE_PROBLEM.code();
+                infectionRelated = false;
+            }
+        }
+
+        if (InfectionEvidenceRole.RISK_ONLY.code().equals(evidenceRole) && uncertaintyFlag
+                && InfectionClinicalMeaning.INFECTION_SUPPORT.code().equals(clinicalMeaning)) {
+            fallbacks.add(new NormalizerFallback("clinical_meaning", clinicalMeaning,
+                    InfectionClinicalMeaning.BASELINE_PROBLEM.code(), "risk_only_uncertain_support_downgrade"));
+            fallbacks.add(new NormalizerFallback("uncertainty_flag", Boolean.TRUE.toString(), Boolean.FALSE.toString(),
+                    "risk_only_uncertain_support_downgrade"));
+            clinicalMeaning = InfectionClinicalMeaning.BASELINE_PROBLEM.code();
+            uncertaintyFlag = false;
+        }
+
+        return new ClinicalConsistencyDecision(evidenceRole, clinicalMeaning, infectionRelated, negationFlag, uncertaintyFlag, null);
     }
 
     private String normalizeEvidenceTier(String rawTier) {
@@ -477,24 +598,6 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         }
     }
 
-    private boolean validateClinicalConsistency(Boolean infectionRelated,
-                                                Boolean negationFlag,
-                                                Boolean uncertaintyFlag,
-                                                String evidenceRole,
-                                                String clinicalMeaning,
-                                                String eventSubtype) {
-        if (InfectionEvidenceRole.AGAINST.code().equals(evidenceRole) && Boolean.FALSE.equals(negationFlag)
-                && !InfectionClinicalMeaning.INFECTION_AGAINST.code().equals(clinicalMeaning)
-                && !isContaminationOrColonizationSubtype(eventSubtype)) {
-            return false;
-        }
-        if (InfectionEvidenceRole.RISK_ONLY.code().equals(evidenceRole) && Boolean.TRUE.equals(uncertaintyFlag)
-                && InfectionClinicalMeaning.INFECTION_SUPPORT.code().equals(clinicalMeaning)) {
-            return false;
-        }
-        return true;
-    }
-
     private boolean validateCompletedResultRule(ObjectNode source, String eventSubtype, String sourceSection) {
         if (!SUBTYPE_CULTURE_ORDERED.equals(eventSubtype)) {
             return true;
@@ -601,6 +704,18 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                 || normalizedSubtype.contains(SUBTYPE_COLONIZATION_TOKEN);
     }
 
+    private boolean isExposureSubtype(String eventSubtype) {
+        return SUBTYPE_DEVICE_EXPOSURE.equals(eventSubtype) || SUBTYPE_PROCEDURE_EXPOSURE.equals(eventSubtype);
+    }
+
+    private FieldRepair repairField(String fieldName, String rawValue, String normalizedValue, String reason) {
+        return new FieldRepair(normalizedValue, new NormalizerFallback(fieldName, defaultIfBlank(rawValue, ""), normalizedValue, reason));
+    }
+
+    private String normalizeCode(String value) {
+        return StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : "";
+    }
+
     private String buildEvidenceJson(EvidenceBlock block,
                                      ObjectNode source,
                                      String sourceSection,
@@ -627,7 +742,8 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                                        String abnormalFlag,
                                        boolean infectionRelated,
                                        boolean negationFlag,
-                                       boolean uncertaintyFlag) {
+                                       boolean uncertaintyFlag,
+                                       List<NormalizerFallback> fallbacks) {
         ObjectNode attributes = objectMapper.createObjectNode();
         copyIfPresent(source, attributes, "event_value");
         copyIfPresent(source, attributes, "event_unit");
@@ -642,6 +758,16 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         attributes.put("evidence_role", evidenceRole);
         if (StringUtils.hasText(sourceSection)) {
             attributes.put("source_section", sourceSection);
+        }
+        if (fallbacks != null && !fallbacks.isEmpty()) {
+            ArrayNode fallbackNodes = attributes.putArray("normalizer_fallbacks");
+            for (NormalizerFallback fallback : fallbacks) {
+                ObjectNode fallbackNode = fallbackNodes.addObject();
+                fallbackNode.put("field", fallback.field());
+                fallbackNode.put("from", fallback.from());
+                fallbackNode.put("to", fallback.to());
+                fallbackNode.put("reason", fallback.reason());
+            }
         }
         return writeJson(attributes);
     }
@@ -707,6 +833,16 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
                 .orElse("none");
     }
 
+    private boolean hasOnlySoftDroppableRejections(Map<RejectionReason, Integer> rejectionCounts) {
+        return rejectionCounts != null
+                && !rejectionCounts.isEmpty()
+                && rejectionCounts.keySet().stream().allMatch(this::isSoftDroppableRejection);
+    }
+
+    private boolean isSoftDroppableRejection(RejectionReason reason) {
+        return RejectionReason.PREVENTIVE_MANAGEMENT_SOFT_DROPPED.equals(reason);
+    }
+
     private String abbreviate(String rawValue, int maxLength) {
         if (!StringUtils.hasText(rawValue) || maxLength <= 0 || rawValue.length() <= maxLength) {
             return defaultIfBlank(rawValue, "");
@@ -768,6 +904,37 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         }
     }
 
+    private record FieldRepair(
+            String value,
+            NormalizerFallback fallback
+    ) {
+    }
+
+    private record NormalizerFallback(
+            String field,
+            String from,
+            String to,
+            String reason
+    ) {
+    }
+
+    private record ClinicalConsistencyDecision(
+            String evidenceRole,
+            String clinicalMeaning,
+            boolean infectionRelated,
+            boolean negationFlag,
+            boolean uncertaintyFlag,
+            RejectionReason rejectionReason
+    ) {
+        private boolean accepted() {
+            return rejectionReason == null;
+        }
+
+        private static ClinicalConsistencyDecision rejected(RejectionReason rejectionReason) {
+            return new ClinicalConsistencyDecision(null, null, false, false, false, rejectionReason);
+        }
+    }
+
     private enum RejectionReason {
         EVENT_NODE_NOT_OBJECT,
         INVALID_EVENT_TYPE,
@@ -779,12 +946,11 @@ public class EventNormalizerServiceImpl implements EventNormalizerService {
         INVALID_EVIDENCE_TIER,
         INVALID_EVIDENCE_ROLE,
         INVALID_BOOLEAN_FLAGS,
-        BACKGROUND_INFECTION_RELATED_CONFLICT,
         MISSING_EVENT_NAME_OR_SOURCE_TEXT,
         SOURCE_TEXT_NOT_TRACEABLE,
         STRUCTURED_SECTION_RULE_VIOLATION,
         SUBTYPE_EVENT_TYPE_MISMATCH,
         COMPLETED_RESULT_RULE_VIOLATION,
-        CLINICAL_CONSISTENCY_VIOLATION
+        PREVENTIVE_MANAGEMENT_SOFT_DROPPED
     }
 }

@@ -1192,7 +1192,7 @@ LLM 输出不能直接入库，必须经过标准化。
 | `infection_related` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `negation_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
 | `uncertainty_flag` | 是 | `bool` | 布尔化 | 非法拒绝该事件 |
-| `clinical_meaning` | 是 | `infection_support / infection_against / infection_uncertain / screening / baseline_problem` | 小写化、少量别名修正 | 非法拒绝该事件 |
+| `clinical_meaning` | 是 | `infection_support / infection_against / infection_uncertain / screening / baseline_problem` | 小写化；过渡期仅允许少量软修正，修正记录写入 `normalizer_fallbacks` | 非法且不可修正时拒绝该事件 |
 | `source_section` | STRUCTURED_FACT 必填 | 固定 8 值；其它 block 仅允许 `null` | 小写化 | 非法拒绝该事件 |
 | `source_text` | 是 | 非空且必须来自对应 section 或 block payload | trim + 溯源校验 | 命中失败拒绝该事件 |
 | `evidence_tier` | 是 | `hard` / `moderate` / `weak` | 小写化 | 非法拒绝该事件 |
@@ -1217,12 +1217,38 @@ LLM 输出不能直接入库，必须经过标准化。
 | `R13` | `event_subtype=procedure_exposure` 时 `event_type` 必须是 `procedure` | 否则拒绝该事件 |
 | `R14` | `event_subtype=lab_abnormal` 时 `event_type` 必须是 `lab_result` 或 `lab_panel` | 否则拒绝该事件 |
 | `R15` | `event_subtype=culture_positive` 时 `event_type` 必须是 `microbiology` | 否则拒绝该事件 |
-| `R16` | `evidence_role=background` 时 `infection_related` 必须为 `false` | 否则拒绝该事件 |
+| `R16` | `evidence_role=background` 时 `infection_related` 必须为 `false` | 过渡期修正为 `false` 并记录 fallback |
 | `R17` | `source_section=vital_signs` 时 `evidence_tier` 不允许 `hard` | 否则拒绝该事件 |
 | `R18` | `source_section=diagnosis` 时 `evidence_tier` 不允许 `hard` | 否则拒绝该事件 |
 | `R19` | `source_section=transfer` 时 `evidence_role` 不允许 `support` | 否则拒绝该事件 |
 | `R20` | `source_section=operation` 且 `evidence_role=support` 时，需有明确感染相关 `source_text` | 否则拒绝该事件 |
 | `R21` | 完全重复事件键出现多次 | 去重保留一条 |
+| `R22` | `clinical_meaning` 被误写为 `risk_only/support/against/uncertain` 等方向词时 | 仅在 evidence_role、subtype、uncertainty_flag 可约束的少量场景下修正；否则拒绝 |
+| `R23` | `evidence_role=against` 但文本只是“预防感染/预防肺部感染/预防误吸”等管理语句 | 作为软丢弃事件跳过；若整批仅此类软丢弃事件，返回空列表而非任务失败 |
+| `R24` | `evidence_role=against` 与 `clinical_meaning` 不一致，但 source_text 有明确“不支持感染/排除感染/无感染证据”等反证语义 | 修正 `clinical_meaning=infection_against` 并记录 fallback |
+
+## 9.4 EventNormalizer 过渡期弱化策略
+
+当前 `EventNormalizer` 采用“硬校验 + 软修正 + 软丢弃”的过渡策略，目标是降低少量模型字段漂移导致的任务重试卡死。
+
+硬校验仍然保留：
+
+- JSON 根结构、`status`、`confidence`、`events`
+- `event_type`、`event_subtype`、`body_site`、`evidence_tier`、`evidence_role` 基础枚举
+- `source_text` 非空与溯源命中
+- `source_section` 在 `STRUCTURED_FACT / CLINICAL_TEXT` 下的边界规则
+- `event_subtype -> event_type` 匹配规则
+
+软修正只覆盖语义字段漂移：
+
+- `clinical_meaning=risk_only` 且 `evidence_role=risk_only`、`event_subtype=device_exposure/procedure_exposure` 时，修正为 `baseline_problem`
+- `clinical_meaning=support/against/uncertain` 在 evidence_role 或 uncertainty_flag 能约束时，修正为 canonical 值
+- `evidence_role=background` 但 `infection_related=true` 时，修正 `infection_related=false`
+- `evidence_role=against` 但 `clinical_meaning` 不一致时，若 source_text 有明确反证语义，修正为 `infection_against`
+
+软丢弃只覆盖“预防感染/预防肺部感染/预防误吸”等预防性管理语句被误抽成 `infection_negative_statement` 或 `against` 的场景。若整个响应只有这类软丢弃事件，`normalize` 返回空列表，不触发任务级失败。
+
+所有软修正会写入 `attributes_json.normalizer_fallbacks`。该策略不是新增 alias 协议，也不表示 `risk_only` 可作为 `clinical_meaning` 标准值。后续应通过 prompt、schema 化输出与校验反馈重试减少 fallback 命中，稳定后收敛或删除软修正逻辑。
 
 ## 10. 事件池设计
 

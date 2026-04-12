@@ -12,15 +12,15 @@
         from (
             select
                 'LOAD_PROCESS' as stage,
-                sum(case when status in ('PENDING', 'FAILED')
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as ready_pending,
-                sum(case when status in ('PENDING', 'FAILED')
+                         then 1 else 0 end), 0) as ready_pending,
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ > ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as delayed_pending,
-                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                         then 1 else 0 end), 0) as delayed_pending,
+                coalesce(sum(case when status = 'RUNNING' then 1 else 0 end), 0) as running,
                 min(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
@@ -31,15 +31,15 @@
 
             select
                 'NORMALIZE' as stage,
-                sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
+                coalesce(sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as ready_pending,
-                sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
+                         then 1 else 0 end), 0) as ready_pending,
+                coalesce(sum(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
                               and available_at <![CDATA[ > ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as delayed_pending,
-                sum(case when status = 'STRUCT_RUNNING' then 1 else 0 end) as running,
+                         then 1 else 0 end), 0) as delayed_pending,
+                coalesce(sum(case when status = 'STRUCT_RUNNING' then 1 else 0 end), 0) as running,
                 min(case when status in ('STRUCT_PENDING', 'STRUCT_FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
@@ -50,15 +50,15 @@
 
             select
                 'EVENT_EXTRACT' as stage,
-                sum(case when status in ('PENDING', 'FAILED')
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as ready_pending,
-                sum(case when status in ('PENDING', 'FAILED')
+                         then 1 else 0 end), 0) as ready_pending,
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ > ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as delayed_pending,
-                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                         then 1 else 0 end), 0) as delayed_pending,
+                coalesce(sum(case when status = 'RUNNING' then 1 else 0 end), 0) as running,
                 min(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
@@ -70,15 +70,15 @@
 
             select
                 'CASE_RECOMPUTE' as stage,
-                sum(case when status in ('PENDING', 'FAILED')
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as ready_pending,
-                sum(case when status in ('PENDING', 'FAILED')
+                         then 1 else 0 end), 0) as ready_pending,
+                coalesce(sum(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ > ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts
-                         then 1 else 0 end) as delayed_pending,
-                sum(case when status = 'RUNNING' then 1 else 0 end) as running,
+                         then 1 else 0 end), 0) as delayed_pending,
+                coalesce(sum(case when status = 'RUNNING' then 1 else 0 end), 0) as running,
                 min(case when status in ('PENDING', 'FAILED')
                               and available_at <![CDATA[ <= ]]> #{now}
                               and attempt_count <![CDATA[ < ]]> max_attempts

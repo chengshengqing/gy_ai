@@ -17,6 +17,7 @@ public class WarningPromptCatalog {
     public static final String EVENT_EXTRACTOR_PROMPT_VERSION = "infection-event-extractor-v4";
     public static final String STRUCTURED_FACT_REFINEMENT_PROMPT_VERSION = "structured-fact-refinement-v1";
     public static final String CASE_JUDGE_PROMPT_VERSION = "infection-case-judge-v1";
+    public static final String PRE_REVIEW_DEMO_EXTENSION_PROMPT_VERSION = "infection-pre-review-demo-extension-v1";
 
     private static final String COMMON_RULES = """
             你是院感预警事件抽取器。
@@ -317,6 +318,39 @@ public class WarningPromptCatalog {
             joinJudgePolarities()
     );
 
+    private static final String PRE_REVIEW_DEMO_EXTENSION_RULES = """
+            你是院感智能预审补充内容生成器。
+            任务：基于输入的已完成法官裁决 decision 和证据包摘要，生成“关键依据缺失提醒”和“AI建议”。
+            输出必须严格为 JSON，不允许输出解释性前后缀。
+
+            输出格式：
+            {
+              "missingEvidenceReminders": [
+                {
+                  "level": "info|warning|critical",
+                  "title": "缺失提醒标题",
+                  "message": "面向医生的简短提醒"
+                }
+              ],
+              "aiSuggestions": [
+                {
+                  "priority": "low|medium|high",
+                  "category": "diagnosis|test|treatment|monitoring|review",
+                  "text": "面向医生的简短预审建议"
+                }
+              ]
+            }
+
+            约束：
+            1. 不允许改写、质疑或重新判断 decision 中的主法官裁决结论。
+            2. 不输出 decisionStatus、warningLevel、primarySite、nosocomialLikelihood、infectionPolarity 等裁决字段。
+            3. 只基于输入证据生成缺失提醒和预审建议，不要编造不存在的检查结果、病原体、部位或时间。
+            4. 没有明确缺失依据时 missingEvidenceReminders 返回空数组。
+            5. 没有明确建议时 aiSuggestions 返回空数组。
+            6. 每个数组最多输出 5 条，每条 message/text 尽量控制在 80 个中文字符以内。
+            7. 建议使用“建议/可考虑/需复核”口吻，不要输出强制医嘱。
+            """;
+
     public static String buildEventExtractorPrompt(EvidenceBlockType blockType) {
         return switch (blockType) {
             case STRUCTURED_FACT -> COMMON_RULES + "\n\n" + STRUCTURED_FACT_RULES;
@@ -332,6 +366,10 @@ public class WarningPromptCatalog {
 
     public static String buildCaseJudgePrompt() {
         return CASE_JUDGE_RULES;
+    }
+
+    public static String buildPreReviewDemoExtensionPrompt() {
+        return PRE_REVIEW_DEMO_EXTENSION_RULES;
     }
 
     private static String joinCaseStates() {

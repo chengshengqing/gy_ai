@@ -13,6 +13,7 @@ import com.zzhy.yg_ai.domain.normalize.assemble.NormalizeNoteStructureResult;
 import com.zzhy.yg_ai.domain.normalize.assemble.NotePromptTask;
 import com.zzhy.yg_ai.domain.normalize.facts.DayFactsBuilder;
 import com.zzhy.yg_ai.domain.normalize.facts.FusionFactsBuilder;
+import com.zzhy.yg_ai.domain.normalize.facts.support.DailyFusionInputCompactor;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptCatalog;
 import com.zzhy.yg_ai.domain.normalize.prompt.NormalizePromptDefinition;
 import java.time.LocalDate;
@@ -39,6 +40,7 @@ public class NormalizeContextBuilder {
     private final NormalizePromptCatalog promptCatalog;
     private final DayFactsBuilder dayFactsBuilder;
     private final FusionFactsBuilder fusionFactsBuilder;
+    private final DailyFusionInputCompactor dailyFusionInputCompactor;
 
     public NormalizeContext buildContext(PatientRawDataEntity rawData) {
         if (rawData == null) {
@@ -105,7 +107,12 @@ public class NormalizeContextBuilder {
         String reqno = context == null ? "" : context.reqno();
         LocalDate dataDate = context == null ? null : context.dataDate();
         Map<String, Object> fusionReadyFactsInput = fusionFactsBuilder.buildFusionReadyFacts(dayContext, reqno, dataDate);
-        String inputJson = toJson(Map.of("fusion_ready_facts", objectMapper.valueToTree(fusionReadyFactsInput)));
+        DailyFusionInputCompactor.CompactionResult compactionResult = dailyFusionInputCompactor.compactIfNeeded(
+                reqno,
+                dataDate,
+                fusionReadyFactsInput
+        );
+        String inputJson = compactionResult.inputJson();
         return new DailyFusionPlan(true, "", promptCatalog.dailyFusionPrompt(), inputJson);
     }
 

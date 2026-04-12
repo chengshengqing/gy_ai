@@ -81,7 +81,7 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
             JudgeDecisionResult decision = infectionJudgeService.judge(packet, now);
             persistAlertResult(snapshot, taskEntity, packet, decision);
             updateSnapshot(snapshot, latestEventPoolVersion, now, decision);
-            return new CaseRecomputeResult(taskIds, reqno, 1, 0, false, false, null, "病例重算完成");
+            return new CaseRecomputeResult(taskIds, reqno, 1, 0, false, false, null, "病例重算完成", latestEventPoolVersion);
         } catch (Exception e) {
             log.error(buildFailureMessage(TASK_NAME,
                     "taskId", taskEntity == null ? null : taskEntity.getId(),
@@ -136,14 +136,19 @@ public class CaseRecomputeHandler extends AbstractTaskHandler<InfectionEventTask
             return;
         }
 
-        infectionEventTaskService.markSuccess(result.taskIds(), result.message());
+        boolean requeued = infectionEventTaskService.markSuccessOrRequeueIfEventVersionAdvanced(
+                result.taskIds(),
+                result.processedEventPoolVersion(),
+                result.message(),
+                "病例重算期间事件池版本更新，重新入队"
+        );
         log.info("{}结束，{}", TASK_NAME, buildSummary(
                 "taskId", firstTaskId(result.taskIds()),
                 "reqno", result.reqno(),
                 "successCount", result.successCount(),
                 "failedCount", result.failedCount(),
                 "skipped", result.skipped(),
-                "rescheduled", result.rescheduled(),
+                "rescheduled", result.rescheduled() || requeued,
                 "message", result.message()
         ));
     }

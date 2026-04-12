@@ -944,9 +944,6 @@ public class FormatAgentPrompt {
     /**
      * 日级融合：唯一日级摘要
      */
-    /**
-     * 日级融合：唯一日级摘要
-     */
 
     public static final String DAILY_FUSION_SYSTEM_PROMPT = """
         你是一名临床经验丰富的住院医师，擅长整合多来源临床信息（病程记录、检验、生命体征、影像、医嘱等），生成结构化的日级临床总结（daily_fusion）。
@@ -958,173 +955,83 @@ public class FormatAgentPrompt {
             以临床决策为中心
             避免冗余和重复
     """;
+
     public static final String DAILY_FUSION_USER_PROMPT = """
-            【任务】
-
-            请根据输入的临床数据（包含病程抽取结果与客观数据），生成同一天唯一一条 daily_fusion JSON。
-
-            【输入结构说明】
-
-            输入数据分为三层：
-
-            1️⃣ clinical_reasoning_layer（病程判断层）
-
-            来自病程记录，代表医生的判断，包括：
-
-            problem_candidates（主问题候选）
-            differential_candidates（鉴别诊断）
-            etiology_candidates（病因推测）
-            risk_candidates（风险提示）
-            pending（待查/待复查/流程）
-
-            👉 表示：医生认为可能是什么问题
-
-            2️⃣ objective_fact_layer（客观事实层）
-
-            来自检验、生命体征、影像、医嘱等，包括：
-
-            diagnosis_facts
-            vitals_summary
-            lab_summary
-            imaging_summary
-            orders_summary
-            objective_events
-            objective_evidence
-
-            👉 表示：实际发生了什么
-
-            3️⃣ fusion_control_layer（融合控制层）
-
-            用于指导融合策略，包括：
-
-            文书权重
-            展示重点
-            输出约束
-            【核心融合规则（非常重要）】
-            规则1：以问题为中心
-            最终输出必须围绕“当天最重要的临床问题”，而不是按数据来源罗列。
-
-            规则2：先建问题框架，再用客观数据修正
-            Step 1
-            基于 problem_candidates 建立问题框架
-
-            Step 2
-            使用以下数据修正问题：
-
-            lab_summary → 修正诊断与严重程度
-            vitals_summary → 判断病情严重性与风险
-            imaging_summary → 补充诊断依据
-            orders_summary → 确认实际治疗行为
-            objective_events → 判断“今天新增变化”
-            
-            规则3：事实优先级
-            必须遵循：
-            新增客观结果 > 病程旧描述 > 诊断标签
-            已执行医嘱 > 病程拟行计划
-            有证据支持的问题 > 仅在诊断列表中出现的问题
-            
-            规则4：严格区分类型
-            禁止混淆：
-            类型	说明
-            confirmed	已有明确证据
-            suspected	有证据但未完全确认
-            possible	弱证据
-            workup_needed	尚无证据，仅待查
-            
-            规则5：风险不能变成诊断
-            例如：
-            ❌ “血栓栓塞” → 如果只是风险，不能写成问题
-            ✅ “血栓栓塞风险”
-            
-            规则6：只展示最重要信息
-            必须限制：
-            problem_list：最多 4 个
-            key_evidence：最多 6 条
-            major_actions：最多 6 条
-            risk_flags：最多 6 条
-            next_focus_24h：2–5 条
-            
-            规则7：同义问题必须合并
-            例如：
-            心衰 / CHF / 心功能不全 → 同一 problem
-            
-            规则8：day_summary 必须临床化
-            要求：
-            20–60字
-            包含：主问题 + 关键证据/变化 + 主要处理
-
-            示例风格：
-            心衰急性加重伴房颤，NT-proBNP升高，已予利尿及抗凝治疗，需警惕出血及血栓风险
-            
-            规则9：禁止合并不同问题
-            不同临床问题（如贫血、血小板减少、肝功能异常）必须分别作为独立problem，不得合并为综合问题。
-            
-            规则10：problem_key约束
-            problem_key 必须来自输入的 problem_candidates，不允许生成新的key。
-            
-            规则11：problem_type约束
-            problem_type 只能使用以下枚举：
-            disease / complication / chronic / risk_state / differential
-            不得生成其他类型。
-
-            规则12：priority必须由模型自行判断
-            输入的中间候选层不提供 priority，你必须根据以下因素综合判断最终 problem_list[].priority：
-            - 对当日诊疗决策的影响程度
-            - 客观证据强度
-            - 已执行处理强度
-            - 当前风险水平
-            枚举只能使用：
-            high / medium / low
-            判定原则：
-            - high：当天主要矛盾，明显影响处置或存在高风险
-            - medium：重要但非首要问题，需要持续处理或跟踪
-            - low：次要问题，对当天主要决策影响较小
-
-            规则13：status与certainty枚举必须严格使用统一值
-            status 只能使用：
-            active / acute_exacerbation / worsening / improving / chronic / stable / clarified / unclear
-            certainty 只能使用：
-            confirmed / suspected / possible / workup_needed / risk_only
-
-            【输出 JSON（严格遵守）】
-
+        【任务】
+        根据输入数据生成同一天唯一一条 daily_fusion JSON。
+        
+        【输入结构】
+        - clinical_reasoning_layer：problem_candidates、differential、risk、pending
+        - objective_fact_layer：vitals、lab、imaging、orders、events
+        - fusion_control_layer：控制策略
+        
+        【核心规则】
+        1. 以 problem_candidates 为框架，输出围绕“最重要临床问题”，禁止按数据来源罗列
+        2. 用客观数据修正问题：
+           lab → 诊断/严重程度
+           vitals → 严重性/风险
+           imaging → 诊断证据
+           orders → 已执行治疗
+           events → 今日新增变化
+        3. 事实优先级：
+           新客观结果 > 病程描述 > 诊断标签
+           已执行医嘱 > 拟行计划
+           有证据问题 > 仅诊断出现
+        4. 风险不能写成诊断（如：血栓栓塞风险）
+        5. 同义问题必须合并，不同问题必须拆开
+        6. problem_key 必须来自 problem_candidates，不允许新增
+        7. priority 判断标准：
+           high：主问题/高风险/影响处置
+           medium：重要但非首要
+           low：次要问题
+        
+        【输出限制】
+        - problem_list ≤ 4
+        - key_evidence / major_actions / risk_flags ≤ 6
+        - next_focus_24h：2–5条
+        
+        【枚举约束】
+        problem_type：disease | complication | chronic | risk_state | differential  
+        priority：high | medium | low  
+        status：active | acute_exacerbation | worsening | improving | chronic | stable | clarified | unclear  
+        certainty：confirmed | suspected | possible | workup_needed | risk_only  
+        
+        【输出要求】
+        - day_summary：20–60字，包含主问题 + 证据/变化 + 处理
+        - 所有字段必须填写
+        - 不允许新增字段或嵌套结构
+        
+        【输出 JSON】
+        {
+          "time": "",
+          "record_type": "daily_fusion",
+          "day_summary": "",
+          "problem_list": [
             {
-            "time": "",
-            "record_type": "daily_fusion",
-            "day_summary": "",
-            "problem_list": [
-            {
-            "problem": "",
-            "problem_key": "",
-            "problem_type": "disease|complication|chronic|risk_state|differential",
-            "priority": "high|medium|low",
-            "status": "active|acute_exacerbation|worsening|improving|chronic|stable|clarified|unclear",
-            "certainty": "confirmed|suspected|possible|workup_needed|risk_only",
-            "key_evidence": [],
-            "major_actions": [],
-            "risk_flags": [],
-            "source_note_refs": []
+              "problem": "",
+              "problem_key": "",
+              "problem_type": "",
+              "priority": "",
+              "status": "",
+              "certainty": "",
+              "key_evidence": [],
+              "major_actions": [],
+              "risk_flags": [],
+              "source_note_refs": []
             }
-            ],
-            "key_evidence": [],
-            "major_actions": [],
-            "risk_flags": [],
-            "next_focus_24h": [],
-            "source_note_refs": []
-            }
-
-            注意：
-            - 所有字段都直接放在根对象，不要再嵌套一层 daily_fusion。
-
-            【禁止事项】
-            ❌ 不要输出解释
-            ❌ 不要输出分析过程
-            ❌ 不要复述原始文本
-            ❌ 不要生成未提供的数据
-            ❌ 不要重复问题
-            【输入数据】
-            
-            """;
+          ],
+          "key_evidence": [],
+          "major_actions": [],
+          "risk_flags": [],
+          "next_focus_24h": [],
+          "source_note_refs": []
+        }
+        
+        【禁止】
+        不要解释，不要分析，不要复述原文，不要生成未提供信息。
+        
+        【输入数据】
+        """;
 
     /**
      * 日常病程记录

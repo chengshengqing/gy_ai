@@ -70,6 +70,9 @@ infection:
     max-attempts: ${YG_AI_FORMAT_MAX_ATTEMPTS:5}
     retry-delay-seconds: ${YG_AI_FORMAT_RETRY_DELAY_SECONDS:300}
     running-timeout-seconds: ${YG_AI_FORMAT_RUNNING_TIMEOUT_SECONDS:1800}
+  normalize:
+    daily-fusion:
+      max-input-chars: ${YG_AI_DAILY_FUSION_MAX_INPUT_CHARS:7000}
   dashboard:
     enabled: ${YG_AI_MONITOR_DASHBOARD_ENABLED:true}
     snapshot-fixed-delay-ms: ${YG_AI_MONITOR_DASHBOARD_SNAPSHOT_FIXED_DELAY_MS:30000}

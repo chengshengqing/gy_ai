@@ -52,9 +52,13 @@ public class StagePolicyRegistry {
         policies.put(PipelineStage.LOAD_PROCESS,
                 new StagePolicy(PipelineStage.LOAD_PROCESS, 80, 1, 1));
         policies.put(PipelineStage.NORMALIZE,
+                new StagePolicy(PipelineStage.NORMALIZE, 95, 9, 9));
+        policies.put(PipelineStage.EVENT_EXTRACT,
+                new StagePolicy(PipelineStage.EVENT_EXTRACT, 60, 9, 9));
+        /*policies.put(PipelineStage.NORMALIZE,
                 new StagePolicy(PipelineStage.NORMALIZE, 95, 8, 8));
         policies.put(PipelineStage.EVENT_EXTRACT,
-                new StagePolicy(PipelineStage.EVENT_EXTRACT, 60, 2, 2));
+                new StagePolicy(PipelineStage.EVENT_EXTRACT, 60, 2, 2));*/
         policies.put(PipelineStage.CASE_RECOMPUTE,
                 new StagePolicy(PipelineStage.CASE_RECOMPUTE, 50, 1, 2));
         return Map.copyOf(policies);

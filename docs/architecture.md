@@ -63,6 +63,7 @@ SQL Server 原始住院数据
 - `NormalizeHandler` 负责结构化任务编排、单行处理、任务状态收尾
 - `NormalizeStructDataService` 负责串联 normalize 三层调用
 - `NormalizeContextBuilder` 负责 normalize 输入准备、day context 构造、fusion 输入组装
+- `DailyFusionInputCompactor` 负责 daily fusion 输入预算判断；默认保留完整输入，仅在超过配置阈值时分级压缩
 - `NormalizeResultAssembler` 负责 note / daily fusion 的模型结果校验、重试与最终 JSON 组装
 - `patient_raw_data.struct_data_json` 保存单日结构化中间结果
 - `patient_raw_data.event_json` 保存单日时间轴摘要，是时间线展示和事件抽取窗口上下文的直接来源
@@ -567,7 +568,7 @@ formatPendingStructData()
 3. 对每个患者过滤 stale change，只保留 `raw_data_last_time` 仍等于 `patient_raw_data.last_time` 的记录
 4. 逐条处理仍有效的单日变更行
 5. 调用 `NormalizeStructDataService.compose(rawData)` 生成单日结构化结果
-6. `NormalizeContextBuilder` 构造 note prompt 输入、day context 和 fusion 输入
+6. `NormalizeContextBuilder` 构造 note prompt 输入、day context 和 fusion 输入；daily fusion 输入先按完整结构生成，超过 `infection.normalize.daily-fusion.max-input-chars` 后才由 `DailyFusionInputCompactor` 分级压缩
 7. `NormalizeResultAssembler` 完成模型结果校验、重试与最终 JSON 组装
 8. 回写 `patient_raw_data.struct_data_json`
 9. 回写 `patient_raw_data.event_json`
@@ -579,6 +580,7 @@ formatPendingStructData()
 - 结构化链路完全建立在 `patient_raw_data_change_task` 上，不再依赖单纯扫描 `struct_data_json is null`
 - 结构化链路与事件链路分离，结构化不阻塞预警主链路
 - `event_json` 是时间线展示和最近窗口上下文的直接来源
+- daily fusion 压缩只作用于模型输入，不改变 `patient_raw_data.event_json` 的输出字段约定
 
 ### 5.3 时间线展示链路
 

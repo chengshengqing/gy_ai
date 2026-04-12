@@ -128,10 +128,10 @@ public class InfectionEventTaskServiceImpl
                 .set(InfectionEventTaskEntity::getTriggerPriority, upgradeTriggerPriority(existing.getTriggerPriority(), triggerPriority))
                 .set(InfectionEventTaskEntity::getEventPoolVersionAtEnqueue, latestEventPoolVersion)
                 .set(InfectionEventTaskEntity::getUpdateTime, now);
-        if (!InfectionEventTaskStatus.RUNNING.name().equals(existing.getStatus())
-                && !InfectionEventTaskStatus.SUCCESS.name().equals(existing.getStatus())) {
+        if (!InfectionEventTaskStatus.RUNNING.name().equals(existing.getStatus())) {
             updateWrapper.set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.PENDING.name())
                     .set(InfectionEventTaskEntity::getAvailableAt, debounceUntil)
+                    .set(InfectionEventTaskEntity::getAttemptCount, 0)
                     .set(InfectionEventTaskEntity::getLastErrorMessage, null);
         }
         this.update(updateWrapper);
@@ -152,6 +152,41 @@ public class InfectionEventTaskServiceImpl
     @Override
     public void markSuccess(List<Long> taskIds, String message) {
         updateFinishedTasks(taskIds, InfectionEventTaskStatus.SUCCESS, message, false);
+    }
+
+    @Override
+    public boolean markSuccessOrRequeueIfEventVersionAdvanced(List<Long> taskIds,
+                                                             Long processedEventPoolVersion,
+                                                             String successMessage,
+                                                             String requeueMessage) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return false;
+        }
+        LocalDateTime now = DateTimeUtils.now();
+        long processedVersion = processedEventPoolVersion == null ? 0L : processedEventPoolVersion;
+
+        LambdaUpdateWrapper<InfectionEventTaskEntity> successWrapper = new LambdaUpdateWrapper<>();
+        successWrapper.in(InfectionEventTaskEntity::getId, taskIds)
+                .and(wrapper -> wrapper
+                        .isNull(InfectionEventTaskEntity::getEventPoolVersionAtEnqueue)
+                        .or()
+                        .le(InfectionEventTaskEntity::getEventPoolVersionAtEnqueue, processedVersion))
+                .set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.SUCCESS.name())
+                .set(InfectionEventTaskEntity::getLastFinishTime, now)
+                .set(InfectionEventTaskEntity::getLastErrorMessage, successMessage)
+                .set(InfectionEventTaskEntity::getUpdateTime, now);
+        this.baseMapper.update(null, successWrapper);
+
+        LambdaUpdateWrapper<InfectionEventTaskEntity> requeueWrapper = new LambdaUpdateWrapper<>();
+        requeueWrapper.in(InfectionEventTaskEntity::getId, taskIds)
+                .gt(InfectionEventTaskEntity::getEventPoolVersionAtEnqueue, processedVersion)
+                .set(InfectionEventTaskEntity::getStatus, InfectionEventTaskStatus.PENDING.name())
+                .set(InfectionEventTaskEntity::getAttemptCount, 0)
+                .set(InfectionEventTaskEntity::getLastFinishTime, now)
+                .set(InfectionEventTaskEntity::getLastErrorMessage, requeueMessage)
+                .set(InfectionEventTaskEntity::getUpdateTime, now)
+                .setSql("available_at = COALESCE(debounce_until, GETDATE())");
+        return this.baseMapper.update(null, requeueWrapper) > 0;
     }
 
     @Override

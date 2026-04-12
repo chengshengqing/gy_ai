@@ -4,7 +4,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Builder;
 
-@Builder
+@Builder(toBuilder = true)
 public record JudgeDecisionResult(
         String decisionStatus,
         String warningLevel,
@@ -22,7 +22,9 @@ public record JudgeDecisionResult(
         List<String> dismissedKeys,
         Boolean requiresFollowUp,
         LocalDateTime nextSuggestedJudgeAt,
-        Integer resultVersion
+        Integer resultVersion,
+        List<PreReviewMissingEvidenceReminder> missingEvidenceReminders,
+        List<PreReviewAiSuggestion> aiSuggestions
 ) {
     public JudgeDecisionResult {
         decisionReason = decisionReason == null ? List.of() : List.copyOf(decisionReason);
@@ -30,5 +32,7 @@ public record JudgeDecisionResult(
         newAgainstKeys = newAgainstKeys == null ? List.of() : List.copyOf(newAgainstKeys);
         newRiskKeys = newRiskKeys == null ? List.of() : List.copyOf(newRiskKeys);
         dismissedKeys = dismissedKeys == null ? List.of() : List.copyOf(dismissedKeys);
+        missingEvidenceReminders = missingEvidenceReminders == null ? List.of() : List.copyOf(missingEvidenceReminders);
+        aiSuggestions = aiSuggestions == null ? List.of() : List.copyOf(aiSuggestions);
     }
 }

@@ -2,11 +2,15 @@ package com.zzhy.yg_ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zzhy.yg_ai.common.DateTimeUtils;
 import com.zzhy.yg_ai.domain.entity.InfectionEventPoolEntity;
 import com.zzhy.yg_ai.domain.enums.InfectionEventStatus;
 import com.zzhy.yg_ai.domain.model.NormalizedInfectionEvent;
 import com.zzhy.yg_ai.mapper.InfectionEventPoolMapper;
 import com.zzhy.yg_ai.service.InfectionEventPoolService;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -19,6 +23,9 @@ import org.springframework.util.StringUtils;
 public class InfectionEventPoolServiceImpl
         extends ServiceImpl<InfectionEventPoolMapper, InfectionEventPoolEntity>
         implements InfectionEventPoolService {
+
+    private static final LocalDate EVENT_VERSION_EPOCH = LocalDate.of(2000, 1, 1);
+    private static final long EVENT_VERSION_ID_SUFFIX_MOD = 1_000_000L;
 
     @Override
     public InfectionEventPoolEntity createEvent(InfectionEventPoolEntity entity) {
@@ -44,7 +51,7 @@ public class InfectionEventPoolServiceImpl
         copyUpdatableFields(entity, update);
         update.setEventKey(existing.getEventKey());
         update.setStatus(StringUtils.hasText(entity.getStatus()) ? entity.getStatus() : InfectionEventStatus.ACTIVE.code());
-        update.touch();
+        touchAfterExisting(update, existing);
         this.updateById(update);
         update.setCreatedAt(existing.getCreatedAt());
         return update;
@@ -89,9 +96,9 @@ public class InfectionEventPoolServiceImpl
                 .eq("reqno", reqno.trim())
                 .eq("status", InfectionEventStatus.ACTIVE.code())
                 .eq("is_active", true)
-                .orderByDesc("id")
+                .orderByDesc("updated_at", "id")
                 .last("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"));
-        return latest == null || latest.getId() == null ? 0L : latest.getId();
+        return buildEventPoolVersion(latest);
     }
 
     private void validateRequiredFields(InfectionEventPoolEntity entity) {
@@ -110,5 +117,28 @@ public class InfectionEventPoolServiceImpl
 
     private void copyUpdatableFields(InfectionEventPoolEntity source, InfectionEventPoolEntity target) {
         BeanUtils.copyProperties(source, target, "id", "eventKey", "status", "createdAt", "updatedAt");
+    }
+
+    private void touchAfterExisting(InfectionEventPoolEntity update, InfectionEventPoolEntity existing) {
+        LocalDateTime updateTime = DateTimeUtils.now();
+        if (existing != null && existing.getUpdatedAt() != null && !updateTime.isAfter(existing.getUpdatedAt())) {
+            updateTime = existing.getUpdatedAt().plus(1, ChronoUnit.MILLIS);
+        }
+        update.setUpdatedAt(updateTime);
+    }
+
+    private Long buildEventPoolVersion(InfectionEventPoolEntity latest) {
+        if (latest == null) {
+            return 0L;
+        }
+        LocalDateTime updatedAt = latest.getUpdatedAt();
+        if (updatedAt == null) {
+            return latest.getId() == null ? 0L : latest.getId();
+        }
+        long days = ChronoUnit.DAYS.between(EVENT_VERSION_EPOCH, updatedAt.toLocalDate());
+        long millisOfDay = updatedAt.toLocalTime().toSecondOfDay() * 1000L + updatedAt.getNano() / 1_000_000L;
+        long timestampVersion = days * 86_400_000L + millisOfDay;
+        long idSuffix = latest.getId() == null ? 0L : Math.floorMod(latest.getId(), EVENT_VERSION_ID_SUFFIX_MOD);
+        return timestampVersion * EVENT_VERSION_ID_SUFFIX_MOD + idSuffix;
     }
 }

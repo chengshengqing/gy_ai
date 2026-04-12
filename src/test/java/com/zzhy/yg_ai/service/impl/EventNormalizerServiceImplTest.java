@@ -112,6 +112,92 @@ class EventNormalizerServiceImplTest {
     }
 
     @Test
+    void normalizeTemporarilyMapsRiskOnlyClinicalMeaningForExposureEventsOnly() throws Exception {
+        EvidenceBlock block = clinicalTextBlock("于16:25在超声引导下局麻后行右股静脉穿刺置管");
+
+        List<NormalizedInfectionEvent> events = eventNormalizerService.normalize(
+                block,
+                extractorOutput(null,
+                        "procedure",
+                        "procedure_exposure",
+                        "vascular",
+                        "右股静脉穿刺置管",
+                        "于16:25在超声引导下局麻后行右股静脉穿刺置管",
+                        "hard",
+                        "risk_only",
+                        "risk_only",
+                        true,
+                        false,
+                        false),
+                InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                WarningPromptCatalog.EVENT_EXTRACTOR_PROMPT_VERSION,
+                "warning-agent-chat-model",
+                new BigDecimal("0.85")
+        );
+
+        assertEquals(1, events.size());
+        assertEquals("risk_only", events.get(0).getCertainty());
+        JsonNode attributes = objectMapper.readTree(events.get(0).getAttributesJson());
+        assertEquals("baseline_problem", attributes.path("clinical_meaning").asText());
+        assertEquals("risk_only", attributes.path("evidence_role").asText());
+        assertEquals("risk_only_exposure_fallback", attributes.path("normalizer_fallbacks").get(0).path("reason").asText());
+    }
+
+    @Test
+    void normalizeDoesNotTreatRiskOnlyAsGenericClinicalMeaningAlias() throws Exception {
+        EvidenceBlock block = clinicalTextBlock("患者咳嗽咳痰，考虑急性下呼吸道感染，予抗感染治疗。");
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> eventNormalizerService.normalize(
+                block,
+                extractorOutput(null,
+                        "assessment",
+                        "infection_positive_statement",
+                        "lower_respiratory",
+                        "考虑急性下呼吸道感染",
+                        "考虑急性下呼吸道感染",
+                        "moderate",
+                        "support",
+                        "risk_only",
+                        true,
+                        false,
+                        true),
+                InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                WarningPromptCatalog.EVENT_EXTRACTOR_PROMPT_VERSION,
+                "warning-agent-chat-model",
+                new BigDecimal("0.85")
+        ));
+
+        assertTrue(exception.getMessage().contains("INVALID_CLINICAL_MEANING"));
+    }
+
+    @Test
+    void normalizeDropsPreventiveManagementStatementWithoutTaskFailure() throws Exception {
+        EvidenceBlock block = clinicalTextBlock("患者病情危重，需积极预防患者误吸、肺部感染、压疮、深静脉血栓等并发症");
+
+        List<NormalizedInfectionEvent> events = eventNormalizerService.normalize(
+                block,
+                extractorOutput(null,
+                        "assessment",
+                        "infection_negative_statement",
+                        "lower_respiratory",
+                        "预防肺部感染",
+                        "患者病情危重，需积极预防患者误吸、肺部感染、压疮、深静脉血栓等并发症",
+                        "weak",
+                        "against",
+                        "screening",
+                        true,
+                        false,
+                        false),
+                InfectionExtractorType.LLM_EVENT_EXTRACTOR,
+                WarningPromptCatalog.EVENT_EXTRACTOR_PROMPT_VERSION,
+                "warning-agent-chat-model",
+                new BigDecimal("0.85")
+        );
+
+        assertTrue(events.isEmpty());
+    }
+
+    @Test
     void normalizeRejectsClinicalTextEventWhenSourceSectionIsExplicit() throws Exception {
         EvidenceBlock block = clinicalTextBlock("患者咳嗽咳痰，考虑急性下呼吸道感染，予抗感染治疗。");
 
