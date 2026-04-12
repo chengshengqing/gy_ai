@@ -140,8 +140,15 @@ WHERE s.reqno = #{reqno}
 1. 复用现有时间线页面的 CSS 和渲染函数。
 2. 去掉原页面中的 `<div class="header"></div>` 和 `<div class="toolbar"></div>` 区域。
 3. 移除或绕过 `fetch(...)` 数据加载逻辑。
-4. 将当前 `reqno` 的 `PatientTimelineViewData` 序列化为内嵌 JSON。
-5. 页面初始化时直接读取内嵌 JSON 渲染。
+4. 生成自包含 HTML。
+5. 可以选择将当前 `reqno` 的 `PatientTimelineViewData` 序列化为内嵌 JSON 后由页面脚本渲染，也可以由服务端直接预渲染 HTML。
+
+本次实现采用服务端直接预渲染 HTML：
+
+- 不保留查询输入框。
+- 不保留接口请求逻辑。
+- 不保留 fallback demo 数据逻辑。
+- 保留左侧时间轴和右侧单日详情的切换交互。
 
 内嵌数据建议形态：
 
@@ -172,6 +179,7 @@ state.data = JSON.parse(embedded);
 ```json
 {
   "reqno": "260215773",
+  "lastJudgeTime": "2026-04-12 14:03:50",
   "primarySiteCode": "lower_respiratory",
   "primarySite": "下呼吸道",
   "nosocomialLikelihood": "medium",
@@ -188,13 +196,14 @@ state.data = JSON.parse(embedded);
 字段口径：
 
 - `reqno`：当前患者住院号。
+- `lastJudgeTime`：`infection_case_snapshot.last_judge_time`，格式为 `yyyy-MM-dd HH:mm:ss`，保留到秒。
 - `primarySiteCode`：`infection_case_snapshot.primary_site` 原始 code。
 - `primarySite`：通过 `InfectionBodySite` 转换后的中文。
 - `nosocomialLikelihood`：`infection_case_snapshot.nosocomial_likelihood` 原始 code。
 - `nosocomialLikelihoodLabel`：通过 `InfectionNosocomialLikelihood` 转换后的中文。
-- `resultJson`：最新 `infection_alert_result.result_json` 解析后用于展示的 JSON 对象。
-- `resultJson` 中去掉 `decisionStatus`、`primarySite`、`nosocomialLikelihood`，避免与外层字段重复。
-- `resultJson.aiSuggestions[].category`：模型输出为枚举 code，需要补充中文展示值。
+- `resultJson`：最新 `infection_alert_result.result_json` 解析后用于展示的 JSON 对象，只保留 `warningLevel`、`decisionReason`、`missingEvidenceReminders`、`aiSuggestions`。
+- `resultJson` 中去掉 `decisionStatus`、`primarySite`、`nosocomialLikelihood`，也不保留未列出的其他字段。
+- `resultJson.aiSuggestions[].category`：模型输出为枚举 code，需要转换为中文值。
 - `resultJson.aiSuggestions`：按 `priority` 排序，顺序为 `high -> medium -> low`。
 
 `aiSuggestions` 输入格式示例：
@@ -219,34 +228,24 @@ monitoring -> 监测
 review -> 复核
 ```
 
-`aiSuggestions` 输出建议保留原始 code，并增加中文字段：
+`aiSuggestions` 输出只保留原字段，不额外增加 label 字段；其中 `category` 转换为中文：
 
 ```json
 {
   "priority": "high",
-  "priorityLabel": "高",
-  "category": "test",
-  "categoryLabel": "检查",
+  "category": "检查",
   "text": "建议立即完善血培养、痰培养及降钙素原检测，以明确病原体并指导精准抗感染治疗。"
 }
-```
-
-`priority` 中文转换建议：
-
-```text
-high -> 高
-medium -> 中
-low -> 低
 ```
 
 容错建议：
 
 - `primary_site` 为空或非法时，中文显示为 `未知`。
 - `nosocomial_likelihood` 为空或非法时，中文显示为 `未知`。
-- `result_json` 为空时，保存 `null` 或空对象，建议同时记录 warn 日志。
-- `result_json` 解析失败时，可保留 `resultJsonRaw` 字符串，避免整条患者快照失败。
+- `result_json` 为空时，保存固定结构的 `resultJson` 对象。
+- `result_json` 解析失败时，保存固定结构的 `resultJson` 对象，不额外输出 `resultJsonRaw`。
 - `aiSuggestions[].category` 为空或非法时，中文显示为 `其他` 或 `复核`，建议优先使用 `复核`。
-- `aiSuggestions[].priority` 为空或非法时，排序降级到最后，中文显示为 `未知`。
+- `aiSuggestions[].priority` 为空或非法时，排序降级到最后。
 
 ## 7. 推荐代码落点
 
@@ -318,10 +317,10 @@ src/main/java/com/zzhy/yg_ai/service/impl/InfectionPreReviewDemoSnapshotService.
 
 ### 7.5 Controller 或 Runner
 
-推荐新增手动触发接口：
+新增手动触发接口：
 
 ```text
-POST /api/demo/infection-pre-review/snapshot/generate
+GET /api/demo/infection-pre-review/snapshot/generate
 ```
 
 原因：
@@ -329,6 +328,7 @@ POST /api/demo/infection-pre-review/snapshot/generate
 - 本次是一次性演示数据生成，不应随应用启动自动执行。
 - 手动接口便于确认执行时机。
 - 执行完成后可以删除或保留为 demo 工具接口。
+- 该接口存在写库副作用，正式业务接口仍应优先使用 POST；本次按演示调用便利性使用 GET。
 
 接口返回建议：
 
@@ -362,15 +362,16 @@ POST /api/demo/infection-pre-review/snapshot/generate
 - [ ] 生成自包含 `timeline_html`。
 - [ ] 生成 `timeline_html` 时去掉原页面 `<div class="header"></div>` 和 `<div class="toolbar"></div>` 内容。
 - [ ] 查询 `infection_case_snapshot` 和最新 `infection_alert_result`。
+- [ ] 将 `infection_case_snapshot.last_judge_time` 格式化为 `lastJudgeTime`，保留到秒。
 - [ ] 使用 `InfectionBodySite` 转换 `primarySite` 中文。
 - [ ] 使用 `InfectionNosocomialLikelihood` 转换 `nosocomialLikelihoodLabel` 中文。
 - [ ] 将 `infection_alert_result.result_json` 解析为 JSON 对象后写入 `resultJson`。
-- [ ] 从 `resultJson` 中移除 `decisionStatus`、`primarySite`、`nosocomialLikelihood`。
-- [ ] 转换 `resultJson.aiSuggestions[].category` 中文展示值。
+- [ ] `resultJson` 只保留 `warningLevel`、`decisionReason`、`missingEvidenceReminders`、`aiSuggestions`。
+- [ ] 将 `resultJson.aiSuggestions[].category` 转换为中文值，不增加额外 label 字段。
 - [ ] 按 `high -> medium -> low` 对 `resultJson.aiSuggestions` 排序。
 - [ ] 组装 `ai_pre_review_json`。
 - [ ] upsert 到 `infection_pre_review_demo`。
-- [ ] 新增手动触发接口 `POST /api/demo/infection-pre-review/snapshot/generate`。
+- [ ] 新增手动触发接口 `GET /api/demo/infection-pre-review/snapshot/generate`。
 - [ ] 对单个缺失数据患者记录失败原因，但不要中断其他患者生成。
 - [ ] 执行编译验证。
 

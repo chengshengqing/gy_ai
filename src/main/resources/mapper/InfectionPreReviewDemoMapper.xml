@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zzhy.yg_ai.mapper.InfectionPreReviewDemoMapper">
+
+    <resultMap id="PreReviewSourceResultMap" type="com.zzhy.yg_ai.domain.dto.demo.InfectionPreReviewSourceRow">
+        <id column="reqno" property="reqno"/>
+        <result column="last_judge_time" property="lastJudgeTime"/>
+        <result column="primary_site" property="primarySite"/>
+        <result column="nosocomial_likelihood" property="nosocomialLikelihood"/>
+        <result column="result_json" property="resultJson"/>
+    </resultMap>
+
+    <select id="selectLatestPreReviewByReqno" resultMap="PreReviewSourceResultMap">
+        SELECT
+            s.reqno,
+            s.last_judge_time,
+            s.primary_site,
+            s.nosocomial_likelihood,
+            r.result_json
+        FROM infection_case_snapshot s
+        OUTER APPLY (
+            SELECT TOP 1 *
+            FROM infection_alert_result r
+            WHERE r.reqno = s.reqno
+            ORDER BY r.create_time DESC, r.result_version DESC, r.id DESC
+        ) r
+        WHERE s.reqno = #{reqno}
+    </select>
+
+    <update id="upsertDemoSnapshot">
+        MERGE infection_pre_review_demo WITH (HOLDLOCK) AS target
+        USING (SELECT #{reqno} AS reqno) AS source
+        ON target.reqno = source.reqno
+        WHEN MATCHED THEN
+            UPDATE SET
+                timeline_html = #{timelineHtml},
+                ai_pre_review_json = #{aiPreReviewJson}
+        WHEN NOT MATCHED THEN
+            INSERT (reqno, timeline_html, ai_pre_review_json)
+            VALUES (#{reqno}, #{timelineHtml}, #{aiPreReviewJson});
+    </update>
+</mapper>
