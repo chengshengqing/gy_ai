@@ -76,12 +76,12 @@ src/main/resources
   - 当前迭代或下一迭代内确定会出现第二实现
   - 用于隔离模型调用、线程调度、持久化、第三方 SDK 等外部边界
   - 已经出现 3 处以上稳定重复逻辑，可以沉淀为统一模板
-- 如果是结构性重构，必须同步更新 `docs/shared-executor-architecture-design.md`、`docs/refactor-handover-status.md`、`README.md`、`AGENTS.md`
+- 如果是结构性重构，必须同步更新 `docs/scheduling/shared-executor-architecture-design.md`、`docs/code-paths/code-chain-index.md`、`README.md`、`AGENTS.md`
 
 当前更详细的约束说明见：
 
-- `docs/shared-executor-architecture-design.md`
-- `docs/refactor-handover-status.md`
+- `docs/scheduling/shared-executor-architecture-design.md`
+- `docs/code-paths/code-chain-index.md`
 
 ## 核心模块
 
@@ -376,8 +376,7 @@ GET /api/patient-raw-data/timeline-demo?reqno={reqno}
 
 ## 文档
 
-- 项目结构分析：[docs/project-structure-analysis.md](docs/project-structure-analysis.md)
-- 架构设计：[docs/architecture.md](docs/architecture.md)
-- 院感预警实施：[docs/infection-warning-design.md](docs/infection-warning-design.md)
-- 数据模型设计：[docs/data-model-design.md](docs/data-model-design.md)
-- Codex 协作规范：[AGENT.md](AGENT.md)
+- 架构设计：[docs/overview/architecture.md](docs/overview/architecture.md)
+- 院感预警实施：[docs/infection-warning/infection-warning-design.md](docs/infection-warning/infection-warning-design.md)
+- 数据模型设计：[docs/data/data-model-design.md](docs/data/data-model-design.md)
+- Codex 协作规范：[AGENTS.md](AGENTS.md)

@@ -607,6 +607,6 @@
 后续开发时可直接在需求中引用：
 
 ```text
-请以 docs/patient-raw-json-structure.md 作为 data_json 和 filter_data_json 的结构依据。
+请以 docs/data/patient-raw-json-structure.md 作为 data_json 和 filter_data_json 的结构依据。
 如代码实现与文档冲突，以 PatientServiceImpl 当前实现为准，并同步更新文档。
 ```

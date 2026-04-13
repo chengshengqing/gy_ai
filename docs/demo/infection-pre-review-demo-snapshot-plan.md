@@ -15,7 +15,7 @@
 
 - 数据库中已经存在患者时间线来源数据。
 - 数据库中已经存在院感法官结果。
-- `docs/infection-pre-review-demo-extension-plan.md` 已完成。
+- `docs/demo/infection-pre-review-demo-extension-plan.md` 已完成。
 - `infection_alert_result.result_json` 中已包含 `missingEvidenceReminders` 和 `aiSuggestions`。
 - 不需要重新调用模型。
 - 不需要重新跑定时任务。

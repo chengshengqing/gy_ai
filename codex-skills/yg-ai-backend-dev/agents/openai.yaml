@@ -1,0 +1,7 @@
+interface:
+  display_name: "yg_ai Backend"
+  short_description: "Develop yg_ai backend features safely"
+  default_prompt: "Use $yg-ai-backend-dev for this yg_ai backend task."
+
+policy:
+  allow_implicit_invocation: true

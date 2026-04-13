@@ -349,7 +349,7 @@ Prompt 约束：
 ### 9.5 删除本文档或改为历史记录
 
 - [ ] 删除本文档，或移动到历史归档目录
-- [ ] 如果正式方案已经落地，在 `docs/architecture.md` 和 `docs/infection-warning-design.md` 中补充正式方案说明
+- [ ] 如果正式方案已经落地，在 `docs/overview/architecture.md` 和 `docs/infection-warning/infection-warning-design.md` 中补充正式方案说明
 
 ## 10. 后续正式方案方向
 
@@ -372,4 +372,3 @@ CASE_RECOMPUTE
 - 与人工复核闭环联动
 - 是否将部分缺失依据提醒规则化
 - 是否在 `infection_alert_result` 中增加独立字段
-

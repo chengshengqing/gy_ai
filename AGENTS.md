@@ -285,10 +285,10 @@ LLM 默认背景：
 
 凡是涉及架构、包结构、抽象治理规则变化的修改，必须同步更新：
 
-- `docs/shared-executor-architecture-design.md`
-- `docs/refactor-handover-status.md`
+- `docs/scheduling/shared-executor-architecture-design.md`
+- `docs/code-paths/code-chain-index.md`
 - `README.md`
-- `AGENT.md`
+- `AGENTS.md`
 - 对复杂流程可以加少量注释，但不要写低价值注释
 
 ## 测试与验证要求
@@ -321,8 +321,7 @@ LLM 默认背景：
 当新增重要模块时，应同步评估是否更新以下文档：
 
 - `README.md`
-- `docs/architecture.md`
-- `docs/project-structure-analysis.md`
+- `docs/overview/architecture.md`
 
 如果改动改变了主链路或模块职责，必须同步更新文档说明。
 

@@ -5,17 +5,17 @@
 本文档用于定义院感预警分析阶段的核心数据模型，明确：
 
 - 现有表在新架构中的角色
-- 需要新增哪些表
+- 当前已经落地哪些表
 - 每张表的职责是什么
 - 表之间如何关联
-- 应优先落哪些字段
+- 后续仍需补充哪些模型
 
 本文档优先服务 Codex agent 模式下的后续开发，不追求一次性覆盖所有最终字段。
 
 说明：
 
-- 本文档的概念设计用于说明模型职责与关系
-- 若与后续“院感预警分析需求文档”存在字段级差异，应优先以需求文档约定的表字段为准
+- 本文档当前以代码和 SQL 文件已经落地的表结构为基线
+- 若与历史“院感预警分析需求文档”存在字段级差异，应优先以当前代码和 SQL 文件为准
 - 本文档同时记录当前已经落地的采集任务表与变更任务表职责
 
 ## 2. 现有数据模型角色
@@ -218,24 +218,25 @@
 - 保持独立用途
 - 不与院感预警结果表混用
 
-## 3. 新增数据模型总览
+## 3. 院感数据模型落地状态
 
-下一阶段建议新增 6 张院感分析主表，其中 4 张为核心表，2 张为运维 / 结果辅助表：
+当前院感分析主链路已落地 5 张正式表：
 
 1. `infection_event_pool`
 2. `infection_llm_node_run`
 3. `infection_case_snapshot`
 4. `infection_alert_result`
 5. `infection_daily_job_log`
-6. `infection_node_result`
 
-建议关系：
+当前关系：
 
 ```text
 patient_raw_data
+    -> infection_event_task(EVENT_EXTRACT)
     -> infection_event_pool
-    -> infection_llm_node_run
+    -> infection_event_task(CASE_RECOMPUTE)
     -> infection_case_snapshot
+    -> infection_alert_result
 
 infection_event_pool
     -> infection_case_snapshot
@@ -259,7 +260,13 @@ infection_llm_node_run
 - `infection_case_snapshot`
 - `infection_alert_result`
 
-这 4 张表是第一优先级建模对象。
+这 4 张表是院感预警结果层的核心表，当前已经具备 Entity / Mapper / Service 基础骨架。
+
+补充说明：
+
+- `infection_daily_job_log` 已落地，用于批处理和任务运维记录。
+- `infection_node_result` 当前没有 Entity / Mapper / Service / SQL，不属于已落地主链路；如后续确实需要节点结果快速查询，再单独设计。
+- `infection_pre_review_demo` 是 AI 智能预审临时演示快照表，不纳入正式院感预警主链路。
 
 ## 4. `infection_event_pool`
 
@@ -539,10 +546,20 @@ infection_llm_node_run
 
 如果未来需要事件生命周期审计，应单独升级 `infection_event_pool` 为版本表，而不是继续在当前最新态模型上叠加伪版本字段语义。
 
-## 4.5 索引建议
+## 4.5 当前落地与索引
 
 - `uk_infection_event_pool_event_key`
 - `idx_infection_event_pool_reqno_time`
+
+当前实现说明：
+
+- Entity：`InfectionEventPoolEntity`
+- Mapper：`InfectionEventPoolMapper`
+- Service：`InfectionEventPoolService` / `InfectionEventPoolServiceImpl`
+- 建表 SQL：`src/main/resources/sql/infection_refactor_init.sql`
+
+后续可按查询压力补充：
+
 - `idx_infection_event_pool_reqno_type`
 - `idx_infection_event_pool_reqno_active`
 - `idx_infection_event_pool_raw_data_id`
@@ -560,27 +577,7 @@ infection_llm_node_run
 - 支持调试和评估
 - 支持失败排查
 
-## 5.1.1 需求文档优先字段
-
-如果按需求文档落库，建议优先采用：
-
-- `id`
-- `reqno`
-- `data_date`
-- `node_name`
-- `model_name`
-- `prompt_version`
-- `input_hash`
-- `input_json`
-- `output_json`
-- `status`
-- `confidence`
-- `token_in`
-- `token_out`
-- `error_message`
-- `create_time`
-
-## 5.2 建议主字段
+## 5.2 当前落地字段
 
 ### 主键与关联字段
 
@@ -619,6 +616,14 @@ infection_llm_node_run
 
 - `created_at`
 - `updated_at`
+
+当前实现说明：
+
+- Entity：`InfectionLlmNodeRunEntity`
+- Mapper：`InfectionLlmNodeRunMapper`
+- Service：`InfectionLlmNodeRunService` / `InfectionLlmNodeRunServiceImpl`
+- 建表 SQL：`src/main/resources/sql/infection_refactor_init.sql`
+- 当前未落地 `data_date`、`input_hash`、`token_in`、`token_out` 字段；如后续需要 token 统计或输入去重，应在该表现有字段上增量扩展。
 
 ## 5.3 `node_type` 当前枚举
 
@@ -756,26 +761,7 @@ infection_llm_node_run
 - 支持局部重算
 - 支持页面快速展示
 
-## 6.1.1 需求文档优先字段
-
-如果按需求文档落库，建议优先采用：
-
-- `id`
-- `reqno`
-- `latest_data_date`
-- `snapshot_json`
-- `last_raw_id`
-- `last_summary_id`
-- `overall_status`
-- `overall_risk_level`
-- `primary_site`
-- `version_no`
-- `create_time`
-- `update_time`
-
-## 6.2 建议主字段
-
-### 当前最小落地字段
+## 6.2 当前落地字段
 
 - `id`
 - `reqno`
@@ -807,6 +793,11 @@ infection_llm_node_run
   - 患者级防抖
   - 增量裁决
   - 当前态维护
+- Entity：`InfectionCaseSnapshotEntity`
+- Mapper：`InfectionCaseSnapshotMapper`
+- Service：`InfectionCaseSnapshotService` / `InfectionCaseSnapshotServiceImpl`
+- 建表 SQL：`src/main/resources/sql/infection_case_snapshot.sql`
+- 当前未落地 `snapshot_json`、`last_raw_id`、`last_summary_id` 字段；病例当前态主要通过 active key JSON、最近裁决时间和事件池版本维护。
 - 更丰富的展示字段后续可再扩展
 
 ## 6.3 当前受控值
@@ -843,61 +834,7 @@ infection_llm_node_run
 - 与上个版本做比较
 - 支持页面展示和人工复核
 
-## 7.1.1 需求文档优先字段
-
-如果按需求文档落库，建议优先采用：
-
-- `id`
-- `reqno`
-- `data_date`
-- `result_version`
-- `alert_status`
-- `overall_risk_level`
-- `primary_site`
-- `result_json`
-- `diff_json`
-- `source_snapshot_id`
-- `create_time`
-
-## 7.2 建议主字段
-
-### 主键与版本字段
-
-- `id`
-- `reqno`
-- `result_version`
-- `previous_result_id`
-
-### 当前判决字段
-
-- `alert_status`
-- `risk_level`
-- `suspected_site`
-- `new_onset_flag`
-- `after_48h_flag`
-- `procedure_related_flag`
-- `infection_polarity`
-
-### 结果说明字段
-
-- `summary`
-- `doctor_readable_explanation`
-- `supporting_evidence_json`
-- `excluding_evidence_json`
-- `delta_evidence_json`
-
-### 来源字段
-
-- `analysis_date`
-- `case_snapshot_ref`
-- `judge_packet_ref`
-
-### 追踪字段
-
-- `main_judge_node_run_id`
-- `status`
-
-## 7.3 当前最小落地字段
+## 7.2 当前落地字段
 
 当前代码已先落最小版本：
 
@@ -922,38 +859,32 @@ infection_llm_node_run
 
 - `result_json` 当前保存法官节点完整输出
 - `diff_json` 当前仍是占位，用于先保留 packet/差异上下文
+- Entity：`InfectionAlertResultEntity`
+- Mapper：`InfectionAlertResultMapper`
+- Service：`InfectionAlertResultService` / `InfectionAlertResultServiceImpl`
+- 建表 SQL：`src/main/resources/sql/infection_alert_result.sql`
 - 后续可再扩展：
   - `main_judge_node_run_id`
   - `doctor_readable_explanation`
   - 更细的 diff 结构
 
-### 审计字段
+## 7.3 `alert_status` 当前枚举
 
-- `created_at`
-- `updated_at`
-
-## 7.3 `alert_status` 建议枚举
-
-- `none`
-- `watch`
-- `triggered`
+- `no_risk`
+- `candidate`
+- `warning`
 - `resolved`
 
-## 7.4 `risk_level` 建议枚举
+说明：
 
-- `low`
-- `medium`
-- `high`
-- `critical`
+- 当前 `alert_status` 直接写入法官输出的 `decisionStatus`，与 `infection_case_snapshot.case_state` 同口径。
 
-如果按需求文档落库，建议同步支持：
+## 7.4 `overall_risk_level` 当前枚举
 
-### `overall_risk_level`
-
-- `high`
-- `medium`
-- `low`
 - `none`
+- `low`
+- `medium`
+- `high`
 
 ## 8. `infection_daily_job_log`
 
@@ -961,7 +892,9 @@ infection_llm_node_run
 
 保存每日批处理执行情况，用于任务运维和失败定位。
 
-## 8.2 建议字段
+当前已落地，执行日志写入仍保持轻量用途，不承载业务结果。
+
+## 8.2 当前落地字段
 
 - `id`
 - `job_date`
@@ -971,7 +904,14 @@ infection_llm_node_run
 - `message`
 - `create_time`
 
-### `stage` 建议枚举
+当前实现说明：
+
+- Entity：`InfectionDailyJobLogEntity`
+- Mapper：`InfectionDailyJobLogMapper`
+- Service：`InfectionDailyJobLogService` / `InfectionDailyJobLogServiceImpl`
+- 建表 SQL：`src/main/resources/sql/infection_daily_job_log.sql`
+
+### `stage` 当前枚举
 
 - `load`
 - `normalize`
@@ -979,45 +919,85 @@ infection_llm_node_run
 - `finalize`
 - `snapshot`
 
-### `status` 建议枚举
+### `status` 当前枚举
 
 - `success`
 - `skip`
 - `error`
 
-## 9. `infection_node_result`
+## 9. `infection_pre_review_demo`
 
 ## 9.1 表职责
 
-用于汇总节点结果，避免每次都从 `infection_llm_node_run.output_json` 中二次解析。
+`infection_pre_review_demo` 是 AI 智能预审临时演示快照表。
 
-## 9.2 建议字段
+作用：
 
-- `id`
+- 按 `reqno` 保存患者时间线 HTML 快照
+- 按 `reqno` 保存 AI 智能预审 JSON
+- 供外部演示程序直接查询展示
+
+说明：
+
+- 该表不承载正式业务状态
+- 不参与现有院感结果版本化
+- 不进入院感预警正式主链路
+
+## 9.2 当前落地字段
+
 - `reqno`
-- `data_date`
-- `node_name`
-- `decision`
-- `confidence`
-- `result_json`
-- `llm_run_id`
-- `create_time`
+- `timeline_html`
+- `ai_pre_review_json`
 
-## 10. 可选对象模型设计
+当前实现说明：
 
-除数据库表外，建议先在代码中定义一批中间对象，降低实现耦合。
+- Entity：`InfectionPreReviewDemoEntity`
+- Mapper：`InfectionPreReviewDemoMapper`
+- Service：`InfectionPreReviewDemoSnapshotService`
+- 建表 SQL：`src/main/resources/sql/infection_pre_review_demo.sql`
 
-建议对象：
+## 9.3 `infection_node_result` 当前状态
 
-- `SnapshotDiffResult`
+`infection_node_result` 当前未落地：
+
+- 没有 Entity
+- 没有 Mapper
+- 没有 Service
+- 没有 SQL
+
+原因：
+
+- 当前 `infection_llm_node_run.normalized_output_payload` 已经承载节点级归一化输出和统计信息
+- `infection_alert_result.result_json` 已经承载病例法官完整结果
+- 当前阶段还没有必须为节点结果单独建表的查询场景
+
+如后续页面或评估链路需要高频按节点结果查询，再单独设计 `infection_node_result`，不作为当前主链路的一部分。
+
+## 10. 当前对象模型状态
+
+除数据库表外，当前已在代码中定义一批中间对象，降低实现耦合。
+
+已落地对象：
+
 - `EvidenceBlock`
-- `StructuredFactBlock`
-- `ClinicalTextBlock`
-- `MidSemanticBlock`
-- `TimelineContextBlock`
 - `NormalizedInfectionEvent`
 - `InfectionEvidencePacket`
-- `InfectionJudgeResult`
+- `InfectionJudgeInput`
+- `InfectionJudgeContext`
+- `InfectionJudgePrecompute`
+- `InfectionRecentChanges`
+- `JudgeDecisionResult`
+- `JudgeDecisionBuckets`
+- `JudgeEvidenceGroup`
+- `JudgeCatalogEvent`
+- `LlmEventExtractorResult`
+
+已落地构建类：
+
+- `StructuredFactBlockBuilder`
+- `ClinicalTextBlockBuilder`
+- `MidSemanticBlockBuilder`
+- `TimelineContextBlockBuilder`
 
 当前补充：
 
@@ -1029,9 +1009,7 @@ infection_llm_node_run
   - `decisionBuckets`
   - `backgroundSummary`
 
-## 11. Mapper / Service 落地建议
-
-建议新增模块分层：
+## 11. Mapper / Service 当前落地状态
 
 ### `domain/entity`
 
@@ -1040,13 +1018,13 @@ infection_llm_node_run
 - `InfectionCaseSnapshotEntity`
 - `InfectionAlertResultEntity`
 - `InfectionDailyJobLogEntity`
-- `InfectionNodeResultEntity`
+- `InfectionPreReviewDemoEntity`
 
-要求：
+说明：
 
-- 实体类字段要写注释
-- SQL Server 建表字段要写注释
-- 枚举字段配套创建枚举类
+- 正式院感主链路表已具备 Entity。
+- `InfectionPreReviewDemoEntity` 只服务临时演示。
+- `InfectionNodeResultEntity` 当前不存在。
 
 ### `mapper`
 
@@ -1055,7 +1033,7 @@ infection_llm_node_run
 - `InfectionCaseSnapshotMapper`
 - `InfectionAlertResultMapper`
 - `InfectionDailyJobLogMapper`
-- `InfectionNodeResultMapper`
+- `InfectionPreReviewDemoMapper`
 
 ### `service`
 
@@ -1064,73 +1042,67 @@ infection_llm_node_run
 - `InfectionCaseSnapshotService`
 - `InfectionAlertResultService`
 - `InfectionDailyJobLogService`
-- `InfectionNodeResultService`
+- `InfectionEventIngestionService`
 
 ### `service/impl`
 
-- 对应实现类
+- `InfectionEventPoolServiceImpl`
+- `InfectionLlmNodeRunServiceImpl`
+- `InfectionCaseSnapshotServiceImpl`
+- `InfectionAlertResultServiceImpl`
+- `InfectionDailyJobLogServiceImpl`
+- `InfectionEventIngestionServiceImpl`
+- `InfectionPreReviewDemoSnapshotService`
 
 说明：
 
-- 第一阶段先把 Mapper 和基础 Service 建出来
-- 再把复杂逻辑留给专用 orchestrator 或 analyzer service
+- 第一阶段的 Mapper 和基础 Service 已经建出。
+- 当前复杂业务编排主要落在 `EventExtractHandler`、`CaseRecomputeHandler`、`LlmEventExtractorServiceImpl`、`InfectionJudgeServiceImpl` 和对应 support 类中。
+- 后续新增持久化对象时，仍优先沿 Entity / Mapper / Service / ServiceImpl 小步扩展。
 
-## 12. 与现有表的关系建议
+## 12. 与现有表的关系
 
-## 10.1 `patient_raw_data` 与 `infection_event_pool`
+## 12.1 `patient_raw_data` 与 `infection_event_pool`
 
-建议关系：
+当前关系：
 
 - 一条 `patient_raw_data` 可产生多条 `infection_event_pool`
 
-建议保留字段：
+当前保留字段：
 
 - `raw_data_id`
 - `source_ref`
 
-## 10.2 `infection_case_snapshot` 与 `infection_alert_result`
+## 12.2 `infection_case_snapshot` 与 `infection_alert_result`
 
-建议关系：
+当前关系：
 
 - 快照保存“当前态”
 - 结果表保存“历史版本”
 
-## 13. 建表优先级
+## 13. 当前表结构状态
 
-### 第一优先级
+已落地：
 
 - `infection_event_pool`
 - `infection_llm_node_run`
-
-原因：
-
-- 这是后续院感预警链路能否起步的基础
-
-### 第二优先级
-
 - `infection_case_snapshot`
-
-原因：
-
-- 支撑局部重算和当前态展示
-
-### 第三优先级
-
 - `infection_alert_result`
-
-原因：
-
-- 支撑版本化输出和页面联动
-
-### 第四优先级
-
 - `infection_daily_job_log`
+
+临时演示表：
+
+- `infection_pre_review_demo`
+
+未落地：
+
 - `infection_node_result`
 
-原因：
+当前说明：
 
-- 支撑任务运维
-- 支撑节点结果快速查询
+- `infection_event_pool` 与 `infection_llm_node_run` 的建表 SQL 在 `src/main/resources/sql/infection_refactor_init.sql`。
+- `infection_case_snapshot`、`infection_alert_result`、`infection_daily_job_log`、`infection_pre_review_demo` 已有独立 SQL 文件。
+- 后续如果要补 `infection_node_result`，应先明确查询场景，避免和 `infection_llm_node_run.normalized_output_payload` 重复。
 
 ## 14. 当前不落地的模型
 
@@ -1142,7 +1114,7 @@ infection_llm_node_run
 
 原因：
 
-- 当前阶段目标是先把院感预警主链路跑通
+- 当前阶段优先完善已经落地的院感预警基础链路，不进入最终审核和人工复核闭环的正式建模
 
 ## 15. 代码与配置一致性要求
 
@@ -1154,11 +1126,11 @@ infection_llm_node_run
 
 后续让 Codex agent 开发时，建议按以下顺序拆任务：
 
-1. 建立 4 张表的 Entity / Mapper / Service 骨架
-2. 先打通 `infection_event_pool` 写入
-3. 再打通 `infection_llm_node_run` 留痕
-4. 再补 `infection_case_snapshot`
-5. 最后补 `infection_alert_result`
+1. 不再重复创建已落地的 5 张正式表骨架。
+2. 优先补齐 `infection_event_pool` Canonical Schema 与代码枚举 / Prompt / Normalizer 的一致性。
+3. 继续完善 `infection_llm_node_run` 的运行统计和失败定位能力。
+4. 完善 `infection_case_snapshot` 与 `infection_alert_result` 的 diff 语义和页面联动字段。
+5. 只有出现明确查询场景时，再考虑 `infection_node_result`。
 
 每一步都要保证：
 
@@ -1169,4 +1141,4 @@ infection_llm_node_run
 
 ## 17. 一句话结论
 
-下一阶段的数据模型建设重点，不是继续堆叠原始 JSON，而是建立以 `infection_event_pool` 为中枢、以 `infection_case_snapshot` 为当前态、以 `infection_alert_result` 为版本输出、以 `infection_llm_node_run` 为可观测支撑的院感预警数据体系。
+当前数据模型建设已经完成院感预警基础表骨架，后续重点不是继续新增表，而是治理 `infection_event_pool` 的 Canonical Schema、完善 `infection_case_snapshot` 当前态语义、细化 `infection_alert_result` 版本 diff，并让 `infection_llm_node_run` 成为稳定的可观测支撑。
