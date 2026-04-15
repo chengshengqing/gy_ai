@@ -643,7 +643,7 @@ processPendingEventTasks()
 1. claim `infection_event_task` 中 `task_type=EVENT_EXTRACT` 的任务
 2. 按 `patient_raw_data_id + raw_data_last_time` 读取最新有效快照
 3. 调用 `PatientService.buildSummaryWindowJson(reqno, dataDate)` 生成最近窗口上下文
-4. 调用 `InfectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson)` 构建证据块
+4. 调用 `InfectionEvidenceBlockService.buildBlocks(rawData, timelineWindowJson)` 构建证据块，其中 `CLINICAL_TEXT` 先做 LLM 候选原文片段选择、空候选过滤和成功候选合并
 5. 按触发原因和 `changedTypes` 选择 primary blocks
 6. 调用 `LlmEventExtractorService.extractAndSave(buildResult, primaryBlocks)`
 7. `LlmEventExtractorServiceImpl` 为每个 block 创建 `infection_llm_node_run` 待处理记录
@@ -658,16 +658,16 @@ processPendingEventTasks()
 - `StructuredFactBlock`
   来自 `filter_data_json` 的结构化事实块
 - `ClinicalTextBlock`
-  来自病程、查房、会诊、申请等临床文本块
+  来自病程、查房、会诊、申请等临床文本块；构建期先通过 `AiGateway` 做候选原文片段选择，`skipped`/空候选会被过滤，成功候选按 5000 字预算合并，失败回退原始 block
 - `MidSemanticBlock`
-  来自 `struct_data_json` 的中间层语义块
+  来自 `struct_data_json.day_context` 的中间层语义压缩结果，仅注入 `STRUCTURED_FACT / CLINICAL_TEXT` 作为背景，不再单独执行事件抽取
 - `TimelineContextBlock`
   来自最近窗口 `event_json` 现拼时间轴背景块，仅供 LLM 参考
 
 架构特征：
 
 - 事件链路由 `infection_event_task` 独立承载
-- 候选层不额外调用 LLM，只按变更来源路由到事件抽取
+- `CLINICAL_TEXT` 候选层会额外调用 LLM 做病程原文片段精筛；后续事件抽取仍按变更来源路由 primary blocks
 - 结构化数据是事件抽取的增强背景，不是前置阻塞条件
 - 模型运行记录写入 `infection_llm_node_run`
 

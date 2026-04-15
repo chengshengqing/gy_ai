@@ -50,6 +50,8 @@ patient_raw_data
   -> infection_event_task(EVENT_EXTRACT)
   -> EventExtractHandler
   -> InfectionEvidenceBlockService.buildBlocks(...)
+  -> ClinicalTextBlockBuilder 对 CLINICAL_TEXT 执行 LLM 候选原文片段选择
+  -> 过滤空候选并按长度预算合并成功候选块
   -> Block 路由选择 primaryBlocks
   -> LlmEventExtractorService.extractAndSave(...)
   -> EventNormalizerService.normalize(...)
@@ -133,7 +135,8 @@ InfectionEvidenceBlockServiceImpl
 
 执行边界：
 
-- `STRUCTURED_FACT`、`CLINICAL_TEXT`、`MID_SEMANTIC` 属于 primary blocks，可执行事件抽取。
+- `STRUCTURED_FACT`、`CLINICAL_TEXT` 属于 primary blocks，可执行事件抽取。
+- `MID_SEMANTIC` 仅作为压缩上下文注入 primary blocks，不再单独执行事件抽取。
 - `TIMELINE_CONTEXT` 只作为上下文存在，不单独执行事件抽取。
 - `structuredFactBlocks` 可以只作为上下文存在，不一定进入本次 primaryBlocks 执行集合。
 - Block 选择只影响“是否执行抽取”，不影响 `buildBlocks(...)` 的构建结果。
@@ -179,6 +182,13 @@ InfectionEvidenceBlockServiceImpl
 
 - 识别病程文本中的感染相关表达。
 - 识别“待排、考虑、不能除外、已排除”等语义。
+- 在事件抽取前先通过 `ClinicalTextBlockBuilder` 调用 `AiGateway` 做候选原文片段选择，减少长病程正文噪声。
+- 候选层输入只包含当前 `CLINICAL_TEXT` block 内的 `note_items`，不传入 `structuredContext`、`recentChangeContext` 等外部上下文。
+- 候选层只接受 JSON 输出，`status` 只允许 `success / skipped`，`candidate_items` 必须为数组。
+- 候选项只允许返回 `note_ref + source_text + reason_tag`，且 `source_text` 必须能回查到对应病程原文。
+- `status=skipped` 或候选项为空时，删除该 `CLINICAL_TEXT` block，不再进入后续事件抽取 LLM。
+- 候选层输出非空但不可追溯、JSON 非法或调用异常时，回退原始病程 block；回退 block 不参与后续候选合并。
+- 成功候选 block 会按 `MAX_NOTE_TEXT_LENGTH=5000` 的文本预算继续合并为 `clinical_note_candidates_batch`，减少后续事件抽取 LLM 请求；超过预算时分批保留多个 block。
 
 当前触发重点：
 
@@ -195,7 +205,8 @@ InfectionEvidenceBlockServiceImpl
 主要用途：
 
 - 承载结构化摘要阶段已经生成的中间语义。
-- 为法官节点提供候选风险上下文。
+- 为 `STRUCTURED_FACT` 和 `CLINICAL_TEXT` 提供压缩背景上下文。
+- 不写入 `EvidenceBlockBuildResult`，不作为 primary block 单独触发事件抽取。
 
 ### 5.4 `TIMELINE_CONTEXT`
 
@@ -272,27 +283,14 @@ InfectionEvidenceBlockServiceImpl
 
 - 当前病程文本语义主要由病程变化触发。
 
-### 6.3 `MID_SEMANTIC` 路由
-
-满足 `CLINICAL_TEXT` 路由时执行，或者命中以下 `trigger_reason_codes` 时执行：
-
-- `ANTIBIOTIC_OR_ORDER_CHANGED`
-- `OPERATION_CHANGED`
-- `TRANSFER_CHANGED`
-
-命中以下 `changed_types` 时也执行：
-
-- `FULL_PATIENT`
-- `ILLNESS_COURSE`
-- `DOCTOR_ADVICE`
-- `USE_MEDICINE`
-- `TRANSFER`
-- `OPERATION`
+### 6.3 `MID_SEMANTIC` 上下文
 
 说明：
 
-- `MID_SEMANTIC` 当前主要承载感染问题、待排感染、风险项。
-- 它既可能受病程变化影响，也可能受操作、转运、医嘱风险变化影响。
+- `MID_SEMANTIC` 当前来自 `struct_data_json.day_context`，承载日级压缩语义。
+- `MID_SEMANTIC` 不再作为 primary block 单独路由和抽取事件。
+- `STRUCTURED_FACT` 仅注入去除 `note_semantics` 后的压缩客观上下文。
+- `CLINICAL_TEXT` 仅注入当前 note 对应的 `note_semantics` 压缩上下文。
 
 ## 7. LLM 事件抽取
 
@@ -352,7 +350,7 @@ LlmEventExtractorServiceImpl
 - 写路径严格，读路径简单。
 - 不为旧枚举值、旧字段值、旧 Prompt 输出做长期兜底。
 - 当前没有历史生产数据，不保留旧数据兼容层。
-- 后续如发现字段漂移，应先修 schema / enum / prompt / normalizer，而不是扩大 alias。
+- 模型输出与 Canonical Schema 不一致时，不在 `EventNormalizer` 中做隐式字段修复；应在对应 Prompt 或 Schema 设计层显式调整，并同步记录约束变化。
 
 关键字段语义：
 
@@ -396,11 +394,11 @@ LlmEventExtractorServiceImpl
 - 原始结构化事实优先。
 - 非法 JSON、关键字段非法、全部事件被丢弃时必须显式失败。
 
-过渡策略：
+当前策略：
 
-- 当前少量字段漂移可以通过“硬校验 + 软修正 + 软丢弃”处理。
-- 软修正记录写入 `attributes_json.normalizer_fallbacks`，用于后续统计和清理。
-- 该策略不是新的 alias 协议，稳定后应收敛或删除。
+- `EventNormalizer` 只负责协议校验、标准化落库对象构造和护栏拒绝。
+- 不在 `EventNormalizer` 中放宽 canonical schema，也不在此处兜底模型字段漂移。
+- 模型输出与 Canonical Schema 不一致时，`EventNormalizer` 保持拒绝语义；字段语义变化应在 Prompt 或 Schema 设计层显式处理。
 
 ## 10. 事件池
 
@@ -411,6 +409,7 @@ LlmEventExtractorServiceImpl
 - 当前标准化事件池
 - 按 `event_key` 幂等写入
 - 同一 `event_key` 命中时原地更新
+- `event_key` 包含 `EvidenceBlock.blockKey` 维度；同一 block 重试入池前按 `event_key` block 前缀清理本 block 旧事件
 - 不引入追加式版本记录
 - 不以 `superseded` 为主流程设计核心
 
@@ -570,7 +569,7 @@ CaseRecomputeHandler
 后续优先级：
 
 1. 治理 `infection_event_pool` Canonical Schema 与代码枚举 / Prompt / Normalizer 一致性。
-2. 收敛 `EventNormalizer` 过渡期软修正逻辑。
+2. 保持 `EventNormalizer` 与 Canonical Schema / Prompt 输出协议一致。
 3. 细化 `infection_alert_result.diff_json` 的稳定结构。
 4. 完善医生可读解释和页面展示字段。
 5. 评估是否需要 `infection_node_result`。
@@ -595,7 +594,7 @@ CaseRecomputeHandler
 事件抽取：
 
 - 输入某个 `reqno + data_date`，能成功生成事件并写入 `infection_event_pool`。
-- 同一批重复执行，不产生重复事件，`event_key` 保持幂等。
+- 同一批重复执行，不产生重复事件，`event_key` 保持 block 级幂等。
 - 至少覆盖 `STRUCTURED_FACT`、`CLINICAL_TEXT`、`MID_SEMANTIC`。
 - `TIMELINE_CONTEXT` 不直接落入事件池，只作为上下文。
 - LLM 返回非法 JSON 时写入 `infection_llm_node_run` 错误记录，并触发显式失败或确定性 fallback。

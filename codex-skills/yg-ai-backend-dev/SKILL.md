@@ -25,7 +25,7 @@ Use this skill as the navigation layer for backend development in `yg_ai`. Treat
    - Infection warning and judge flow: `docs/infection-warning/infection-warning-design.md`
    - Tables, entities, enums, mapper changes: `docs/data/data-model-design.md`
    - Raw JSON structure: `docs/data/patient-raw-json-structure.md`
-3. Inspect the current implementation with fast file search where available. Prefer `rg`; if unavailable, use `find` and targeted reads.
+3. Inspect the current implementation with `grep` and `find`; this environment does not provide `rg`. When reading local files, use line-numbered, range-limited reads instead of whole-file output.
 
 ## Development Rules
 

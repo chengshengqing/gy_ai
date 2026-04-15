@@ -188,7 +188,7 @@
   - `debounce_until`
   - `trigger_priority`
   - `event_pool_version_at_enqueue`
-- 候选层不再额外调用 LLM，只按变更来源写入 `trigger_reason_codes`
+- `trigger_reason_codes` 只负责按变更来源路由 `EVENT_EXTRACT`；`CLINICAL_TEXT` block 构建期会额外调用 LLM 做候选原文片段选择，并在空候选时过滤该 block
 - `ILLNESS_COURSE` 新增会直接路由到 `EVENT_EXTRACT`
 
 ## 2.5 `ai_process_log`
@@ -493,7 +493,10 @@ infection_llm_node_run
 
 当前实现规则：
 
-- `reqno + "|" + data_date + "|" + source_type + "|" + source_module + "|" + short_hash(business_key)`
+- `reqno + "|" + data_date + "|" + source_type + "|" + source_module + "|" + block_key + "|" + short_hash(business_key)`
+
+其中 `block_key` 来自 `EvidenceBlock.blockKey`，用于把同一 `patient_raw_data` 行中的不同抽取 block 隔离开。
+`EVENT_EXTRACT` 重试同一 block 时，会先按该前缀删除本 block 已入池事件，再重新写入本次归一化事件，避免部分 block 成功后任务失败导致重试重复入池。
 
 其中 `business_key` 当前由以下字段组合：
 
@@ -518,7 +521,7 @@ infection_llm_node_run
 
 - `fact` 对应 `STRUCTURED_FACT`
 - `text` 对应 `CLINICAL_TEXT`
-- `semantic` 对应 `MID_SEMANTIC`
+- `semantic` 保留为历史节点类型；当前 `MID_SEMANTIC` 仅作为压缩上下文注入 primary blocks，不再单独执行事件抽取
 - `context` 对应 `TIMELINE_CONTEXT`
 
 ### `attributes_json`
@@ -998,6 +1001,8 @@ infection_llm_node_run
 - `ClinicalTextBlockBuilder`
 - `MidSemanticBlockBuilder`
 - `TimelineContextBlockBuilder`
+
+当前 `MidSemanticBlockBuilder` 只基于 `struct_data_json.day_context` 构建压缩上下文，结果由 `InfectionEvidenceBlockServiceImpl` 注入 `STRUCTURED_FACT / CLINICAL_TEXT`，不再写入 `EvidenceBlockBuildResult` 的 primary block 集合。
 
 当前补充：
 

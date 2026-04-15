@@ -199,6 +199,7 @@ SummaryWarningScheduler.processPendingEventTasks()
   -> EventExtractHandler
   -> PatientService.buildSummaryWindowJson(...)
   -> InfectionEvidenceBlockServiceImpl.buildBlocks(...)
+  -> ClinicalTextBlockBuilder 调用 AiGateway 选择、过滤、合并 CLINICAL_TEXT 候选原文片段
   -> EventExtractHandler.selectPrimaryBlocks(...)
   -> LlmEventExtractorServiceImpl.extractAndSave(...)
   -> LlmEventExtractionSupport
@@ -214,11 +215,14 @@ SummaryWarningScheduler.processPendingEventTasks()
 
 - claim `infection_event_task` 中的 `EVENT_EXTRACT` 任务。
 - 基于 `patient_raw_data.event_json` 构造窗口上下文。
-- 构建 `STRUCTURED_FACT / CLINICAL_TEXT / MID_SEMANTIC / TIMELINE_CONTEXT` EvidenceBlock。
+- 构建 `STRUCTURED_FACT / CLINICAL_TEXT / TIMELINE_CONTEXT` EvidenceBlock，并将 `MID_SEMANTIC` 作为压缩上下文注入 primary blocks。
+- `CLINICAL_TEXT` 在构建期先通过 LLM 候选层压缩为可追溯原文片段，候选输入只包含当前 block 的 `note_items`。
+- `CLINICAL_TEXT` 候选层输出 `status=skipped` 或空候选时删除 block；输出非法、调用失败或候选不可追溯时回退原始 block。
+- 成功候选 block 会按 5000 字文本预算继续合并；回退 block 不参与合并，避免失败路径扩大单次事件抽取输入。
 - 根据 `trigger_reason_codes` 和 `changed_types` 裁剪 primary blocks。
 - 调用 LLM 抽取事件。
 - 通过 `EventNormalizerServiceImpl` 归一化并校验事件。
-- 按 `event_key` 幂等写入 `infection_event_pool`。
+- 按包含 `EvidenceBlock.blockKey` 的 `event_key` 写入 `infection_event_pool`，重试同一 block 时先按 block 前缀删除旧事件。
 - 产生有效事件后触发患者级 `CASE_RECOMPUTE`。
 
 关键类：

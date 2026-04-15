@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.List;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
@@ -76,6 +77,23 @@ public class InfectionEventPoolServiceImpl
     }
 
     @Override
+    public int deleteByEventKeyPrefix(String eventKeyPrefix) {
+        if (!isSafeEventKeyPrefix(eventKeyPrefix)) {
+            return 0;
+        }
+        return this.baseMapper.delete(new QueryWrapper<InfectionEventPoolEntity>()
+                .likeRight("event_key", eventKeyPrefix.trim()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<InfectionEventPoolEntity> replaceNormalizedEventsByEventKeyPrefix(String eventKeyPrefix,
+                                                                                  List<NormalizedInfectionEvent> events) {
+        deleteByEventKeyPrefix(eventKeyPrefix);
+        return saveNormalizedEvents(events);
+    }
+
+    @Override
     public List<InfectionEventPoolEntity> listActiveEvents(String reqno) {
         if (!StringUtils.hasText(reqno)) {
             return Collections.emptyList();
@@ -107,6 +125,15 @@ public class InfectionEventPoolServiceImpl
         Assert.hasText(entity.getSourceType(), "infectionEventPool.sourceType must not be blank");
         Assert.hasText(entity.getEventKey(), "infectionEventPool.eventKey must not be blank");
         Assert.hasText(entity.getEventType(), "infectionEventPool.eventType must not be blank");
+    }
+
+    private boolean isSafeEventKeyPrefix(String eventKeyPrefix) {
+        if (!StringUtils.hasText(eventKeyPrefix)) {
+            return false;
+        }
+        String prefix = eventKeyPrefix.trim();
+        return prefix.endsWith("|")
+                && prefix.chars().filter(ch -> ch == '|').count() >= 5;
     }
 
     private InfectionEventPoolEntity toEntity(NormalizedInfectionEvent event) {

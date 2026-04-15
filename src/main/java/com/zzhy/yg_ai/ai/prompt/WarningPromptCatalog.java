@@ -14,10 +14,135 @@ import org.springframework.stereotype.Component;
 @Component
 public class WarningPromptCatalog {
 
-    public static final String EVENT_EXTRACTOR_PROMPT_VERSION = "infection-event-extractor-v4";
+    public static final String EVENT_EXTRACTOR_PROMPT_VERSION = "infection-event-extractor-v6";
     public static final String STRUCTURED_FACT_REFINEMENT_PROMPT_VERSION = "structured-fact-refinement-v1";
     public static final String CASE_JUDGE_PROMPT_VERSION = "infection-case-judge-v1";
     public static final String PRE_REVIEW_DEMO_EXTENSION_PROMPT_VERSION = "infection-pre-review-demo-extension-v1";
+
+    private static final String CLINICAL_TEXT_CANDIDATE_SELECTOR_RULES = """
+            你是院感预警病程候选文本抽取器。
+
+            【任务】
+            从输入的当日病程 note_items 中，抽取“医生用于判断是否存在感染或解释感染相关现象”的关键原文片段。
+
+            只做候选文本选择，不做院感归因，不输出事件，不总结、不改写、不补写。
+
+            ---
+
+            【核心原则（最重要）】
+
+            只选择“医生在判断感染相关问题”的句子。
+
+            判断的核心是，这句话是否在回答：
+
+            - 是否存在感染？
+            - 是否支持或不支持感染？
+            - 是否为非感染原因（如术后反应、应激等）？
+            - 是否存在污染或定植？
+            - 是否进行了感染相关操作或抗感染处理？
+
+            👉 如果一句话没有在回答这些问题之一，默认不选。
+
+            ---
+
+            【优先选择内容】
+
+            优先选择以下类型句子：
+
+            1. 感染判断（infection_assessment）
+               如：
+
+            - 考虑感染 / 感染可能 / 倾向感染 / 不能除外感染
+
+            2. 否定或反证（negative_assessment）
+               如：
+
+            - 不支持感染 / 排除感染 / 更倾向非感染因素 / 术后反应
+
+            3. 污染或定植（contamination_or_colonization）
+               如：
+
+            - 考虑污染 / 可能污染 / 定植 / 临床意义不大
+
+            4. 已发生的侵入性操作或器械暴露（device_or_procedure_exposure）
+               如：
+
+            - 已行穿刺 / 手术 / 置管 / 引流 / 导尿 / 呼吸机支持
+
+            5. 抗感染处理（antimicrobial_plan）
+               如：
+
+            - 已抗感染治疗 / 使用抗生素 / 拟抗感染 / 调整抗生素
+
+            ---
+
+            【默认不选内容】
+
+            以下内容一般不选（除非同时包含明确感染判断）：
+
+            - 仅有疾病名称或诊断（如“肺炎”“脓肿”）
+            - 诊断列表（如“1.xxx 2.xxx”）
+            - 纯检查结果（如“CT示…”“血常规提示…”）
+            - 检查或操作建议（如“建议完善气管镜检查”）
+            - 普通病情描述（如“症状好转”“精神尚可”）
+            - 与感染无关内容
+
+            ---
+
+            【关键区分】
+
+            - 疾病名称 ≠ 感染判断
+              “肺炎”不等于“感染判断”，必须有“考虑/倾向/排除”等语气
+
+            - 检查 ≠ 暴露
+              “建议检查”不选，“已行操作”才选
+
+            - 普通治疗 ≠ 抗感染
+              仅选择抗感染相关内容
+
+            ---
+
+            【截取要求】
+
+            - source_text 必须为原文连续片段，不得改写
+            - 优先选择最短但语义完整的一句话
+            - 不跨句拼接
+            - 建议长度 20~80 字
+
+            ---
+
+            【输出格式】
+
+            {
+            "status": "success|skipped",
+            "candidate_items": [
+            {
+            "note_ref": "必须来自输入 note_items[].note_ref",
+            "source_text": "原文片段",
+            "reason_tag": "infection_assessment|negative_assessment|contamination_or_colonization|device_or_procedure_exposure|antimicrobial_plan|other"
+            }
+            ]
+            }
+
+            无候选时返回：
+            {"status":"skipped","candidate_items":[]}
+
+            ---
+
+            【数量与排序】
+
+            - 最多 16 条
+            - 按对感染判断的重要性排序：
+              判断类 > 否定类 > 污染/定植 > 暴露 > 抗感染
+
+            ---
+
+            【目标】
+
+            只保留“医生真正用于判断感染的句子”，
+            不要保留普通医学信息。
+
+            """;
 
     private static final String COMMON_RULES = """
             你是院感预警事件抽取器。
@@ -75,8 +200,9 @@ public class WarningPromptCatalog {
             当前 block_type=STRUCTURED_FACT。
             当前层只做事实抽取，不做“院感成立/医院获得性”归因。拿不准时优先跳过，不要强行解释。
 
-            只从 blockPayload 抽取，不能仅凭 timelineContext 产出事件。
+            只从 blockPayload.data 抽取，不能仅凭 timelineContext 或 blockPayload.mid_semantic_context 产出事件。
             source_text 必须来自对应 source_section。
+            blockPayload.mid_semantic_context 只是今日压缩背景，用于辅助识别重点，不作为独立事件来源。
 
             阅读顺序：
             1. priority_facts
@@ -130,7 +256,7 @@ public class WarningPromptCatalog {
 
             4. subtype 禁止规则
                - STRUCTURED_FACT 中，一般不要使用 infection_positive_statement / infection_negative_statement
-               - 这类 subtype 更适合 CLINICAL_TEXT 或 MID_SEMANTIC
+               - 这类 subtype 更适合 CLINICAL_TEXT
 
             5. body_site
                - 只在部位证据明确时填写具体值
@@ -160,6 +286,7 @@ public class WarningPromptCatalog {
             1. 当前病程文本原文
             2. structuredContext
             3. recentChangeContext
+            4. blockPayload.mid_semantic_context
 
             优先输出：
             - infection_positive_statement
@@ -188,32 +315,31 @@ public class WarningPromptCatalog {
                - device_exposure：导尿、导管、插管、引流管、呼吸机等明确器械暴露
                - procedure_exposure：手术、穿刺、置管、侵入性操作
                - 经阴道B超、胸部DR、常规彩超、普通检查行为默认跳过
+               - device_exposure 字段固定组合：event_type=device、event_subtype=device_exposure、clinical_meaning=baseline_problem、evidence_role=risk_only、evidence_tier=moderate
+               - procedure_exposure 字段固定组合：event_type=procedure、event_subtype=procedure_exposure、clinical_meaning=baseline_problem、evidence_role=risk_only、evidence_tier=moderate
+               - risk_only 只能用于 evidence_role，禁止作为 clinical_meaning 输出
+               - 病程文本中的置管、穿刺、导尿、插管、引流等暴露记录默认 evidence_tier=moderate，不要输出 hard
 
             4. 当同句同时存在弱阳性标签和反证词，如“无发热、无咳痰、无畏寒”，优先保留反证或 skipped，不输出弱阳性的 infection_positive_statement。
 
             5. body_site 只在感染部位明确时填写；仅有检查部位或症状部位时，优先 unknown。
 
+            6. clinical_meaning 只能使用 infection_support / infection_against / infection_uncertain / screening / baseline_problem。
+               - 感染支持判断：clinical_meaning=infection_support、evidence_role=support
+               - 感染反证判断：clinical_meaning=infection_against、evidence_role=against
+               - 感染待排或不能除外：clinical_meaning=infection_uncertain，evidence_role 根据语义使用 support 或 background
+               - 暴露、侵入性操作、管理动作：clinical_meaning=baseline_problem、evidence_role=risk_only
+               - 不要把 support、against、risk_only、uncertain 写入 clinical_meaning
+
             护栏：
             - source_text 必须来自当前病程文本
-            - structuredContext 和 recentChangeContext 只能辅助理解，不能单独生成事件
+            - structuredContext、recentChangeContext 和 blockPayload.mid_semantic_context 只能辅助理解，不能单独生成事件
             - structuredContext 只能帮助识别文本里的判断对象，不得把 structuredContext 中的原句、检验值、影像结论、医嘱内容直接作为 source_text
-            - 如果一个事件只能由 structuredContext 或 recentChangeContext 支撑，而当前病程正文没有对应原句，返回 skipped，不要输出该事件
+            - blockPayload.mid_semantic_context 只能作为当前 note 的压缩背景，不得把其中的 summary/findings/actions/risks 直接作为 source_text
+            - 如果一个事件只能由 structuredContext、recentChangeContext 或 blockPayload.mid_semantic_context 支撑，而当前病程正文没有对应原句，返回 skipped，不要输出该事件
             - source_section 必须输出 JSON null，不要输出字符串 "null"
             - CLINICAL_TEXT 下禁止填写 diagnosis、vital_signs、lab_results、imaging、doctor_orders、use_medicine、transfer、operation
-            """;
-
-    private static final String MID_SEMANTIC_RULES = """
-            当前 block_type=MID_SEMANTIC。
-            重点抽取：
-            - core_problems 中的感染问题
-            - differential_diagnosis 中的待排感染
-            - risk/risk_alerts/risk_candidates 中的器械暴露、操作暴露、感染风险
-
-            source_section 可为 null。
-            对纯风险项：
-            - 明确器械暴露时，优先 event_type=device、event_subtype=device_exposure、evidence_role=risk_only
-            - 明确操作暴露时，优先 event_type=procedure、event_subtype=procedure_exposure、evidence_role=risk_only
-            - 仅有模糊感染风险、但无明确暴露类型时，可使用 event_type=problem 或 assessment，并将 clinical_meaning 设为 infection_uncertain
+            - CLINICAL_TEXT 的 evidence_tier 默认使用 moderate；仅历史转述、弱提示或语义不完整但仍需保留时使用 weak；不要将病程文本事件输出为 hard
             """;
 
     private static final String STRUCTURED_FACT_REFINEMENT_COMMON_RULES = """
@@ -355,9 +481,12 @@ public class WarningPromptCatalog {
         return switch (blockType) {
             case STRUCTURED_FACT -> COMMON_RULES + "\n\n" + STRUCTURED_FACT_RULES;
             case CLINICAL_TEXT -> COMMON_RULES + "\n\n" + CLINICAL_TEXT_RULES;
-            case MID_SEMANTIC -> COMMON_RULES + "\n\n" + MID_SEMANTIC_RULES;
-            default -> COMMON_RULES;
+            default -> throw new IllegalArgumentException("Unsupported event extractor block type: " + blockType);
         };
+    }
+
+    public static String buildClinicalTextCandidateSelectorPrompt() {
+        return CLINICAL_TEXT_CANDIDATE_SELECTOR_RULES;
     }
 
     public static String buildStructuredFactRefinementPrompt() {

@@ -11,7 +11,7 @@ public class SummaryWarningScheduler {
 
     private final InfectionPipelineFacade infectionPipelineFacade;
 
-    @Scheduled(fixedDelayString = "${infection.warning.fixed-delay:60000}")
+//    @Scheduled(fixedDelayString = "${infection.warning.fixed-delay:60000}")
     public void processPendingEventTasks() {
         infectionPipelineFacade.triggerEventExtract();
     }

@@ -188,28 +188,12 @@ public class EventExtractHandler extends AbstractTaskHandler<InfectionEventTaskE
                 PatientCourseDataType.MICROBE);
         boolean includeClinicalText = triggerReasons.contains(InfectionEventTriggerReasonCode.ILLNESS_COURSE_CHANGED)
                 || hasAny(changedTypes, PatientCourseDataType.FULL_PATIENT, PatientCourseDataType.ILLNESS_COURSE);
-        boolean includeMidSemantic = includeClinicalText
-                || hasAny(triggerReasons,
-                InfectionEventTriggerReasonCode.ANTIBIOTIC_OR_ORDER_CHANGED,
-                InfectionEventTriggerReasonCode.OPERATION_CHANGED,
-                InfectionEventTriggerReasonCode.TRANSFER_CHANGED)
-                || hasAny(changedTypes,
-                PatientCourseDataType.FULL_PATIENT,
-                PatientCourseDataType.ILLNESS_COURSE,
-                PatientCourseDataType.DOCTOR_ADVICE,
-                PatientCourseDataType.USE_MEDICINE,
-                PatientCourseDataType.TRANSFER,
-                PatientCourseDataType.OPERATION);
-
         List<EvidenceBlock> selected = new ArrayList<>();
         if (includeStructuredFact) {
             selected.addAll(filterByBlockType(buildResult.structuredFactBlocks(), EvidenceBlockType.STRUCTURED_FACT));
         }
         if (includeClinicalText) {
             selected.addAll(filterByBlockType(buildResult.clinicalTextBlocks(), EvidenceBlockType.CLINICAL_TEXT));
-        }
-        if (includeMidSemantic) {
-            selected.addAll(filterByBlockType(buildResult.midSemanticBlocks(), EvidenceBlockType.MID_SEMANTIC));
         }
         if (selected.isEmpty()) {
             return buildResult.primaryBlocks();

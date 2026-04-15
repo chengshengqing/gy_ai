@@ -15,6 +15,11 @@ public interface InfectionEventPoolService extends IService<InfectionEventPoolEn
 
     List<InfectionEventPoolEntity> saveNormalizedEvents(List<NormalizedInfectionEvent> events);
 
+    int deleteByEventKeyPrefix(String eventKeyPrefix);
+
+    List<InfectionEventPoolEntity> replaceNormalizedEventsByEventKeyPrefix(String eventKeyPrefix,
+                                                                          List<NormalizedInfectionEvent> events);
+
     List<InfectionEventPoolEntity> listActiveEvents(String reqno);
 
     Long getLatestActiveEventVersion(String reqno);

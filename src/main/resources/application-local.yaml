@@ -3,7 +3,8 @@ spring:
     activate:
       on-profile: local
   datasource:
-    url: ${YG_AI_DB_URL:jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;}
+    url: ${YG_AI_DB_URL:jdbc:sqlserver://dev.ai-cloud.vip:20008;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=false;}
+#    url: ${YG_AI_DB_URL:jdbc:sqlserver://192.168.0.112\SREVER2012;databaseName=hicisdata_yg_backup_2026_03_12;encrypt=true;trustServerCertificate=true;}
     username: ${YG_AI_DB_USERNAME:sa}
     password: ${YG_AI_DB_PASSWORD:Abcd@1234}
     hikari:

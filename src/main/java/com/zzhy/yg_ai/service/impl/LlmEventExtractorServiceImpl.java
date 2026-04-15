@@ -14,6 +14,7 @@ import com.zzhy.yg_ai.service.EventNormalizerService;
 import com.zzhy.yg_ai.service.InfectionEventPoolService;
 import com.zzhy.yg_ai.service.InfectionLlmNodeRunService;
 import com.zzhy.yg_ai.service.LlmEventExtractorService;
+import com.zzhy.yg_ai.service.event.InfectionEventKeySupport;
 import com.zzhy.yg_ai.service.event.LlmEventExtractionSupport;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -36,11 +37,12 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
     private final EventNormalizerService eventNormalizerService;
     private final InfectionEventPoolService infectionEventPoolService;
     private final LlmEventExtractionSupport llmEventExtractionSupport;
+    private final InfectionEventKeySupport infectionEventKeySupport;
 
     @Override
     public LlmEventExtractorResult extractAndSave(EvidenceBlockBuildResult blockBuildResult, List<EvidenceBlock> primaryBlocks) {
         EvidenceBlockBuildResult safeBuildResult = blockBuildResult == null
-                ? new EvidenceBlockBuildResult(null, null, null, null)
+                ? new EvidenceBlockBuildResult(null, null, null)
                 : blockBuildResult;
         List<EvidenceBlock> effectivePrimaryBlocks = primaryBlocks == null ? List.of() : List.copyOf(primaryBlocks);
         if (effectivePrimaryBlocks.isEmpty()) {
@@ -99,7 +101,10 @@ public class LlmEventExtractorServiceImpl implements LlmEventExtractorService {
                     MODEL_NAME,
                     confidence
             );
-            List<InfectionEventPoolEntity> persistedEvents = infectionEventPoolService.saveNormalizedEvents(normalizedEvents);
+            List<InfectionEventPoolEntity> persistedEvents = infectionEventPoolService.replaceNormalizedEventsByEventKeyPrefix(
+                    infectionEventKeySupport.buildBlockEventKeyPrefix(block),
+                    normalizedEvents
+            );
             infectionLlmNodeRunService.markSuccess(
                     runEntity.getId(),
                     rawOutput,
